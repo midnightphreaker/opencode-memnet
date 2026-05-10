@@ -12,9 +12,18 @@ let _transformers: {
   env: (typeof import("@huggingface/transformers"))["env"];
 } | null = null;
 
+function getTransformersPackageSpecifier(): string {
+  // Keep this non-literal so OpenCode/Bun plugin-loader bundling does not eagerly
+  // traverse @huggingface/transformers internals during plugin startup. The package
+  // is only needed for the local embedding backend, and should stay lazy.
+  return ["@huggingface", "transformers"].join("/");
+}
+
 async function ensureTransformersLoaded(): Promise<NonNullable<typeof _transformers>> {
   if (_transformers !== null) return _transformers;
-  const mod = await import("@huggingface/transformers");
+  const mod = (await import(
+    getTransformersPackageSpecifier()
+  )) as typeof import("@huggingface/transformers");
   mod.env.allowLocalModels = true;
   mod.env.allowRemoteModels = true;
   mod.env.cacheDir = join(CONFIG.storagePath, ".cache");

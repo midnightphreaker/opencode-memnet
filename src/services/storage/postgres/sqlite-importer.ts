@@ -514,8 +514,10 @@ async function insertMemoryBatch(
       const metadata = parseAndNormaliseMetadata(row.metadata);
       const isPinned = Boolean(row.is_pinned);
 
-      const vectorLit = vectorToPgLiteral(vector) + "::" + vectorCast;
-      const tagsVectorLit = tagsVector ? vectorToPgLiteral(tagsVector) + "::" + vectorCast : null;
+      const vectorLit = "'" + vectorToPgLiteral(vector) + "'::" + vectorCast;
+      const tagsVectorLit = tagsVector
+        ? "'" + vectorToPgLiteral(tagsVector) + "'::" + vectorCast
+        : null;
 
       // Use sql tagged template for safe parameterised inserts.
       // Vector literals are constructed from validated Float32Array data.

@@ -42,7 +42,9 @@ type RequestBody = {
   [key: string]: unknown;
 };
 
-type AssistantSessionMessage = Omit<AIMessageRow, "id" | "createdAt">;
+type AssistantSessionMessage = Omit<AIMessageRow, "id" | "createdAt" | "sequence"> & {
+  sequence?: number;
+};
 
 function isErrorResponseBody(data: unknown): data is { status: string; msg: string } {
   return (
@@ -91,10 +93,8 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
     toolCallId: string,
     content: string
   ): Promise<void> {
-    const sequence = ((await this.sessionRepo.getLastSequence(sessionId)) ?? 0) + 1;
     await this.sessionRepo.addMessage({
       aiSessionId: sessionId,
-      sequence,
       role: "tool",
       content,
       toolCallId,
@@ -194,10 +194,8 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
     }
 
     if (messages.length === 0) {
-      const sequence = ((await this.sessionRepo.getLastSequence(session.id)) ?? 0) + 1;
       await this.sessionRepo.addMessage({
         aiSessionId: session.id,
-        sequence,
         role: "system",
         content: systemPrompt,
       });
@@ -205,10 +203,8 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
       messages.push({ role: "system", content: systemPrompt });
     }
 
-    const userSequence = ((await this.sessionRepo.getLastSequence(session.id)) ?? 0) + 1;
     await this.sessionRepo.addMessage({
       aiSessionId: session.id,
-      sequence: userSequence,
       role: "user",
       content: userPrompt,
     });
@@ -329,10 +325,8 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
 
         const choice = data.choices[0]!;
 
-        const assistantSequence = ((await this.sessionRepo.getLastSequence(session.id)) ?? 0) + 1;
         const assistantMsg: AssistantSessionMessage = {
           aiSessionId: session.id,
-          sequence: assistantSequence,
           role: "assistant",
           content: choice.message.content ?? "",
         };
@@ -405,7 +399,7 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
                       : typeof validationError,
                   toolName: toolSchema.function.name,
                   iteration: iterations,
-                  rawArguments: toolCall.function.arguments.slice(0, 500),
+                  rawArguments: (toolCall.function.arguments ?? "").slice(0, 500),
                 });
 
                 const errorMessage =
@@ -415,7 +409,7 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
                 await this.addToolResponse(session.id, messages, toolCallId, errorMessage);
 
                 // Feed the error back to the model and let it retry
-                break;
+                continue;
               }
             }
 
@@ -431,13 +425,10 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
           }
         }
 
-        const retrySequence = ((await this.sessionRepo.getLastSequence(session.id)) ?? 0) + 1;
-        const retryPrompt =
-          "Please use the save_memories tool to extract and save the memories from the conversation as instructed.";
+        const retryPrompt = `Please use the ${toolSchema.function.name} tool to extract and save the memories from the conversation as instructed.`;
 
         await this.sessionRepo.addMessage({
           aiSessionId: session.id,
-          sequence: retrySequence,
           role: "user",
           content: retryPrompt,
         });

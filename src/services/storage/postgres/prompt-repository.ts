@@ -162,23 +162,26 @@ export class PostgresUserPromptRepository implements UserPromptRepository {
   ): Promise<{ deleted: number; linkedMemoryIds: string[] }> {
     const sql = getPostgresClient();
 
-    // Collect linked memory IDs before deleting
-    const linked = await sql`
-      SELECT linked_memory_id FROM user_prompts
-      WHERE created_at < ${cutoffTime} AND linked_memory_id IS NOT NULL
-    `;
-    const linkedMemoryIds = linked
-      .map((r: any) => r.linked_memory_id)
-      .filter((id: string | null): id is string => id != null);
+    // Wrap SELECT + DELETE in a transaction to prevent TOCTOU race with concurrent inserts
+    return sql.begin(async (tx) => {
+      // Collect linked memory IDs before deleting
+      const linked = await tx`
+        SELECT linked_memory_id FROM user_prompts
+        WHERE created_at < ${cutoffTime} AND linked_memory_id IS NOT NULL
+      `;
+      const linkedMemoryIds = linked
+        .map((r: any) => r.linked_memory_id)
+        .filter((id: string | null): id is string => id != null);
 
-    const result = await sql`
-      DELETE FROM user_prompts WHERE created_at < ${cutoffTime}
-    `;
+      const result = await tx`
+        DELETE FROM user_prompts WHERE created_at < ${cutoffTime}
+      `;
 
-    return {
-      deleted: result.count ?? 0,
-      linkedMemoryIds,
-    };
+      return {
+        deleted: result.count ?? 0,
+        linkedMemoryIds,
+      };
+    });
   }
 
   async linkMemoryToPrompt(promptId: string, memoryId: string): Promise<void> {

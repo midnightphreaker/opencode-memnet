@@ -33,6 +33,12 @@ export function assertVectorDimensions(vector: Float32Array, expectedDimensions:
       `Vector dimension mismatch: expected ${expectedDimensions}, got ${vector.length}`
     );
   }
+  for (let i = 0; i < vector.length; i++) {
+    const val = vector[i]!;
+    if (!isFinite(val)) {
+      throw new Error(`Vector contains non-finite value at index ${i}: ${val}`);
+    }
+  }
 }
 
 // ── SQLite blob → Float32Array ──

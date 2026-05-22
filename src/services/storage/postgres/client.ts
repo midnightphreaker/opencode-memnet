@@ -62,8 +62,9 @@ export function getPostgresClient(): SqlClient {
 export async function closePostgresClient(): Promise<void> {
   if (sqlInstance) {
     log("[postgres] Closing connection pool");
-    await sqlInstance.end();
+    const instance = sqlInstance;
     sqlInstance = null;
+    await instance.end();
   }
 }
 

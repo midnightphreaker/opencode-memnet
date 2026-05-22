@@ -100,8 +100,9 @@ function rowToMemoryRecord(row: any): MemoryRecord {
     if (typeof v === "string") {
       try {
         return new Float32Array(JSON.parse(v));
-      } catch {
-        return new Float32Array(0);
+      } catch (err) {
+        log("Failed to parse stored vector, skipping this memory record", { error: String(err) });
+        throw err;
       }
     }
     if (v instanceof Uint8Array) {

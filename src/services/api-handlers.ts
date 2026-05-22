@@ -31,7 +31,10 @@ async function ensureInit(): Promise<void> {
       await memoryRepo.initialize();
       await promptRepo.initialize();
       await profileRepo.initialize();
-    })();
+    })().catch((err) => {
+      _initPromise = null;
+      throw err;
+    });
   }
   return _initPromise;
 }
@@ -223,7 +226,7 @@ export async function handleListMemories(
     const allPairs = Array.from(linkedPairs.values());
     const completePairs = allPairs
       .filter((p) => p.memory && p.prompt)
-      .sort((a, b) => b.memory.createdAt - a.memory.createdAt);
+      .sort((a, b) => Number(b.memory.createdAt || 0) - Number(a.memory.createdAt || 0));
     for (const pair of completePairs) {
       sortedTimeline.push(pair.memory);
       sortedTimeline.push(pair.prompt);
@@ -234,7 +237,7 @@ export async function handleListMemories(
       if (pair.memory) standalone.push(pair.memory);
       if (pair.prompt) standalone.push(pair.prompt);
     }
-    standalone.sort((a, b) => b.createdAt - a.createdAt);
+    standalone.sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0));
     sortedTimeline.push(...standalone);
     timeline = sortedTimeline;
 
@@ -623,7 +626,7 @@ export async function handleSearch(
 
     // Compute total/totalPages AFTER appending linked extras
     const total = paginatedResults.length;
-    const totalPages = Math.max(1, Math.ceil(combinedResults.length / pageSize));
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
     return { success: true, data: { items: paginatedResults, total, page, pageSize, totalPages } };
   } catch (error) {
     log("handleSearch: error", { error: String(error) });

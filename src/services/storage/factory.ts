@@ -113,9 +113,12 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
 
   private async repo(): Promise<MemoryRepository> {
     if (!this.target) {
-      this.target = import("./postgres/memory-repository.js").then(
-        ({ PostgresMemoryRepository }) => new PostgresMemoryRepository()
-      );
+      this.target = import("./postgres/memory-repository.js")
+        .then(({ PostgresMemoryRepository }) => new PostgresMemoryRepository())
+        .catch((err) => {
+          this.target = null;
+          throw err;
+        });
     }
     return this.target;
   }
@@ -395,8 +398,10 @@ class PostgresAISessionRepositoryLazy implements AISessionRepository {
   async cleanupExpiredSessions(): Promise<number> {
     return (await this.repo()).cleanupExpiredSessions();
   }
-  async addMessage(message: Omit<AIMessageRow, "id" | "createdAt">): Promise<void> {
-    await (await this.repo()).addMessage(message);
+  async addMessage(
+    message: Omit<AIMessageRow, "id" | "createdAt" | "sequence"> & { sequence?: number }
+  ): Promise<number> {
+    return (await this.repo()).addMessage(message);
   }
   async getMessages(aiSessionId: string): Promise<AIMessageRow[]> {
     return (await this.repo()).getMessages(aiSessionId);

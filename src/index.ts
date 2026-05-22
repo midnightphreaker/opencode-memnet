@@ -20,9 +20,6 @@ import type { MemoryType } from "./types/index.js";
 import { getLanguageName } from "./services/language-detector.js";
 import type { MemoryScope } from "./services/client.js";
 
-let sigintRegistered = false;
-let sigtermRegistered = false;
-
 export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   const { directory } = ctx;
   initConfig(directory);
@@ -153,14 +150,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     }
   };
 
-  if (!sigintRegistered) {
-    process.once("SIGINT", shutdownHandler);
-    sigintRegistered = true;
-  }
-  if (!sigtermRegistered) {
-    process.once("SIGTERM", shutdownHandler);
-    sigtermRegistered = true;
-  }
+  process.once("SIGINT", shutdownHandler);
+  process.once("SIGTERM", shutdownHandler);
 
   return {
     "chat.message": async (input, output) => {
@@ -214,7 +205,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           memories = memories.filter((m: any) => m.metadata?.sessionID !== input.sessionID);
         }
 
-        if (CONFIG.chatMessage.maxAgeDays != null) {
+        if (CONFIG.chatMessage.maxAgeDays != null && CONFIG.chatMessage.maxAgeDays > 0) {
           const cutoffDate = Date.now() - CONFIG.chatMessage.maxAgeDays! * 86400000;
           memories = memories.filter((m: any) => new Date(m.createdAt).getTime() > cutoffDate);
         }
@@ -509,8 +500,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         if (idleTimeout) clearTimeout(idleTimeout);
 
         if (captureInProgress) return;
-        captureInProgress = true;
         idleTimeout = setTimeout(async () => {
+          captureInProgress = true;
           try {
             await performAutoCapture(ctx, sessionID, directory);
 

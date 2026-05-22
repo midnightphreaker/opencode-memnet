@@ -127,9 +127,9 @@ export class WebServer {
     }
 
     try {
-      // Reset startPromise so _start() can run again
-      this.startPromise = null;
+      // Reset startPromise AFTER the await to prevent concurrent start()
       await this._start();
+      this.startPromise = null;
 
       if (this.isOwner) {
         log("Web server takeover successful", { port: this.config.port });
@@ -157,6 +157,7 @@ export class WebServer {
     this.server.stop();
     this.server = null;
     this.isOwner = false;
+    this.startPromise = null;
   }
 
   isRunning(): boolean {
@@ -197,6 +198,10 @@ export class WebServer {
   }
 
   private async parseBody<T = any>(req: Request): Promise<T> {
+    const sizeError = this.checkBodySize(req);
+    if (sizeError) {
+      throw Object.assign(new Error("Request body too large"), { status: 413 });
+    }
     const text = await req.text();
     if (text.length > WebServer.MAX_BODY_SIZE) {
       throw Object.assign(new Error("Request body too large"), { status: 413 });
@@ -277,7 +282,8 @@ export class WebServer {
       }
 
       if (path.startsWith("/api/memories/") && method === "PUT") {
-        const id = path.split("/").pop();
+        const parts = path.split("/");
+        const id = parts[3];
         if (!id) {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
@@ -402,7 +408,7 @@ export class WebServer {
       return this.jsonResponse(
         {
           success: false,
-          error: String(error),
+          error: error instanceof Error ? error.message : "Internal error",
         },
         500
       );

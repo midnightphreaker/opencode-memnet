@@ -314,7 +314,9 @@ export interface AISessionRepository {
   deleteSession(sessionId: string, provider: string): Promise<void>;
   cleanupExpiredSessions(): Promise<number>;
 
-  addMessage(message: Omit<AIMessageRow, "id" | "createdAt">): Promise<void>;
+  addMessage(
+    message: Omit<AIMessageRow, "id" | "createdAt" | "sequence"> & { sequence?: number }
+  ): Promise<number>;
   getMessages(aiSessionId: string): Promise<AIMessageRow[]>;
   getLastSequence(aiSessionId: string): Promise<number>;
   clearMessages(aiSessionId: string): Promise<void>;

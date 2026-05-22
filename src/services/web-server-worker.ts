@@ -30,6 +30,10 @@ const __dirname = dirname(__filename);
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
 
 async function parseBody(req: Request): Promise<any> {
+  const contentLength = parseInt(req.headers.get("content-length") || "0", 10);
+  if (contentLength > MAX_BODY_SIZE) {
+    throw Object.assign(new Error("Request body too large"), { status: 413 });
+  }
   const body = await req.text();
   if (body.length > MAX_BODY_SIZE) {
     throw Object.assign(new Error("Request body too large"), { status: 413 });
@@ -125,7 +129,8 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (path.startsWith("/api/memories/") && method === "PUT") {
-      const id = path.split("/").pop();
+      const parts = path.split("/");
+      const id = parts[3];
       if (!id) {
         return jsonResponse({ success: false, error: "Invalid ID" });
       }
@@ -250,7 +255,7 @@ async function handleRequest(req: Request): Promise<Response> {
     return jsonResponse(
       {
         success: false,
-        error: String(error),
+        error: error instanceof Error ? error.message : "Internal error",
       },
       500
     );

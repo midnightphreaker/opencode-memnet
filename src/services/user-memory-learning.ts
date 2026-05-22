@@ -53,8 +53,13 @@ export async function performUserProfileLearning(
       let profileData;
       try {
         profileData = JSON.parse(existingProfile.profileData);
-      } catch {
-        // Corrupt profile data — skip this learning cycle
+      } catch (err) {
+        log("Corrupt profile data, skipping learning cycle for this profile", {
+          profileId: existingProfile.id,
+          error: err,
+        });
+        // Mark prompts as analyzed so they don't get picked up again in an infinite loop
+        await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
         return;
       }
       const changeSummary = generateChangeSummary(profileData, updatedProfileData);

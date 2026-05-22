@@ -140,17 +140,40 @@ export class PostgresAISessionRepository implements AISessionRepository {
     return result.count ?? 0;
   }
 
-  async addMessage(message: Omit<AIMessageRow, "id" | "createdAt">): Promise<void> {
+  async addMessage(
+    message: Omit<AIMessageRow, "id" | "createdAt" | "sequence"> & { sequence?: number }
+  ): Promise<number> {
     const sql = getPostgresClient();
     const now = Date.now();
 
-    await sql`
+    if (message.sequence !== undefined) {
+      // Explicit sequence provided — use it directly
+      await sql`
+        INSERT INTO ai_messages (
+          ai_session_id, sequence, role, content,
+          tool_calls, tool_call_id, content_blocks, created_at
+        ) VALUES (
+          ${message.aiSessionId},
+          ${message.sequence},
+          ${message.role},
+          ${message.content},
+          ${message.toolCalls ? sql.json(message.toolCalls) : null},
+          ${message.toolCallId ?? null},
+          ${message.contentBlocks ? sql.json(message.contentBlocks) : null},
+          ${now}
+        )
+      `;
+      return message.sequence;
+    }
+
+    // DB-side atomic sequence assignment to avoid TOCTOU races
+    const rows = await sql`
       INSERT INTO ai_messages (
         ai_session_id, sequence, role, content,
         tool_calls, tool_call_id, content_blocks, created_at
       ) VALUES (
         ${message.aiSessionId},
-        ${message.sequence},
+        COALESCE((SELECT MAX(sequence) FROM ai_messages WHERE ai_session_id = ${message.aiSessionId}), -1) + 1,
         ${message.role},
         ${message.content},
         ${message.toolCalls ? sql.json(message.toolCalls) : null},
@@ -158,7 +181,9 @@ export class PostgresAISessionRepository implements AISessionRepository {
         ${message.contentBlocks ? sql.json(message.contentBlocks) : null},
         ${now}
       )
+      RETURNING sequence
     `;
+    return Number(rows[0]!.sequence);
   }
 
   async getMessages(aiSessionId: string): Promise<AIMessageRow[]> {

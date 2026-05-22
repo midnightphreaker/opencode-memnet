@@ -384,7 +384,10 @@ let migrationsPromise: Promise<void> | null = null;
  */
 export function runPostgresMigrations(sql?: SqlClient): Promise<void> {
   if (migrationsPromise) return migrationsPromise;
-  migrationsPromise = runMigrationsInternal(sql);
+  migrationsPromise = runMigrationsInternal(sql).catch((err) => {
+    migrationsPromise = null;
+    throw err;
+  });
   return migrationsPromise;
 }
 

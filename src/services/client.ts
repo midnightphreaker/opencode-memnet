@@ -1,11 +1,9 @@
 import { embeddingService } from "./embedding.js";
-import { shardManager } from "./sqlite/shard-manager.js";
-import { vectorSearch } from "./sqlite/vector-search.js";
-import { connectionManager } from "./sqlite/connection-manager.js";
 import { CONFIG } from "../config.js";
 import { log } from "./logger.js";
 import type { MemoryType } from "../types/index.js";
-import type { MemoryRecord } from "./sqlite/types.js";
+import type { MemoryRepository } from "./storage/types.js";
+import { createMemoryRepository } from "./storage/factory.js";
 
 export type MemoryScope = "project" | "all-projects";
 
@@ -63,8 +61,11 @@ function resolveScopeValue(
 export class LocalMemoryClient {
   private initPromise: Promise<void> | null = null;
   private isInitialized: boolean = false;
+  private readonly memoryRepo: MemoryRepository;
 
-  constructor() {}
+  constructor(memoryRepo?: MemoryRepository) {
+    this.memoryRepo = memoryRepo ?? createMemoryRepository();
+  }
 
   private async initialize(): Promise<void> {
     if (this.isInitialized) return;
@@ -72,10 +73,11 @@ export class LocalMemoryClient {
 
     this.initPromise = (async () => {
       try {
+        await this.memoryRepo.initialize();
         this.isInitialized = true;
       } catch (error) {
         this.initPromise = null;
-        log("SQLite initialization failed", { error: String(error) });
+        log("Storage initialization failed", { error: String(error) });
         throw error;
       }
     })();
@@ -104,30 +106,28 @@ export class LocalMemoryClient {
     };
   }
 
-  close(): void {
-    connectionManager.closeAll();
+  async close(): Promise<void> {
+    await this.memoryRepo.close();
+    this.isInitialized = false;
   }
 
   async searchMemories(query: string, containerTag: string, scope: MemoryScope = "project") {
     try {
       await this.initialize();
 
-      const queryVector = await embeddingService.embedWithTimeout(query);
+      const queryVector = await embeddingService.embedWithTimeout(query, { kind: "query" });
       const resolved = resolveScopeValue(scope, containerTag);
-      const shards = shardManager.getAllShards(resolved.scope, resolved.hash);
 
-      if (shards.length === 0) {
-        return { success: true as const, results: [], total: 0, timing: 0 };
-      }
-
-      const results = await vectorSearch.searchAcrossShards(
-        shards,
+      const results = await this.memoryRepo.search({
         queryVector,
-        scope === "all-projects" ? "" : containerTag,
-        CONFIG.maxMemories,
-        CONFIG.similarityThreshold,
-        query
-      );
+        queryText: query,
+        scope: resolved.scope,
+        scopeHash: resolved.hash,
+        containerTag,
+        includeAllContainers: scope === "all-projects",
+        limit: CONFIG.maxMemories,
+        similarityThreshold: CONFIG.similarityThreshold,
+      });
 
       return { success: true as const, results, total: results.length, timing: 0 };
     } catch (error) {
@@ -161,15 +161,12 @@ export class LocalMemoryClient {
       await this.initialize();
 
       const tags = metadata?.tags || [];
-      const vector = await embeddingService.embedWithTimeout(content);
+      const vector = await embeddingService.embedWithTimeout(content, { kind: "content" });
       let tagsVector: Float32Array | undefined = undefined;
 
       if (tags.length > 0) {
-        tagsVector = await embeddingService.embedWithTimeout(tags.join(", "));
+        tagsVector = await embeddingService.embedWithTimeout(tags.join(", "), { kind: "tags" });
       }
-
-      const { scope, hash } = extractScopeFromContainerTag(containerTag);
-      const shard = shardManager.getWriteShard(scope, hash);
 
       const id = `mem_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
       const now = Date.now();
@@ -186,7 +183,7 @@ export class LocalMemoryClient {
         ...dynamicMetadata
       } = metadata || {};
 
-      const record: MemoryRecord = {
+      await this.memoryRepo.insert({
         id,
         content,
         vector,
@@ -204,11 +201,7 @@ export class LocalMemoryClient {
         gitRepoUrl,
         metadata:
           Object.keys(dynamicMetadata).length > 0 ? JSON.stringify(dynamicMetadata) : undefined,
-      };
-
-      const db = connectionManager.getConnection(shard.dbPath);
-      await vectorSearch.insertVector(db, record, shard);
-      shardManager.incrementVectorCount(shard.id);
+      });
 
       return { success: true as const, id };
     } catch (error) {
@@ -222,19 +215,10 @@ export class LocalMemoryClient {
     try {
       await this.initialize();
 
-      const userShards = shardManager.getAllShards("user", "");
-      const projectShards = shardManager.getAllShards("project", "");
-      const allShards = [...userShards, ...projectShards];
+      const deleted = await this.memoryRepo.delete(memoryId);
 
-      for (const shard of allShards) {
-        const db = connectionManager.getConnection(shard.dbPath);
-        const memory = vectorSearch.getMemoryById(db, memoryId);
-
-        if (memory) {
-          await vectorSearch.deleteVector(db, memoryId, shard);
-          shardManager.decrementVectorCount(shard.id);
-          return { success: true };
-        }
+      if (deleted) {
+        return { success: true };
       }
 
       return { success: false, error: "Memory not found" };
@@ -250,41 +234,26 @@ export class LocalMemoryClient {
       await this.initialize();
 
       const resolved = resolveScopeValue(scope, containerTag);
-      const shards = shardManager.getAllShards(resolved.scope, resolved.hash);
 
-      if (shards.length === 0) {
-        return {
-          success: true as const,
-          memories: [],
-          pagination: { currentPage: 1, totalItems: 0, totalPages: 0 },
-        };
-      }
+      const rows = await this.memoryRepo.list({
+        scope: resolved.scope,
+        scopeHash: resolved.hash,
+        containerTag,
+        includeAllContainers: scope === "all-projects",
+        limit,
+      });
 
-      const allMemories: any[] = [];
-
-      for (const shard of shards) {
-        const db = connectionManager.getConnection(shard.dbPath);
-        const memories = vectorSearch.listMemories(
-          db,
-          scope === "all-projects" ? "" : containerTag,
-          limit
-        );
-        allMemories.push(...memories);
-      }
-
-      allMemories.sort((a, b) => Number(b.created_at) - Number(a.created_at));
-
-      const memories = allMemories.slice(0, limit).map((r: any) => ({
+      const memories = rows.map((r) => ({
         id: r.id,
         summary: r.content,
-        createdAt: safeToISOString(r.created_at),
-        metadata: safeJSONParse(r.metadata),
-        displayName: r.display_name,
-        userName: r.user_name,
-        userEmail: r.user_email,
-        projectPath: r.project_path,
-        projectName: r.project_name,
-        gitRepoUrl: r.git_repo_url,
+        createdAt: safeToISOString(r.createdAt),
+        metadata: r.metadata,
+        displayName: r.displayName,
+        userName: r.userName,
+        userEmail: r.userEmail,
+        projectPath: r.projectPath,
+        projectName: r.projectName,
+        gitRepoUrl: r.gitRepoUrl,
       }));
 
       return {
@@ -309,39 +278,31 @@ export class LocalMemoryClient {
       await this.initialize();
 
       const { scope, hash } = extractScopeFromContainerTag(containerTag);
-      const shards = shardManager.getAllShards(scope, hash);
 
-      if (shards.length === 0) {
-        return { success: true as const, results: [], total: 0, timing: 0 };
-      }
+      const results = await this.memoryRepo.getBySessionId({
+        sessionId: sessionID,
+        scope,
+        scopeHash: hash,
+        limit,
+      });
 
-      const allMemories: any[] = [];
-
-      for (const shard of shards) {
-        const db = connectionManager.getConnection(shard.dbPath);
-        const memories = vectorSearch.getMemoriesBySessionID(db, sessionID);
-        allMemories.push(...memories);
-      }
-
-      allMemories.sort((a, b) => b.created_at - a.created_at);
-
-      const results = allMemories.slice(0, limit).map((row: any) => ({
+      const mapped = results.map((row) => ({
         id: row.id,
-        memory: row.content,
-        similarity: 1.0,
-        tags: row.tags || [],
-        metadata: row.metadata || {},
-        containerTag: row.container_tag,
-        displayName: row.display_name,
-        userName: row.user_name,
-        userEmail: row.user_email,
-        projectPath: row.project_path,
-        projectName: row.project_name,
-        gitRepoUrl: row.git_repo_url,
-        createdAt: row.created_at,
+        memory: row.memory,
+        similarity: row.similarity,
+        tags: row.tags,
+        metadata: row.metadata,
+        containerTag: row.containerTag,
+        displayName: row.displayName,
+        userName: row.userName,
+        userEmail: row.userEmail,
+        projectPath: row.projectPath,
+        projectName: row.projectName,
+        gitRepoUrl: row.gitRepoUrl,
+        createdAt: row.createdAt,
       }));
 
-      return { success: true as const, results, total: results.length, timing: 0 };
+      return { success: true as const, results: mapped, total: mapped.length, timing: 0 };
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       log("searchMemoriesBySessionID: error", { error: errorMessage });

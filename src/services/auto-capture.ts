@@ -3,7 +3,10 @@ import { memoryClient } from "./client.js";
 import { getTags } from "./tags.js";
 import { log } from "./logger.js";
 import { CONFIG } from "../config.js";
-import { userPromptManager } from "./user-prompt/user-prompt-manager.js";
+import { createUserPromptRepository } from "./storage/factory.js";
+import type { UserPromptRepository } from "./storage/types.js";
+
+const promptRepo: UserPromptRepository = createUserPromptRepository();
 
 interface ToolCallInfo {
   name: string;
@@ -22,12 +25,12 @@ export async function performAutoCapture(
   if (isCaptureRunning) return;
   isCaptureRunning = true;
   try {
-    const prompt = userPromptManager.getLastUncapturedPrompt(sessionID);
+    const prompt = await promptRepo.getLastUncapturedPrompt(sessionID);
     if (!prompt) {
       return;
     }
 
-    if (!userPromptManager.claimPrompt(prompt.id)) {
+    if (!(await promptRepo.claimPrompt(prompt.id))) {
       return;
     }
 
@@ -70,7 +73,7 @@ export async function performAutoCapture(
     const summaryResult = await generateSummary(context, sessionID, prompt.content);
 
     if (!summaryResult || summaryResult.type === "skip") {
-      userPromptManager.deletePrompt(prompt.id);
+      await promptRepo.deletePrompt(prompt.id);
       return;
     }
 
@@ -90,8 +93,8 @@ export async function performAutoCapture(
     });
 
     if (result.success) {
-      userPromptManager.linkMemoryToPrompt(prompt.id, result.id);
-      userPromptManager.markAsCaptured(prompt.id);
+      await promptRepo.linkMemoryToPrompt(prompt.id, result.id);
+      await promptRepo.markAsCaptured(prompt.id);
 
       if (CONFIG.showAutoCaptureToasts) {
         await ctx.client?.tui

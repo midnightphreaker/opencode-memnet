@@ -252,7 +252,9 @@ export class MigrationService {
 
         for (const memory of tempMemories) {
           try {
-            const vector = await embeddingService.embedWithTimeout(memory.content);
+            const vector = await embeddingService.embedWithTimeout(memory.content, {
+              kind: "migration",
+            });
 
             const scope = memory.containerTag.includes("_user_") ? "user" : "project";
             const hash = memory.containerTag.split("_").slice(2).join("_");

@@ -15,7 +15,7 @@ export interface UserPrompt {
   projectPath: string | null;
   content: string;
   createdAt: number;
-  captured: boolean;
+  captured: number;
   userLearningCaptured: boolean;
   linkedMemoryId: string | null;
 }
@@ -249,7 +249,7 @@ export class UserPromptManager {
       projectPath: row.project_path,
       content: row.content,
       createdAt: row.created_at,
-      captured: row.captured === 1,
+      captured: Number(row.captured),
       userLearningCaptured: row.user_learning_captured === 1,
       linkedMemoryId: row.linked_memory_id,
     };

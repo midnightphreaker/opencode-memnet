@@ -30,6 +30,18 @@ interface OpenCodeMemConfig {
   embeddingDimensions?: number;
   embeddingApiUrl?: string;
   embeddingApiKey?: string;
+  embeddingMaxTokens?: {
+    content?: number;
+    tags?: number;
+    query?: number;
+    migration?: number;
+  };
+  embeddingTruncationSide?: {
+    content?: "left" | "right";
+    tags?: "left" | "right";
+    query?: "left" | "right";
+    migration?: "left" | "right";
+  };
   similarityThreshold?: number;
   maxMemories?: number;
   maxProfileItems?: number;
@@ -66,6 +78,17 @@ interface OpenCodeMemConfig {
   showAutoCaptureToasts?: boolean;
   showUserProfileToasts?: boolean;
   showErrorToasts?: boolean;
+  storageBackend?: "sqlite" | "postgres";
+  postgres?: {
+    url?: string;
+    ssl?: boolean | "require";
+    maxConnections?: number;
+    idleTimeoutSeconds?: number;
+    connectTimeoutSeconds?: number;
+    vectorType?: "vector" | "halfvec";
+    hnswEfSearch?: number;
+    hnswEfConstruction?: number;
+  };
   compaction?: {
     enabled?: boolean;
     memoryLimit?: number;
@@ -145,6 +168,28 @@ const DEFAULTS: Required<
   showAutoCaptureToasts: true,
   showUserProfileToasts: true,
   showErrorToasts: true,
+  storageBackend: "sqlite" as const,
+  postgres: {
+    ssl: "require" as const,
+    maxConnections: 10,
+    idleTimeoutSeconds: 30,
+    connectTimeoutSeconds: 10,
+    vectorType: "vector" as const,
+    hnswEfSearch: 128,
+    hnswEfConstruction: 256,
+  },
+  embeddingMaxTokens: {
+    content: 2048,
+    tags: 256,
+    query: 512,
+    migration: 2048,
+  },
+  embeddingTruncationSide: {
+    content: "right" as const,
+    tags: "right" as const,
+    query: "right" as const,
+    migration: "right" as const,
+  },
   memory: {
     defaultScope: "project",
   },
@@ -211,10 +256,57 @@ const CONFIG_TEMPLATE = `{
   // "embeddingModel": "Xenova/all-MiniLM-L6-v2",            // 384 dims, very fast, 512 context
   // "embeddingModel": "Xenova/all-mpnet-base-v2",           // 768 dims, good quality, 512 context
   
-  // Optional: Use OpenAI-compatible API for embeddings
-  // "embeddingApiUrl": "https://api.openai.com/v1",
-  // "embeddingApiKey": "sk-...",
-  // "embeddingModel": "text-embedding-3-small",  // 1536 dims, auto-detected
+   // Optional: Use OpenAI-compatible API for embeddings
+   // "embeddingApiUrl": "https://api.openai.com/v1",
+   // "embeddingApiKey": "sk-...",
+   // "embeddingModel": "text-embedding-3-small",  // 1536 dims, auto-detected
+   
+   // NOTE: If using a 1024-dimensional model deployment (e.g. nomic-embed-text-v1.5 via vLLM),
+   // set "embeddingDimensions": 1024 and "embeddingModel" explicitly. The default model
+   // (Xenova/nomic-embed-text-v1) outputs 768 dimensions.
+   
+   // ============================================
+   // Embedding Input Truncation Settings
+   // ============================================
+   
+   // Max input tokens per embedding kind (approximate; controls how much text is sent to the
+   // embedding model). These do NOT change the output vector dimensions.
+   // Approximate: ~4 characters per token.
+   // "embeddingMaxTokens": {
+   //   "content": 2048,
+   //   "tags": 256,
+   //   "query": 512,
+   //   "migration": 2048
+   // },
+   
+   // Truncation side: "right" keeps the beginning (app-side), "left" keeps the end.
+   // For remote APIs with "left", truncate_prompt_tokens is sent to let the server truncate.
+   // "embeddingTruncationSide": {
+   //   "content": "right",
+   //   "tags": "right",
+   //   "query": "right",
+   //   "migration": "right"
+   // },
+   
+   // ============================================
+   // Storage Backend Settings
+   // ============================================
+   
+   // Storage backend: "sqlite" (default) or "postgres".
+   // "storageBackend": "sqlite",
+   
+   // PostgreSQL connection settings (only used when storageBackend is "postgres").
+   // "postgres": {
+   //   // Connection URL (supports env:// and file:// secret references)
+   //   // "url": "env://DATABASE_URL",
+   //   "ssl": "require",
+   //   "maxConnections": 10,
+   //   "idleTimeoutSeconds": 30,
+   //   "connectTimeoutSeconds": 10,
+   //   "vectorType": "vector",
+   //   "hnswEfSearch": 128,
+   //   "hnswEfConstruction": 256
+   // },
   
   // ============================================
   // Web Server Settings
@@ -548,6 +640,34 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
     showAutoCaptureToasts: fileConfig.showAutoCaptureToasts ?? DEFAULTS.showAutoCaptureToasts,
     showUserProfileToasts: fileConfig.showUserProfileToasts ?? DEFAULTS.showUserProfileToasts,
     showErrorToasts: fileConfig.showErrorToasts ?? DEFAULTS.showErrorToasts,
+    storageBackend: (fileConfig.storageBackend ?? DEFAULTS.storageBackend) as "sqlite" | "postgres",
+    postgres: {
+      url: resolveSecretValue(fileConfig.postgres?.url),
+      ssl: fileConfig.postgres?.ssl ?? DEFAULTS.postgres.ssl,
+      maxConnections: fileConfig.postgres?.maxConnections ?? DEFAULTS.postgres.maxConnections,
+      idleTimeoutSeconds:
+        fileConfig.postgres?.idleTimeoutSeconds ?? DEFAULTS.postgres.idleTimeoutSeconds,
+      connectTimeoutSeconds:
+        fileConfig.postgres?.connectTimeoutSeconds ?? DEFAULTS.postgres.connectTimeoutSeconds,
+      vectorType: fileConfig.postgres?.vectorType ?? DEFAULTS.postgres.vectorType,
+      hnswEfSearch: fileConfig.postgres?.hnswEfSearch ?? DEFAULTS.postgres.hnswEfSearch,
+      hnswEfConstruction:
+        fileConfig.postgres?.hnswEfConstruction ?? DEFAULTS.postgres.hnswEfConstruction,
+    },
+    embeddingMaxTokens: {
+      content: fileConfig.embeddingMaxTokens?.content ?? DEFAULTS.embeddingMaxTokens.content,
+      tags: fileConfig.embeddingMaxTokens?.tags ?? DEFAULTS.embeddingMaxTokens.tags,
+      query: fileConfig.embeddingMaxTokens?.query ?? DEFAULTS.embeddingMaxTokens.query,
+      migration: fileConfig.embeddingMaxTokens?.migration ?? DEFAULTS.embeddingMaxTokens.migration,
+    },
+    embeddingTruncationSide: {
+      content:
+        fileConfig.embeddingTruncationSide?.content ?? DEFAULTS.embeddingTruncationSide.content,
+      tags: fileConfig.embeddingTruncationSide?.tags ?? DEFAULTS.embeddingTruncationSide.tags,
+      query: fileConfig.embeddingTruncationSide?.query ?? DEFAULTS.embeddingTruncationSide.query,
+      migration:
+        fileConfig.embeddingTruncationSide?.migration ?? DEFAULTS.embeddingTruncationSide.migration,
+    },
     memory: {
       defaultScope: fileConfig.memory?.defaultScope ?? DEFAULTS.memory.defaultScope,
     },
@@ -571,6 +691,17 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
 let _globalFileConfig = loadConfigFromPaths(CONFIG_FILES);
 export let CONFIG = buildConfig(_globalFileConfig);
 
+function validatePostgresConfig(): void {
+  if (CONFIG.storageBackend === "postgres" && !CONFIG.postgres.url) {
+    throw new Error(
+      "storageBackend is 'postgres' but no postgres.url is configured. " +
+        "Set the 'postgres.url' field in config (supports env:// or file:// secret references)."
+    );
+  }
+}
+
+validatePostgresConfig();
+
 export function initConfig(directory: string): void {
   const projectPaths = [
     join(directory, ".opencode", "opencode-mem.jsonc"),
@@ -580,6 +711,7 @@ export function initConfig(directory: string): void {
   const projectConfig = loadConfigFromPaths(projectPaths);
   const merged: OpenCodeMemConfig = { ...globalConfig, ...projectConfig };
   CONFIG = buildConfig(merged);
+  validatePostgresConfig();
 }
 
 export function isConfigured(): boolean {

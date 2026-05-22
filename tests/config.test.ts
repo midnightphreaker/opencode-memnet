@@ -96,6 +96,37 @@ describe("config", () => {
       expect(typeof CONFIG.showUserProfileToasts).toBe("boolean");
       expect(typeof CONFIG.showErrorToasts).toBe("boolean");
     });
+
+    it("should default to sqlite storage backend", () => {
+      expect(CONFIG.storageBackend).toBe("sqlite");
+    });
+
+    it("should have postgres config with defaults", () => {
+      expect(CONFIG.postgres).toBeDefined();
+      expect(CONFIG.postgres.ssl).toBe("require");
+      expect(CONFIG.postgres.maxConnections).toBe(10);
+      expect(CONFIG.postgres.idleTimeoutSeconds).toBe(30);
+      expect(CONFIG.postgres.connectTimeoutSeconds).toBe(10);
+      expect(CONFIG.postgres.vectorType).toBe("vector");
+      expect(CONFIG.postgres.hnswEfSearch).toBe(128);
+      expect(CONFIG.postgres.hnswEfConstruction).toBe(256);
+    });
+
+    it("should have embeddingMaxTokens defaults", () => {
+      expect(CONFIG.embeddingMaxTokens).toBeDefined();
+      expect(CONFIG.embeddingMaxTokens.content).toBe(2048);
+      expect(CONFIG.embeddingMaxTokens.tags).toBe(256);
+      expect(CONFIG.embeddingMaxTokens.query).toBe(512);
+      expect(CONFIG.embeddingMaxTokens.migration).toBe(2048);
+    });
+
+    it("should have embeddingTruncationSide defaults", () => {
+      expect(CONFIG.embeddingTruncationSide).toBeDefined();
+      expect(CONFIG.embeddingTruncationSide.content).toBe("right");
+      expect(CONFIG.embeddingTruncationSide.tags).toBe("right");
+      expect(CONFIG.embeddingTruncationSide.query).toBe("right");
+      expect(CONFIG.embeddingTruncationSide.migration).toBe("right");
+    });
   });
 
   describe("isConfigured", () => {

@@ -1,9 +1,10 @@
-import { shardManager } from "./sqlite/shard-manager.js";
-import { vectorSearch } from "./sqlite/vector-search.js";
-import { connectionManager } from "./sqlite/connection-manager.js";
+import { createMemoryRepository, createUserPromptRepository } from "./storage/factory.js";
+import type { MemoryRepository, UserPromptRepository } from "./storage/types.js";
 import { CONFIG } from "../config.js";
 import { log } from "./logger.js";
-import { userPromptManager } from "./user-prompt/user-prompt-manager.js";
+
+const memoryRepo: MemoryRepository = createMemoryRepository();
+const promptRepo: UserPromptRepository = createUserPromptRepository();
 
 interface CleanupResult {
   deletedCount: number;
@@ -43,21 +44,10 @@ export class CleanupService {
     try {
       const cutoffTime = Date.now() - CONFIG.autoCleanupRetentionDays * 24 * 60 * 60 * 1000;
 
-      const userShards = shardManager.getAllShards("user", "");
-      const projectShards = shardManager.getAllShards("project", "");
-      const allShards = [...userShards, ...projectShards];
-
-      const pinnedMemoryIds = new Set<string>();
-      for (const shard of allShards) {
-        const db = connectionManager.getConnection(shard.dbPath);
-        const pinned = db.prepare(`SELECT id FROM memories WHERE is_pinned = 1`).all() as any[];
-        pinned.forEach((row) => pinnedMemoryIds.add(row.id));
-      }
-
-      const promptCleanupResult = userPromptManager.deleteOldPrompts(cutoffTime);
+      const promptCleanupResult = await promptRepo.deleteOldPrompts(cutoffTime);
       const linkedMemoryIds = new Set(promptCleanupResult.linkedMemoryIds);
 
-      const protectedMemoryIds = new Set([...pinnedMemoryIds, ...linkedMemoryIds]);
+      const oldMemories = await memoryRepo.listOlderThan(cutoffTime);
 
       let totalDeleted = 0;
       let userDeleted = 0;
@@ -65,41 +55,29 @@ export class CleanupService {
       let linkedMemoriesDeleted = 0;
       let pinnedSkipped = 0;
 
-      for (const shard of allShards) {
-        const db = connectionManager.getConnection(shard.dbPath);
+      for (const memory of oldMemories) {
+        try {
+          if (memory.isPinned) {
+            pinnedSkipped++;
+            continue;
+          }
 
-        const oldMemories = db
-          .prepare(
-            `
-          SELECT id, container_tag, is_pinned FROM memories 
-          WHERE updated_at < ?
-        `
-          )
-          .all(cutoffTime) as any[];
+          if (linkedMemoryIds.has(memory.id)) {
+            continue;
+          }
 
-        for (const memory of oldMemories) {
-          try {
-            if (memory.is_pinned === 1) {
-              pinnedSkipped++;
-              continue;
-            }
-
-            if (protectedMemoryIds.has(memory.id)) {
-              continue;
-            }
-
-            await vectorSearch.deleteVector(db, memory.id, shard);
-            shardManager.decrementVectorCount(shard.id);
+          const deleted = await memoryRepo.delete(memory.id);
+          if (deleted) {
             totalDeleted++;
 
-            if (memory.container_tag?.includes("_user_")) {
+            if (memory.containerTag.includes("_user_")) {
               userDeleted++;
-            } else if (memory.container_tag?.includes("_project_")) {
+            } else if (memory.containerTag.includes("_project_")) {
               projectDeleted++;
             }
-          } catch (error) {
-            log("Cleanup: delete error", { memoryId: memory.id, error: String(error) });
           }
+        } catch (error) {
+          log("Cleanup: delete error", { memoryId: memory.id, error: String(error) });
         }
       }
 

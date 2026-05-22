@@ -1,11 +1,24 @@
 import { embeddingService } from "./embedding.js";
-import { shardManager } from "./sqlite/shard-manager.js";
-import { vectorSearch } from "./sqlite/vector-search.js";
-import { connectionManager } from "./sqlite/connection-manager.js";
 import { log } from "./logger.js";
 import { CONFIG } from "../config.js";
 import type { MemoryType } from "../types/index.js";
-import { userPromptManager } from "./user-prompt/user-prompt-manager.js";
+import {
+  createMemoryRepository,
+  createUserPromptRepository,
+  createUserProfileRepository,
+} from "./storage/factory.js";
+import type {
+  MemoryRepository,
+  UserPromptRepository,
+  UserProfileRepository,
+  MemoryRow,
+  MemoryRecord,
+  MemoryScopeKind,
+} from "./storage/types.js";
+
+const memoryRepo: MemoryRepository = createMemoryRepository();
+const promptRepo: UserPromptRepository = createUserPromptRepository();
+const profileRepo: UserProfileRepository = createUserProfileRepository();
 
 interface ApiResponse<T = any> {
   success: boolean;
@@ -64,17 +77,6 @@ function safeToISOString(timestamp: any): string {
   }
 }
 
-function safeJSONParse(jsonString: any): any {
-  if (!jsonString || typeof jsonString !== "string") {
-    return undefined;
-  }
-  try {
-    return JSON.parse(jsonString);
-  } catch {
-    return undefined;
-  }
-}
-
 function extractScopeFromTag(tag: string): { scope: "project"; hash: string } {
   const parts = tag.split("_");
   if (parts.length >= 3) {
@@ -84,18 +86,10 @@ function extractScopeFromTag(tag: string): { scope: "project"; hash: string } {
   return { scope: "project", hash: tag };
 }
 
-function getProjectPathFromTag(tag: string): string | undefined {
-  const projectShards = shardManager.getAllShards("project", "");
-  for (const shard of projectShards) {
-    const db = connectionManager.getConnection(shard.dbPath);
-    const tags = vectorSearch.getDistinctTags(db);
-    for (const t of tags) {
-      if (t.container_tag === tag && t.project_path) {
-        return t.project_path;
-      }
-    }
-  }
-  return undefined;
+async function getProjectPathFromTag(tag: string): Promise<string | undefined> {
+  const tags = await memoryRepo.getDistinctTags({ scope: "project" });
+  const match = tags.find((t) => t.tag === tag);
+  return match?.projectPath;
 }
 
 export async function handleListTags(): Promise<ApiResponse<{ project: TagInfo[] }>> {
@@ -104,31 +98,18 @@ export async function handleListTags(): Promise<ApiResponse<{ project: TagInfo[]
     // Calling warmup() here would block on local transformer init in the worker
     // thread and hang every read API. Only handlers that compute similarity
     // (e.g. handleSearch) should warm up the embedding service.
-    const projectShards = shardManager.getAllShards("project", "");
-    const tagsMap = new Map<string, TagInfo>();
-    for (const shard of projectShards) {
-      const db = connectionManager.getConnection(shard.dbPath);
-      const tags = vectorSearch.getDistinctTags(db);
-      for (const t of tags) {
-        if (t.container_tag && !tagsMap.has(t.container_tag)) {
-          tagsMap.set(t.container_tag, {
-            tag: t.container_tag,
-            displayName: t.display_name,
-            userName: t.user_name,
-            userEmail: t.user_email,
-            projectPath: t.project_path,
-            projectName: t.project_name,
-            gitRepoUrl: t.git_repo_url,
-          });
-        }
-      }
-    }
-    const projectTags: TagInfo[] = [];
-    for (const tagInfo of tagsMap.values()) {
-      if (tagInfo.tag.includes("_project_")) {
-        projectTags.push(tagInfo);
-      }
-    }
+    const allTags = await memoryRepo.getDistinctTags({ scope: "project" });
+    const projectTags: TagInfo[] = allTags
+      .filter((t) => t.tag.includes("_project_"))
+      .map((t) => ({
+        tag: t.tag,
+        displayName: t.displayName,
+        userName: t.userName,
+        userEmail: t.userEmail,
+        projectPath: t.projectPath,
+        projectName: t.projectName,
+        gitRepoUrl: t.gitRepoUrl,
+      }));
     return { success: true, data: { project: projectTags } };
   } catch (error) {
     log("handleListTags: error", { error: String(error) });
@@ -145,52 +126,51 @@ export async function handleListMemories(
   try {
     // Listing only reads SQLite rows; no vector ops happen here.
     // See handleListTags comment - keep embedding init out of read paths.
-    let allMemories: any[] = [];
+    let memoryRows: MemoryRow[];
     if (tag) {
       const { scope: tagScope, hash } = extractScopeFromTag(tag);
-      const shards = shardManager.getAllShards(tagScope, hash);
-      for (const shard of shards) {
-        const db = connectionManager.getConnection(shard.dbPath);
-        const memories = vectorSearch.listMemories(db, tag, 10000);
-        allMemories.push(...memories);
-      }
+      memoryRows = await memoryRepo.list({
+        scope: tagScope as MemoryScopeKind,
+        scopeHash: hash,
+        containerTag: tag,
+        limit: 10000,
+      });
     } else {
-      const shards = shardManager.getAllShards("project", "");
-      for (const shard of shards) {
-        const db = connectionManager.getConnection(shard.dbPath);
-        const memories = vectorSearch.getAllMemories(db);
-        allMemories.push(...memories.filter((m: any) => m.container_tag?.includes(`_project_`)));
-      }
+      memoryRows = await memoryRepo.list({
+        scope: "project",
+        scopeHash: "",
+        containerTag: "",
+        includeAllContainers: true,
+        limit: 100000,
+      });
+      memoryRows = memoryRows.filter((m) => m.containerTag.includes("_project_"));
     }
 
-    const memoriesWithType = allMemories.map((r: any) => {
-      const metadata = safeJSONParse(r.metadata);
-      return {
-        type: "memory",
-        id: r.id,
-        content: r.content,
-        memoryType: r.type,
-        tags: r.tags ? r.tags.split(",").map((t: string) => t.trim()) : [],
-        createdAt: Number(r.created_at),
-        updatedAt: r.updated_at ? Number(r.updated_at) : undefined,
-        metadata,
-        linkedPromptId: metadata?.promptId,
-        displayName: r.display_name,
-        userName: r.user_name,
-        userEmail: r.user_email,
-        projectPath: r.project_path,
-        projectName: r.project_name,
-        gitRepoUrl: r.git_repo_url,
-        isPinned: r.is_pinned === 1,
-      };
-    });
+    const memoriesWithType = memoryRows.map((r) => ({
+      type: "memory" as const,
+      id: r.id,
+      content: r.content,
+      memoryType: r.type,
+      tags: r.tags,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      metadata: r.metadata,
+      linkedPromptId: r.metadata?.promptId,
+      displayName: r.displayName,
+      userName: r.userName,
+      userEmail: r.userEmail,
+      projectPath: r.projectPath,
+      projectName: r.projectName,
+      gitRepoUrl: r.gitRepoUrl,
+      isPinned: r.isPinned,
+    }));
 
     let timeline: any[] = memoriesWithType;
     if (includePrompts) {
-      const projectPath = tag ? getProjectPathFromTag(tag) : undefined;
-      const prompts = userPromptManager.getCapturedPrompts(projectPath);
+      const projectPath = tag ? await getProjectPathFromTag(tag) : undefined;
+      const prompts = await promptRepo.getCapturedPrompts(projectPath ?? undefined);
       const promptsWithType = prompts.map((p) => ({
-        type: "prompt",
+        type: "prompt" as const,
         id: p.id,
         sessionId: p.sessionId,
         content: p.content,
@@ -299,20 +279,16 @@ export async function handleAddMemory(data: {
     const embeddingInput =
       tags.length > 0 ? `${data.content}\nTags: ${tags.join(", ")}` : data.content;
 
-    const vector = await embeddingService.embedWithTimeout(embeddingInput);
+    const vector = await embeddingService.embedWithTimeout(embeddingInput, { kind: "content" });
     let tagsVector: Float32Array | undefined = undefined;
     if (tags.length > 0) {
-      tagsVector = await embeddingService.embedWithTimeout(tags.join(", "));
+      tagsVector = await embeddingService.embedWithTimeout(tags.join(", "), { kind: "tags" });
     }
-
-    const { scope, hash } = extractScopeFromTag(data.containerTag);
-
-    const shard = shardManager.getWriteShard(scope, hash);
 
     const id = `mem_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
     const now = Date.now();
 
-    const record = {
+    const record: MemoryRecord = {
       id,
       content: data.content,
       vector,
@@ -322,17 +298,16 @@ export async function handleAddMemory(data: {
       type: data.type,
       createdAt: now,
       updatedAt: now,
+      metadata: JSON.stringify({ source: "api" }),
       displayName: data.displayName,
       userName: data.userName,
       userEmail: data.userEmail,
       projectPath: data.projectPath,
       projectName: data.projectName,
       gitRepoUrl: data.gitRepoUrl,
-      metadata: JSON.stringify({ source: "api" }),
     };
-    const db = connectionManager.getConnection(shard.dbPath);
-    await vectorSearch.insertVector(db, record, shard);
-    shardManager.incrementVectorCount(shard.id);
+
+    await memoryRepo.insert(record);
     return { success: true, data: { id } };
   } catch (error) {
     log("handleAddMemory: error", { error: String(error) });
@@ -346,25 +321,17 @@ export async function handleDeleteMemory(
 ): Promise<ApiResponse<{ deletedPrompt: boolean }>> {
   try {
     if (!id) return { success: false, error: "id is required" };
-    const projectShards = shardManager.getAllShards("project", "");
-    for (const shard of projectShards) {
-      const db = connectionManager.getConnection(shard.dbPath);
-      const memory = vectorSearch.getMemoryById(db, id);
-      if (memory) {
-        if (cascade) {
-          const metadata = safeJSONParse(memory.metadata);
-          const linkedPromptId = metadata?.promptId;
-          if (linkedPromptId) userPromptManager.deletePrompt(linkedPromptId);
-        }
-        await vectorSearch.deleteVector(db, id, shard);
-        shardManager.decrementVectorCount(shard.id);
-        return {
-          success: true,
-          data: { deletedPrompt: cascade && !!safeJSONParse(memory.metadata)?.promptId },
-        };
-      }
+    const memory = await memoryRepo.getById(id);
+    if (!memory) return { success: false, error: "Memory not found" };
+    if (cascade) {
+      const linkedPromptId = memory.metadata?.promptId as string | undefined;
+      if (linkedPromptId) await promptRepo.deletePrompt(linkedPromptId);
     }
-    return { success: false, error: "Memory not found" };
+    await memoryRepo.delete(id);
+    return {
+      success: true,
+      data: { deletedPrompt: cascade && !!memory.metadata?.promptId },
+    };
   } catch (error) {
     log("handleDeleteMemory: error", { error: String(error) });
     return { success: false, error: String(error) };
@@ -396,52 +363,38 @@ export async function handleUpdateMemory(
   try {
     if (!id) return { success: false, error: "id is required" };
     await embeddingService.warmup();
-    const projectShards = shardManager.getAllShards("project", "");
-    let foundShard = null,
-      existingMemory = null;
-    for (const shard of projectShards) {
-      const db = connectionManager.getConnection(shard.dbPath);
-      const memory = vectorSearch.getMemoryById(db, id);
-      if (memory) {
-        foundShard = shard;
-        existingMemory = memory;
-        break;
-      }
-    }
-    if (!foundShard || !existingMemory) return { success: false, error: "Memory not found" };
-    const db = connectionManager.getConnection(foundShard.dbPath);
-    await vectorSearch.deleteVector(db, id, foundShard);
-    shardManager.decrementVectorCount(foundShard.id);
+    const existingMemory = await memoryRepo.getById(id);
+    if (!existingMemory) return { success: false, error: "Memory not found" };
 
     const newContent = data.content || existingMemory.content;
-    const tags = data.tags || (existingMemory.tags ? existingMemory.tags.split(",") : []);
+    const tags = data.tags || existingMemory.tags;
 
-    const vector = await embeddingService.embedWithTimeout(newContent);
+    const vector = await embeddingService.embedWithTimeout(newContent, { kind: "content" });
     let tagsVector: Float32Array | undefined = undefined;
     if (tags.length > 0) {
-      tagsVector = await embeddingService.embedWithTimeout(tags.join(", "));
+      tagsVector = await embeddingService.embedWithTimeout(tags.join(", "), { kind: "tags" });
     }
 
-    const updatedRecord = {
+    const updatedRecord: MemoryRecord = {
       id,
       content: newContent,
       vector,
       tagsVector,
-      containerTag: existingMemory.container_tag,
+      containerTag: existingMemory.containerTag,
       tags: tags.length > 0 ? tags.join(",") : undefined,
       type: data.type || existingMemory.type,
-      createdAt: existingMemory.created_at,
+      createdAt: existingMemory.createdAt,
       updatedAt: Date.now(),
-      metadata: existingMemory.metadata,
-      displayName: existingMemory.display_name,
-      userName: existingMemory.user_name,
-      userEmail: existingMemory.user_email,
-      projectPath: existingMemory.project_path,
-      projectName: existingMemory.project_name,
-      gitRepoUrl: existingMemory.git_repo_url,
+      metadata: existingMemory.metadata ? JSON.stringify(existingMemory.metadata) : undefined,
+      displayName: existingMemory.displayName,
+      userName: existingMemory.userName,
+      userEmail: existingMemory.userEmail,
+      projectPath: existingMemory.projectPath,
+      projectName: existingMemory.projectName,
+      gitRepoUrl: existingMemory.gitRepoUrl,
     };
-    await vectorSearch.insertVector(db, updatedRecord, foundShard);
-    shardManager.incrementVectorCount(foundShard.id);
+
+    await memoryRepo.update(updatedRecord);
     return { success: true };
   } catch (error) {
     log("handleUpdateMemory: error", { error: String(error) });
@@ -493,50 +446,39 @@ export async function handleSearch(
   try {
     if (!query) return { success: false, error: "query is required" };
     await embeddingService.warmup();
-    const queryVector = await embeddingService.embedWithTimeout(query);
+    const queryVector = await embeddingService.embedWithTimeout(query, { kind: "query" });
     let memoryResults: any[] = [];
     let promptResults: any[] = [];
+
     if (tag) {
       const { scope, hash } = extractScopeFromTag(tag);
-      const shards = shardManager.getAllShards(scope, hash);
-      for (const shard of shards) {
-        try {
-          const results = await vectorSearch.searchInShard(shard, queryVector, tag, pageSize * 2);
-          memoryResults.push(...results);
-        } catch (error) {
-          log("Shard search error", { shardId: shard.id, error: String(error) });
-        }
-      }
-      const projectPath = getProjectPathFromTag(tag);
-      promptResults = userPromptManager.searchPrompts(query, projectPath, pageSize * 2);
+      const results = await memoryRepo.search({
+        queryVector,
+        scope: scope as MemoryScopeKind,
+        scopeHash: hash,
+        containerTag: tag,
+        limit: pageSize * 4,
+        similarityThreshold: 0,
+        queryText: query,
+      });
+      memoryResults.push(...results);
+
+      const projectPath = await getProjectPathFromTag(tag);
+      promptResults = await promptRepo.searchPrompts(query, projectPath ?? undefined, pageSize * 2);
     } else {
-      const projectShards = shardManager.getAllShards("project", "");
-      const uniqueTags = new Set<string>();
-      for (const shard of projectShards) {
-        const db = connectionManager.getConnection(shard.dbPath);
-        const tags = vectorSearch.getDistinctTags(db);
-        for (const t of tags) {
-          if (t.container_tag) uniqueTags.add(t.container_tag);
-        }
-      }
-      for (const containerTag of uniqueTags) {
-        const { scope, hash } = extractScopeFromTag(containerTag);
-        const shards = shardManager.getAllShards(scope, hash);
-        for (const shard of shards) {
-          try {
-            const results = await vectorSearch.searchInShard(
-              shard,
-              queryVector,
-              containerTag,
-              pageSize
-            );
-            memoryResults.push(...results);
-          } catch (error) {
-            log("Shard search error", { shardId: shard.id, error: String(error) });
-          }
-        }
-      }
-      promptResults = userPromptManager.searchPrompts(query, undefined, pageSize * 2);
+      // Search across all project shards without container-tag filter
+      const results = await memoryRepo.search({
+        queryVector,
+        scope: "project",
+        scopeHash: "",
+        containerTag: "",
+        includeAllContainers: true,
+        limit: pageSize * 10,
+        similarityThreshold: 0,
+        queryText: query,
+      });
+      memoryResults.push(...results);
+      promptResults = await promptRepo.searchPrompts(query, undefined, pageSize * 2);
     }
 
     const formattedPrompts: FormattedPrompt[] = promptResults.map((p) => ({
@@ -566,7 +508,7 @@ export async function handleSearch(
       projectPath: r.projectPath,
       projectName: r.projectName,
       gitRepoUrl: r.gitRepoUrl,
-      isPinned: r.isPinned === 1,
+      isPinned: r.isPinned === 1 || r.isPinned === true,
       linkedPromptId: r.metadata?.promptId,
     }));
 
@@ -593,7 +535,7 @@ export async function handleSearch(
     }
 
     if (missingPromptIds.size > 0) {
-      const extraPrompts = userPromptManager.getPromptsByIds(Array.from(missingPromptIds));
+      const extraPrompts = await promptRepo.getPromptsByIds(Array.from(missingPromptIds));
       for (const p of extraPrompts) {
         paginatedResults.push({
           type: "prompt",
@@ -610,33 +552,29 @@ export async function handleSearch(
     }
 
     if (missingMemoryIds.size > 0) {
-      const projectShards = shardManager.getAllShards("project", "");
-      for (const shard of projectShards) {
-        const db = connectionManager.getConnection(shard.dbPath);
-        for (const mid of missingMemoryIds) {
-          const m = vectorSearch.getMemoryById(db, mid);
-          if (m && !paginatedResults.some((existing) => existing.id === m.id)) {
-            paginatedResults.push({
-              type: "memory",
-              id: m.id,
-              content: m.content,
-              memoryType: m.type,
-              tags: m.tags ? m.tags.split(",").map((t: string) => t.trim()) : [],
-              createdAt: safeToISOString(m.created_at),
-              updatedAt: m.updated_at ? safeToISOString(m.updated_at) : undefined,
-              similarity: 0,
-              metadata: safeJSONParse(m.metadata),
-              displayName: m.display_name,
-              userName: m.user_name,
-              userEmail: m.user_email,
-              projectPath: m.project_path,
-              projectName: m.project_name,
-              gitRepoUrl: m.git_repo_url,
-              isPinned: m.is_pinned === 1,
-              linkedPromptId: safeJSONParse(m.metadata)?.promptId,
-              isContext: true,
-            });
-          }
+      for (const mid of missingMemoryIds) {
+        const m = await memoryRepo.getById(mid);
+        if (m && !paginatedResults.some((existing) => existing.id === m.id)) {
+          paginatedResults.push({
+            type: "memory",
+            id: m.id,
+            content: m.content,
+            memoryType: m.type,
+            tags: m.tags,
+            createdAt: safeToISOString(m.createdAt),
+            updatedAt: m.updatedAt ? safeToISOString(m.updatedAt) : undefined,
+            similarity: 0,
+            metadata: m.metadata,
+            displayName: m.displayName,
+            userName: m.userName,
+            userEmail: m.userEmail,
+            projectPath: m.projectPath,
+            projectName: m.projectName,
+            gitRepoUrl: m.gitRepoUrl,
+            isPinned: m.isPinned,
+            linkedPromptId: m.metadata?.promptId as string | undefined,
+            isContext: true,
+          });
         }
       }
     }
@@ -658,18 +596,20 @@ export async function handleStats(): Promise<
   try {
     // Stats only counts SQLite rows; no embedding needed.
     // See handleListTags comment - keep embedding init out of read paths.
-    const projectShards = shardManager.getAllShards("project", "");
+    const memories = await memoryRepo.list({
+      scope: "project",
+      scopeHash: "",
+      containerTag: "",
+      includeAllContainers: true,
+      limit: 1000000,
+    });
     let userCount = 0,
       projectCount = 0;
     const typeCount: Record<string, number> = {};
-    for (const shard of projectShards) {
-      const db = connectionManager.getConnection(shard.dbPath);
-      const memories = vectorSearch.getAllMemories(db);
-      for (const r of memories) {
-        if (r.container_tag?.includes("_user_")) userCount++;
-        else if (r.container_tag?.includes("_project_")) projectCount++;
-        if (r.type) typeCount[r.type] = (typeCount[r.type] || 0) + 1;
-      }
+    for (const r of memories) {
+      if (r.containerTag.includes("_user_")) userCount++;
+      else if (r.containerTag.includes("_project_")) projectCount++;
+      if (r.type) typeCount[r.type] = (typeCount[r.type] || 0) + 1;
     }
     return {
       success: true,
@@ -688,16 +628,10 @@ export async function handleStats(): Promise<
 export async function handlePinMemory(id: string): Promise<ApiResponse<void>> {
   try {
     if (!id) return { success: false, error: "id is required" };
-    const projectShards = shardManager.getAllShards("project", "");
-    for (const shard of projectShards) {
-      const db = connectionManager.getConnection(shard.dbPath);
-      const memory = vectorSearch.getMemoryById(db, id);
-      if (memory) {
-        vectorSearch.pinMemory(db, id);
-        return { success: true };
-      }
-    }
-    return { success: false, error: "Memory not found" };
+    const memory = await memoryRepo.getById(id);
+    if (!memory) return { success: false, error: "Memory not found" };
+    await memoryRepo.pin(id);
+    return { success: true };
   } catch (error) {
     log("handlePinMemory: error", { error: String(error) });
     return { success: false, error: String(error) };
@@ -707,16 +641,10 @@ export async function handlePinMemory(id: string): Promise<ApiResponse<void>> {
 export async function handleUnpinMemory(id: string): Promise<ApiResponse<void>> {
   try {
     if (!id) return { success: false, error: "id is required" };
-    const projectShards = shardManager.getAllShards("project", "");
-    for (const shard of projectShards) {
-      const db = connectionManager.getConnection(shard.dbPath);
-      const memory = vectorSearch.getMemoryById(db, id);
-      if (memory) {
-        vectorSearch.unpinMemory(db, id);
-        return { success: true };
-      }
-    }
-    return { success: false, error: "Memory not found" };
+    const memory = await memoryRepo.getById(id);
+    if (!memory) return { success: false, error: "Memory not found" };
+    await memoryRepo.unpin(id);
+    return { success: true };
   } catch (error) {
     log("handleUnpinMemory: error", { error: String(error) });
     return { success: false, error: String(error) };
@@ -793,14 +721,14 @@ export async function handleDeletePrompt(
 ): Promise<ApiResponse<{ deletedMemory: boolean }>> {
   try {
     if (!id) return { success: false, error: "id is required" };
-    const prompt = userPromptManager.getPromptById(id);
+    const prompt = await promptRepo.getPromptById(id);
     if (!prompt) return { success: false, error: "Prompt not found" };
     let deletedMemory = false;
     if (cascade && prompt.linkedMemoryId) {
       const result = await handleDeleteMemory(prompt.linkedMemoryId, false);
       if (result.success) deletedMemory = true;
     }
-    userPromptManager.deletePrompt(id);
+    await promptRepo.deletePrompt(id);
     return { success: true, data: { deletedMemory } };
   } catch (error) {
     log("handleDeletePrompt: error", { error: String(error) });
@@ -828,14 +756,13 @@ export async function handleBulkDeletePrompts(
 
 export async function handleGetUserProfile(userId?: string): Promise<ApiResponse<any>> {
   try {
-    const { userProfileManager } = await import("./user-profile/user-profile-manager.js");
     const { getTags } = await import("./tags.js");
     let targetUserId = userId;
     if (!targetUserId) {
       const tags = getTags(process.cwd());
       targetUserId = tags.user.userEmail || "unknown";
     }
-    const profile = userProfileManager.getActiveProfile(targetUserId);
+    const profile = await profileRepo.getActiveProfile(targetUserId);
     if (!profile)
       return {
         success: true,
@@ -874,8 +801,7 @@ export async function handleGetProfileChangelog(
 ): Promise<ApiResponse<any[]>> {
   try {
     if (!profileId) return { success: false, error: "profileId is required" };
-    const { userProfileManager } = await import("./user-profile/user-profile-manager.js");
-    const changelogs = userProfileManager.getProfileChangelogs(profileId, limit);
+    const changelogs = await profileRepo.getProfileChangelogs(profileId, limit);
     const formattedChangelogs = changelogs.map((c) => ({
       id: c.id,
       profileId: c.profileId,
@@ -894,8 +820,7 @@ export async function handleGetProfileChangelog(
 export async function handleGetProfileSnapshot(changelogId: string): Promise<ApiResponse<any>> {
   try {
     if (!changelogId) return { success: false, error: "changelogId is required" };
-    const { userProfileManager } = await import("./user-profile/user-profile-manager.js");
-    const changelogs = userProfileManager.getProfileChangelogs("", 1000);
+    const changelogs = await profileRepo.getProfileChangelogs("", 1000);
     const changelog = changelogs.find((c) => c.id === changelogId);
     if (!changelog) return { success: false, error: "Changelog not found" };
     const profileData = JSON.parse(changelog.profileDataSnapshot);
@@ -916,13 +841,12 @@ export async function handleGetProfileSnapshot(changelogId: string): Promise<Api
 export async function handleRefreshProfile(userId?: string): Promise<ApiResponse<any>> {
   try {
     const { getTags } = await import("./tags.js");
-    const { userPromptManager } = await import("./user-prompt/user-prompt-manager.js");
     let targetUserId = userId;
     if (!targetUserId) {
       const tags = getTags(process.cwd());
       targetUserId = tags.user.userEmail || "unknown";
     }
-    const unanalyzedCount = userPromptManager.countUnanalyzedForUserLearning();
+    const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning();
     return {
       success: true,
       data: {
@@ -941,15 +865,7 @@ export async function handleDetectTagMigration(): Promise<
   ApiResponse<{ needsMigration: boolean; count: number }>
 > {
   try {
-    const projectShards = shardManager.getAllShards("project", "");
-    let untaggedCount = 0;
-    for (const shard of projectShards) {
-      const db = connectionManager.getConnection(shard.dbPath);
-      const rows = db
-        .prepare("SELECT COUNT(*) as count FROM memories WHERE tags IS NULL OR tags = ''")
-        .get() as any;
-      untaggedCount += rows.count;
-    }
+    const untaggedCount = await memoryRepo.countUntagged();
     return { success: true, data: { needsMigration: untaggedCount > 0, count: untaggedCount } };
   } catch (error) {
     return { success: false, error: String(error) };
@@ -989,33 +905,24 @@ export async function handleRunTagMigrationBatch(
       iterationTimeout: 30000,
     });
     const provider = AIProviderFactory.createProvider(CONFIG.memoryProvider, providerConfig);
-    const projectShards = shardManager.getAllShards("project", "");
 
-    let batchProcessed = 0;
-    const allMemories: { memory: any; shard: any }[] = [];
-
-    for (const shard of projectShards) {
-      const db = connectionManager.getConnection(shard.dbPath);
-      const memories = db.prepare("SELECT * FROM memories").all() as any[];
-      for (const m of memories) {
-        allMemories.push({ memory: m, shard });
-      }
-    }
+    const allRecords = (await memoryRepo.getAllWithVectors()).filter((record) =>
+      record.containerTag.includes("_project_")
+    );
 
     if (migrationProgress.total === 0) {
-      migrationProgress.total = allMemories.length;
-      migrationProgress.totalBatches = Math.ceil(allMemories.length / batchSize);
+      migrationProgress.total = allRecords.length;
+      migrationProgress.totalBatches = Math.ceil(allRecords.length / batchSize);
       migrationProgress.isComplete = false;
     }
 
+    let batchProcessed = 0;
     const startIdx = migrationProgress.processed;
-    const endIdx = Math.min(startIdx + batchSize, allMemories.length);
+    const endIdx = Math.min(startIdx + batchSize, allRecords.length);
 
     for (let i = startIdx; i < endIdx; i++) {
-      const item = allMemories[i];
-      if (!item) continue;
-      const { memory: m, shard } = item;
-      const db = connectionManager.getConnection(shard.dbPath);
+      const m = allRecords[i];
+      if (!m) continue;
 
       try {
         let currentTags = m.tags
@@ -1046,25 +953,21 @@ export async function handleRunTagMigrationBatch(
           );
           if (result.success && result.data?.tags) {
             currentTags = result.data.tags;
-            db.prepare("UPDATE memories SET tags = ? WHERE id = ?").run(
-              currentTags.join(","),
-              m.id
-            );
           }
         }
 
-        const vector = await embeddingService.embedWithTimeout(m.content);
+        const vector = await embeddingService.embedWithTimeout(m.content, { kind: "content" });
         const tagsVector = currentTags.length
-          ? await embeddingService.embedWithTimeout(currentTags.join(", "))
+          ? await embeddingService.embedWithTimeout(currentTags.join(", "), { kind: "tags" })
           : undefined;
-        const vectorBuffer = new Uint8Array(vector.buffer);
-        db.prepare("UPDATE memories SET vector = ?, updated_at = ? WHERE id = ?").run(
-          vectorBuffer,
-          Date.now(),
-          m.id
-        );
 
-        await vectorSearch.updateVector(db, m.id, vector, shard, tagsVector);
+        await memoryRepo.updateTagsAndVectors(
+          m.id,
+          currentTags.join(","),
+          vector,
+          tagsVector,
+          Date.now()
+        );
 
         migrationProgress.processed++;
         batchProcessed++;

@@ -8,7 +8,11 @@ import { getTags } from "./services/tags.js";
 import { stripPrivateContent, isFullyPrivate } from "./services/privacy.js";
 import { performAutoCapture } from "./services/auto-capture.js";
 import { performUserProfileLearning } from "./services/user-memory-learning.js";
-import { userPromptManager } from "./services/user-prompt/user-prompt-manager.js";
+import {
+  createUserPromptRepository,
+  createUserProfileRepository,
+  checkpointStorage,
+} from "./services/storage/factory.js";
 import { startWebServer, WebServer } from "./services/web-server.js";
 
 import { isConfigured, CONFIG, initConfig } from "./config.js";
@@ -16,6 +20,9 @@ import { log } from "./services/logger.js";
 import type { MemoryType } from "./types/index.js";
 import { getLanguageName } from "./services/language-detector.js";
 import type { MemoryScope } from "./services/client.js";
+
+const promptRepo = createUserPromptRepository();
+const profileRepo = createUserProfileRepository();
 
 export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   const { directory } = ctx;
@@ -133,7 +140,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       if (webServer) {
         await webServer.stop();
       }
-      memoryClient.close();
+      await memoryClient.close();
       process.exit(0);
     } catch (error) {
       log("Shutdown error", { error: String(error) });
@@ -157,7 +164,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         const userMessage = textParts.map((p) => p.text).join("\n");
         if (!userMessage.trim()) return;
 
-        userPromptManager.savePrompt(input.sessionID, output.message.id, directory, userMessage);
+        await promptRepo.savePrompt(input.sessionID, output.message.id, directory, userMessage);
 
         const messagesResponse = await ctx.client.session.messages({
           path: { id: input.sessionID },
@@ -360,9 +367,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                   });
                 }
 
-                const { userProfileManager } =
-                  await import("./services/user-profile/user-profile-manager.js");
-
                 const userId = tags.user.userEmail || "unknown";
 
                 // --- WRITE: explicit preference ---
@@ -396,14 +400,14 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                     lastUpdated: Date.now(),
                   };
 
-                  const existingProfile = userProfileManager.getActiveProfile(userId);
+                  const existingProfile = await profileRepo.getActiveProfile(userId);
 
                   if (existingProfile) {
                     const existingData = JSON.parse(existingProfile.profileData);
-                    const mergedData = userProfileManager.mergeProfileData(existingData, {
+                    const mergedData = profileRepo.mergeProfileData(existingData, {
                       preferences: [newPreference],
                     });
-                    userProfileManager.updateProfile(
+                    await profileRepo.updateProfile(
                       existingProfile.id,
                       mergedData,
                       0,
@@ -414,7 +418,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                       message: "Preference saved to profile",
                     });
                   } else {
-                    userProfileManager.createProfile(
+                    await profileRepo.createProfile(
                       userId,
                       tags.user.displayName || userId,
                       tags.user.userName || userId,
@@ -430,7 +434,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                 }
 
                 // --- READ: no content provided ---
-                const profile = userProfileManager.getActiveProfile(userId);
+                const profile = await profileRepo.getActiveProfile(userId);
                 if (!profile) return JSON.stringify({ success: true, profile: null });
                 const pData = JSON.parse(profile.profileData);
                 return JSON.stringify({
@@ -494,8 +498,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               await performUserProfileLearning(ctx, directory);
               const { cleanupService } = await import("./services/cleanup-service.js");
               if (await cleanupService.shouldRunCleanup()) await cleanupService.runCleanup();
-              const { connectionManager } = await import("./services/sqlite/connection-manager.js");
-              connectionManager.checkpointAll();
+              await checkpointStorage();
             }
           } catch (error) {
             log("Idle processing error", { error: String(error) });

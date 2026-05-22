@@ -2,10 +2,16 @@ import type { PluginInput } from "@opencode-ai/plugin";
 import { getTags } from "./tags.js";
 import { log } from "./logger.js";
 import { CONFIG } from "../config.js";
-import { userPromptManager } from "./user-prompt/user-prompt-manager.js";
-import type { UserPrompt } from "./user-prompt/user-prompt-manager.js";
-import { userProfileManager } from "./user-profile/user-profile-manager.js";
-import type { UserProfile, UserProfileData } from "./user-profile/types.js";
+import { createUserPromptRepository, createUserProfileRepository } from "./storage/factory.js";
+import type {
+  UserPromptRepository,
+  UserProfileRepository,
+  UserProfileRow,
+  UserProfileData,
+} from "./storage/types.js";
+
+const promptRepo: UserPromptRepository = createUserPromptRepository();
+const profileRepo: UserProfileRepository = createUserProfileRepository();
 
 let isLearningRunning = false;
 
@@ -16,14 +22,14 @@ export async function performUserProfileLearning(
   if (isLearningRunning) return;
   isLearningRunning = true;
   try {
-    const count = userPromptManager.countUnanalyzedForUserLearning();
+    const count = await promptRepo.countUnanalyzedForUserLearning();
     const threshold = CONFIG.userProfileAnalysisInterval;
 
     if (count < threshold) {
       return;
     }
 
-    const prompts = userPromptManager.getPromptsForUserLearning(threshold);
+    const prompts = await promptRepo.getPromptsForUserLearning(threshold);
 
     if (prompts.length === 0) {
       return;
@@ -32,14 +38,14 @@ export async function performUserProfileLearning(
     const tags = getTags(directory);
     const userId = tags.user.userEmail || "unknown";
 
-    const existingProfile = userProfileManager.getActiveProfile(userId);
+    const existingProfile = await profileRepo.getActiveProfile(userId);
 
     const context = buildUserAnalysisContext(prompts, existingProfile);
 
     const updatedProfileData = await analyzeUserProfile(context, existingProfile);
 
     if (!updatedProfileData) {
-      userPromptManager.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+      await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
       return;
     }
 
@@ -48,14 +54,14 @@ export async function performUserProfileLearning(
         JSON.parse(existingProfile.profileData),
         updatedProfileData
       );
-      userProfileManager.updateProfile(
+      await profileRepo.updateProfile(
         existingProfile.id,
         updatedProfileData,
         prompts.length,
         changeSummary
       );
     } else {
-      userProfileManager.createProfile(
+      await profileRepo.createProfile(
         userId,
         tags.user.displayName || "Unknown",
         tags.user.userName || "unknown",
@@ -65,7 +71,7 @@ export async function performUserProfileLearning(
       );
     }
 
-    userPromptManager.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+    await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
 
     if (CONFIG.showUserProfileToasts) {
       await ctx.client?.tui
@@ -99,10 +105,7 @@ function generateChangeSummary(oldProfile: UserProfileData, newProfile: UserProf
   return changes.length > 0 ? changes.join(", ") : "Profile refinement";
 }
 
-function buildUserAnalysisContext(
-  prompts: UserPrompt[],
-  existingProfile: UserProfile | null
-): string {
+function buildUserAnalysisContext(prompts: any[], existingProfile: UserProfileRow | null): string {
   const existingProfileSection = existingProfile
     ? `
 ## Existing User Profile
@@ -145,7 +148,7 @@ ${existingProfile ? "Merge with existing profile, incrementing frequencies and u
 
 async function analyzeUserProfile(
   context: string,
-  existingProfile: UserProfile | null
+  existingProfile: UserProfileRow | null
 ): Promise<UserProfileData | null> {
   if (CONFIG.opencodeProvider && CONFIG.opencodeModel) {
     const { isProviderConnected, getV2Client, generateStructuredOutput } =
@@ -207,7 +210,7 @@ Use the update_user_profile tool to save the ${existingProfile ? "updated" : "ne
 
     if (existingProfile) {
       const existingData: UserProfileData = JSON.parse(existingProfile.profileData);
-      return userProfileManager.mergeProfileData(
+      return profileRepo.mergeProfileData(
         existingData,
         result as unknown as Partial<UserProfileData>
       );
@@ -305,7 +308,7 @@ Use the update_user_profile tool to save the ${existingProfile ? "updated" : "ne
 
   if (existingProfile) {
     const existingData: UserProfileData = JSON.parse(existingProfile.profileData);
-    return userProfileManager.mergeProfileData(existingData, rawData);
+    return profileRepo.mergeProfileData(existingData, rawData);
   }
 
   return rawData as UserProfileData;

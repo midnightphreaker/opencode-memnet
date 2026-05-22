@@ -1,817 +1,588 @@
-# SPEC: Remote PostgreSQL + pgvector Storage Backend
+# opencode-mem Server-Client Architecture
 
-## 1. Summary
+## Specification v1.0
 
-Replace the current local SQLite-file persistence and local vector-indexing path with a remote PostgreSQL database using the `pgvector` extension for semantic search.
+---
 
-The target design keeps the existing public plugin behavior stable while moving persistence behind storage repository interfaces. PostgreSQL becomes a first-class storage backend that stores memory rows, user prompts, user profiles, AI sessions, and vector embeddings in one remote database. pgvector replaces both local `usearch` ANN indexes and TypeScript exact-scan vector search for the Postgres path.
+## 1. Overview
 
-The implementation should initially keep the existing SQLite backend as a compatibility and rollback option behind configuration, but the new Postgres backend must not emulate SQLite shard files. The Postgres path uses a single `memories` table with `scope` and `scope_hash` columns plus pgvector HNSW indexes.
+opencode-mem currently operates as an in-process OpenCode plugin: a single Bun process that handles memory storage (PostgreSQL + pgvector), semantic search (remote embeddings), AI-powered auto-capture and profile learning, a local WebUI, and OpenCode plugin hooks. Every plugin instance owns its own process, its own config, and its own connection to shared infrastructure.
 
-## 2. Goals
+This specification defines a server-client split:
 
-- Add a remote PostgreSQL storage backend selectable by configuration.
-- Use pgvector-native vector columns and HNSW indexes for memory similarity search.
-- Preserve current high-level plugin behavior:
-  - memory add/search/list/delete,
-  - context injection,
-  - manual memory tool,
-  - auto-capture,
-  - user-profile learning,
-  - cleanup/deduplication/migration/admin API behavior where applicable.
-- Preserve current memory ranking semantics as closely as practical:
-  - content embedding weight: `0.6`,
-  - tags embedding weight: `0.4`,
-  - query-word/tag exact-match boost,
-  - similarity threshold filtering.
-- Flatten SQLite shard files into a Postgres schema rather than porting shard-per-file semantics.
-- Provide a resumable SQLite-to-Postgres migration tool.
-- Keep current SQLite implementation operational during rollout unless explicitly removed in a later cleanup phase.
-- Avoid logging secrets such as database URLs.
+- **Server**: A standalone, long-lived Bun HTTP service hosting the Postgres connection pool, embedding service calls, AI provider orchestration, memory CRUD, auto-capture pipeline, user-profile learning, and the Management WebUI.
+- **Client**: A thin OpenCode plugin that communicates with the server exclusively over HTTP. It carries no database drivers, no embedding logic, no AI provider, and no WebUI. Its sole responsibility is to forward OpenCode plugin hooks to the server API and inject returned context into the chat.
 
-## 3. Non-goals
+The goal is to enable headless deployment (Docker/VPS), centralized infrastructure, and simplified client configuration while preserving full functional parity with the current in-process plugin.
 
-- Do not replace the embedding provider or embedding cache.
-- Do not change the public OpenCode plugin contract.
-- Do not change memory content format, tag generation, or profile-learning prompts unless required by storage changes.
-- Do not change embedding output dimensions. Per-kind truncation only changes how much input text is sent to the embedding model; vectors remain 1024-dimensional for this rollout.
-- Do not implement multi-region replication, read replicas, or hosted database provisioning.
-- Do not attempt transparent runtime failover from Postgres to SQLite after partial writes. Backend selection is explicit.
-- Do not preserve SQLite application-level sharding in the Postgres schema.
+---
 
-## 4. Current Architecture Constraints
+## 2. Scope
 
-The current repository architecture is documented in `codemap.md` and submaps.
+### 2.1 In Scope
 
-Relevant current modules:
+- Standalone server entry point, lifecycle, and configuration
+- API key authentication on all server endpoints
+- REST API surface covering: memory CRUD, semantic search, status, tag listing, user profile access, prompt management, tag migration
+- New API endpoints: context injection and auto-capture trigger
+- Server-side auto-capture pipeline (conversation ingestion → AI analysis → memory storage)
+- Server-side user-profile learning (prompt analysis → profile creation/update)
+- Thin client plugin (`RemoteMemoryClient`) with the same logical interface as `LocalMemoryClient`
+- Client configuration reduced to server URL, API key, and injection-formatting preferences
+- Docker containerization of the server
+- Side-by-side compatibility of old in-process plugin and new thin plugin during migration
 
-- `src/services/client.ts`
-  - `LocalMemoryClient` facade used by plugin hooks, tools, auto-capture, and API handlers.
-  - Currently coordinates embedding, shard selection, SQLite connection lookup, and `VectorSearch`.
+### 2.2 Out of Scope
 
-- `src/services/sqlite/connection-manager.ts`
-  - Caches `bun:sqlite` connections by local file path.
-  - Applies SQLite PRAGMAs and WAL checkpoint behavior.
+- Multi-tenant authentication (OAuth, JWT, user registration)
+- WebSocket or streaming transport (REST-only for v1)
+- Offline support or local caching on the client
+- Admin dashboard or user management UI
+- Horizontal scaling (multiple server instances, load balancing)
+- API versioning strategy
+- Migration tooling to convert existing local plugin instances to the new split
+- Performance regression benchmarking beyond acceptable latency targets
 
-- `src/services/sqlite/shard-manager.ts`
-  - Maintains `metadata.db` and per-scope/per-hash shard rows.
-  - Creates per-shard `.db` files under `CONFIG.storagePath`.
-  - Rolls over when `CONFIG.maxVectorsPerShard` is reached.
+---
 
-- `src/services/sqlite/vector-search.ts`
-  - Persists `memories` rows and vector BLOBs.
-  - Delegates search to the configured vector backend.
-  - Merges content-vector and tag-vector results.
+## 3. Functional Requirements
 
-- `src/services/vector-backends/*`
-  - `USearchBackend` maintains local in-memory ANN indexes.
-  - `ExactScanBackend` brute-forces cosine similarity in TypeScript over BLOB vectors.
+### 3.1 Server
 
-- `src/services/user-profile/user-profile-manager.ts`
-  - Uses SQLite file `user-profiles.db`.
+#### 3.1.1 Standalone Operation
 
-- `src/services/user-prompt/user-prompt-manager.ts`
-  - Uses SQLite file `user-prompts.db`.
+| ID      | Requirement                                                                                                           |
+| ------- | --------------------------------------------------------------------------------------------------------------------- |
+| SRV-001 | The server SHALL start as a standalone Bun HTTP process without any OpenCode plugin dependency.                       |
+| SRV-002 | The server SHALL bind to a configurable host and port (default: `0.0.0.0:4747`).                                      |
+| SRV-003 | The server SHALL initialize the PostgreSQL connection pool on startup and report status via a health endpoint.        |
+| SRV-004 | The server SHALL gracefully shut down on SIGINT/SIGTERM, closing the Postgres pool and completing in-flight requests. |
+| SRV-005 | The server SHALL run indefinitely until terminated (no plugin lifecycle coupling).                                    |
 
-- `src/services/ai/session/ai-session-manager.ts`
-  - Uses SQLite file `ai-sessions.db`.
+#### 3.1.2 Configuration
 
-Important current constraints:
+| ID      | Requirement                                                                                                                                                                                                                                     |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SRV-006 | The server SHALL load configuration from environment variables, with a JSON/JSONC file fallback.                                                                                                                                                |
+| SRV-007 | Required server configuration SHALL include: `POSTGRES_URL`, `EMBEDDING_API_URL`, `EMBEDDING_MODEL`, `EMBEDDING_API_KEY`, `SERVER_API_KEY`.                                                                                                     |
+| SRV-008 | Optional server configuration SHALL include: `SERVER_PORT`, `SERVER_HOST`, `MEMORY_MODEL`, `MEMORY_API_URL`, `MEMORY_API_KEY`, `OPENCODE_PROVIDER`, `OPENCODE_MODEL`, and all current auto-capture, profile-learning, and AI tuning parameters. |
+| SRV-009 | The server SHALL validate required configuration at startup and refuse to start if missing.                                                                                                                                                     |
+| SRV-010 | The server SHALL NOT expose any configuration endpoint that returns secret values (API keys, database URLs).                                                                                                                                    |
 
-- SQLite calls are synchronous; Postgres calls are async.
-- Existing vector storage is `Float32Array` serialized as `BLOB`.
-- Current repository default embedding dimension is `CONFIG.embeddingDimensions = 768`, but this target deployment uses a 1024-dimensional embedding model. The Postgres schema and migration validation must use the resolved runtime `CONFIG.embeddingDimensions`, expected to be `1024` for this rollout.
-- Existing timestamps are epoch milliseconds stored as integers.
-- Existing metadata is stored as serialized JSON text.
-- Current all-project search is implemented by searching all project shards.
+#### 3.1.3 Authentication
 
-## 5. Target Architecture
+| ID      | Requirement                                                                              |
+| ------- | ---------------------------------------------------------------------------------------- |
+| SRV-011 | Every `/api/*` request SHALL require a valid API key.                                    |
+| SRV-012 | The API key SHALL be provided via the `Authorization: Bearer <key>` header.              |
+| SRV-013 | The server SHALL validate the provided key against `SERVER_API_KEY` from configuration.  |
+| SRV-014 | Requests with missing or invalid API keys SHALL receive HTTP 401 with a JSON error body. |
+| SRV-015 | The health endpoint (`GET /api/health`) MAY be excluded from authentication.             |
+| SRV-016 | CORS preflight requests (`OPTIONS`) SHALL NOT require authentication.                    |
 
-### 5.1 Backend Selection
+#### 3.1.4 API Endpoints (Existing Surface)
 
-Add a storage backend configuration concept:
+These endpoints from the current `web-server.ts` / `api-handlers.ts` codebase SHALL be preserved with no semantic changes, only the addition of authentication:
 
-```ts
-storageBackend?: "sqlite" | "postgres";
-postgres?: {
-  url?: string;
-  ssl?: boolean | "require";
-  maxConnections?: number;
-  idleTimeoutSeconds?: number;
-  connectTimeoutSeconds?: number;
-  vectorType?: "vector" | "halfvec";
-  hnswEfSearch?: number;
-  hnswEfConstruction?: number;
-};
-```
+| Method   | Path                            | Handler                         | Description                                 |
+| -------- | ------------------------------- | ------------------------------- | ------------------------------------------- |
+| `GET`    | `/api/tags`                     | `handleListTags`                | List distinct project tags                  |
+| `GET`    | `/api/memories`                 | `handleListMemories`            | Paginated memory listing                    |
+| `POST`   | `/api/memories`                 | `handleAddMemory`               | Create a new memory with embedding          |
+| `PUT`    | `/api/memories/:id`             | `handleUpdateMemory`            | Update memory content and re-embed          |
+| `DELETE` | `/api/memories/:id`             | `handleDeleteMemory`            | Delete a memory (optional cascade)          |
+| `POST`   | `/api/memories/bulk-delete`     | `handleBulkDelete`              | Bulk delete memories                        |
+| `GET`    | `/api/search`                   | `handleSearch`                  | Semantic search across memories and prompts |
+| `GET`    | `/api/stats`                    | `handleStats`                   | Memory counts by scope and type             |
+| `POST`   | `/api/memories/:id/pin`         | `handlePinMemory`               | Pin a memory                                |
+| `POST`   | `/api/memories/:id/unpin`       | `handleUnpinMemory`             | Unpin a memory                              |
+| `GET`    | `/api/migration/tags/detect`    | `handleDetectTagMigration`      | Check for untagged memories                 |
+| `POST`   | `/api/migration/tags/run-batch` | `handleRunTagMigrationBatch`    | Run AI tag migration batch                  |
+| `GET`    | `/api/migration/tags/progress`  | `handleGetTagMigrationProgress` | Get migration progress                      |
+| `DELETE` | `/api/prompts/:id`              | `handleDeletePrompt`            | Delete a prompt (optional cascade)          |
+| `POST`   | `/api/prompts/bulk-delete`      | `handleBulkDeletePrompts`       | Bulk delete prompts                         |
+| `GET`    | `/api/user-profile`             | `handleGetUserProfile`          | Get user profile                            |
+| `GET`    | `/api/user-profile/changelog`   | `handleGetProfileChangelog`     | Get profile changelog                       |
+| `GET`    | `/api/user-profile/snapshot`    | `handleGetProfileSnapshot`      | Get historical profile snapshot             |
+| `POST`   | `/api/user-profile/refresh`     | `handleRefreshProfile`          | Queue profile refresh                       |
 
-Rules:
+| ID      | Requirement                                                                                                                          |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| SRV-017 | All preserved endpoints SHALL maintain the exact request/response schemas defined in `api-handlers.ts` (see Appendix A).             |
+| SRV-018 | All preserved endpoints SHALL accept the same query parameters, path parameters, and request bodies as the current implementation.   |
+| SRV-019 | The server SHALL return HTTP 200 for successful responses with `{ success: true, data: ... }` bodies matching the current format.    |
+| SRV-020 | The server SHALL return HTTP 400/500 for error responses with `{ success: false, error: "..." }` bodies matching the current format. |
 
-- Default remains `"sqlite"` for backwards compatibility during rollout.
-- `"postgres"` requires a resolved Postgres URL.
-- The URL may be supplied through config directly or via the existing secret resolution mechanism.
-- Logs must redact credentials and connection strings.
-- No silent fallback from Postgres to SQLite after startup. Configuration errors should fail fast with actionable messages.
+#### 3.1.5 New API Endpoints
 
-### 5.2 Repository Boundaries
+| ID      | Requirement                                                                                                                                                                                                                                                                                                                                                                         |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SRV-021 | The server SHALL provide `POST /api/context/inject` accepting a JSON body `{ userId, projectTag, sessionID?, maxMemories?, excludeCurrentSession?, maxAgeDays? }` and returning `{ success: true, data: { context: string, memories: Array<{ id, summary, createdAt, similarity }> } }`. The `context` field SHALL contain the formatted `[MEMORY]` block ready for chat injection. |
+| SRV-022 | The `/api/context/inject` endpoint SHALL apply the same business logic as the current `chat.message` hook `injectOn` rules (first-message detection, compaction-awareness, post-compaction re-injection). If `sessionID` is provided, the server SHALL implement the `injectOn` logic. If `sessionID` is omitted, the server SHALL return context unconditionally.                  |
+| SRV-023 | The server SHALL provide `POST /api/auto-capture` accepting a JSON body `{ sessionID, projectTag, projectMetadata: { displayName, userName, userEmail, projectPath, projectName, gitRepoUrl }, conversationMessages: Array<{ role, parts }>, userPrompt: string, promptMessageId: string }` and returning `{ success: true, data: { captured: boolean, memoryId?: string } }`.      |
+| SRV-024 | The `/api/auto-capture` endpoint SHALL execute the exact same pipeline as `performAutoCapture` in `auto-capture.ts`: extract AI content from messages, build markdown context, call the AI provider for summary generation, create embedding, store the memory, and return the result.                                                                                              |
+| SRV-025 | The `/api/auto-capture` endpoint SHALL return `{ success: true, data: { captured: false } }` if the conversation contains no capturable technical content (AI determines type "skip").                                                                                                                                                                                              |
+| SRV-026 | The server SHALL provide `POST /api/user-profile/learn` accepting a JSON body `{ userId, displayName, userName, userEmail, prompts: Array<{ id, content }>, existingProfile? }` and returning `{ success: true, data: { updated: boolean } }`.                                                                                                                                      |
+| SRV-027 | The `/api/user-profile/learn` endpoint SHALL execute the exact same pipeline as `performUserProfileLearning` in `user-memory-learning.ts`.                                                                                                                                                                                                                                          |
+| SRV-028 | The server SHALL provide `GET /api/health` returning `{ status: "ok", version: string, dbConnected: boolean, embeddingReady: boolean, uptime: number }`.                                                                                                                                                                                                                            |
+| SRV-029 | The server SHALL set `dbConnected: true` when the PostgreSQL pool is connected and migrations are complete.                                                                                                                                                                                                                                                                         |
+| SRV-030 | The server SHALL set `embeddingReady: true` when the embedding service has completed warmup.                                                                                                                                                                                                                                                                                        |
 
-Introduce storage interfaces so callers stop importing SQLite managers directly.
+#### 3.1.6 Web UI
 
-Recommended new folder:
+| ID      | Requirement                                                                                                                                                        |
+| ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| SRV-031 | The server SHALL serve the existing Management WebUI static files (`src/web/index.html`, `app.js`, `styles.css`, `i18n.js`, `favicon.ico`) at the root path (`/`). |
+| SRV-032 | The WebUI SHALL use the same API endpoints as the client plugin (no separate WebUI-only endpoints).                                                                |
+| SRV-033 | The WebUI SHALL include the API key in all requests to `/api/*` endpoints (read from browser storage or URL parameter).                                            |
+| SRV-034 | No WebUI code changes beyond API key integration SHALL be required.                                                                                                |
 
-```text
-src/services/storage/
-  types.ts
-  factory.ts
-  sqlite-memory-repository.ts
-  postgres/
-    client.ts
-    migrations.ts
-    vector.ts
-    memory-repository.ts
-    prompt-repository.ts
-    profile-repository.ts
-    ai-session-repository.ts
-```
+#### 3.1.7 Deployment
 
-Core memory repository contract:
+| ID      | Requirement                                                                                              |
+| ------- | -------------------------------------------------------------------------------------------------------- |
+| SRV-035 | The server SHALL be deployable via a provided `Dockerfile` using the `oven/bun` base image.              |
+| SRV-036 | The server SHALL accept all configuration via environment variables when running in Docker.              |
+| SRV-037 | The server SHALL support an optional `docker-compose.yml` for local development with bundled PostgreSQL. |
+| SRV-038 | The server SHALL bind to `0.0.0.0` by default in Docker to accept external connections.                  |
 
-```ts
-export type StorageBackend = "sqlite" | "postgres";
-export type MemoryScopeKind = "user" | "project";
+### 3.2 Client
 
-export interface MemorySearchOptions {
-  queryVector: Float32Array;
-  queryText?: string;
-  scope: MemoryScopeKind;
-  scopeHash: string;
-  containerTag: string;
-  includeAllContainers?: boolean;
-  limit: number;
-  similarityThreshold: number;
+#### 3.2.1 Plugin Compatibility
+
+| ID     | Requirement                                                                                                                                                              |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CL-001 | The client SHALL be an OpenCode plugin conforming to the `@opencode-ai/plugin` Plugin interface.                                                                         |
+| CL-002 | The client SHALL register the same hooks as the current plugin: `chat.message`, `tool.memory`, `event` (`session.idle`, `session.compacted`).                            |
+| CL-003 | The `tool.memory` tool SHALL expose the same modes as the current plugin: `add`, `search`, `profile`, `list`, `forget`, `help`.                                          |
+| CL-004 | The `chat.message` hook SHALL inject memory context as a synthetic text part at the beginning of `output.parts`, identical in format and behavior to the current plugin. |
+
+#### 3.2.2 Remote Memory Client
+
+| ID     | Requirement                                                                                                                                                                                                                   |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CL-005 | The client SHALL use a `RemoteMemoryClient` class that implements the same logical interface as the current `LocalMemoryClient` (`searchMemories`, `addMemory`, `listMemories`, `deleteMemory`, `searchMemoriesBySessionID`). |
+| CL-006 | `RemoteMemoryClient` SHALL translate each method call to an HTTP request against the server API endpoints defined in section 3.1.4.                                                                                           |
+| CL-007 | `RemoteMemoryClient` SHALL handle HTTP errors gracefully, returning result objects with `success: false` and error messages matching the current error format.                                                                |
+| CL-008 | `RemoteMemoryClient` SHALL set `Authorization: Bearer <apiKey>` on every request.                                                                                                                                             |
+| CL-009 | `RemoteMemoryClient` SHALL implement a configurable request timeout (default: 30 seconds).                                                                                                                                    |
+| CL-010 | `RemoteMemoryClient` SHALL NOT cache responses (no local state).                                                                                                                                                              |
+| CL-011 | `RemoteMemoryClient` SHALL NOT perform embedding, AI calls, or database operations.                                                                                                                                           |
+
+#### 3.2.3 chat.message Hook
+
+| ID     | Requirement                                                                                                                                                                                                                                 |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CL-012 | The `chat.message` hook SHALL call the server's `/api/context/inject` endpoint to fetch formatted context.                                                                                                                                  |
+| CL-013 | If the server returns a non-empty `context` string, the client SHALL inject it as a synthetic text part at the front of `output.parts`.                                                                                                     |
+| CL-014 | The client SHALL pass `sessionID` to the server so the server can apply `injectOn` rules (first-message detection, compaction-awareness).                                                                                                   |
+| CL-015 | The client SHALL save the user prompt to the server (via the prompt-save path) when the message is not fully private. The server may expose a `POST /api/prompts` endpoint for this, or the client may defer this to the auto-capture flow. |
+| CL-016 | If the server is unreachable or returns an error, the `chat.message` hook SHALL gracefully continue without injected context (no crash, no blocking). It MAY show a non-blocking error toast.                                               |
+
+#### 3.2.4 session.idle and Auto-Capture
+
+| ID     | Requirement                                                                                                                                                      |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CL-017 | The `session.idle` event handler SHALL fetch the full session conversation history via `ctx.client.session.messages()`.                                          |
+| CL-018 | The client SHALL send the conversation history, user prompt, and project metadata to `POST /api/auto-capture`.                                                   |
+| CL-019 | The client SHALL handle the auto-capture response as fire-and-forget: success/failure SHALL NOT block the plugin.                                                |
+| CL-020 | The client MAY optionally call `POST /api/user-profile/learn` from the idle handler if the current instance is the web-server owner (matching current behavior). |
+
+#### 3.2.5 Configuration
+
+| ID     | Requirement                                                                                                                                                                                                                                    |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CL-021 | The client SHALL load configuration from files matching the current pattern (`~/.config/opencode/opencode-mem.jsonc`, project `.opencode/opencode-mem.jsonc`).                                                                                 |
+| CL-022 | Required client configuration SHALL be: `serverUrl`, `apiKey`.                                                                                                                                                                                 |
+| CL-023 | Optional client configuration SHALL be: `autoCaptureEnabled`, `chatMessage.*` (maxMemories, excludeCurrentSession, maxAgeDays, injectOn), `showErrorToasts`, `showAutoCaptureToasts`, `showUserProfileToasts`.                                 |
+| CL-024 | The client SHALL NOT require any of: `postgres.*`, `embedding*`, `memoryModel`, `memoryApiUrl`, `memoryApiKey`, `memoryProvider`, `opencodeProvider`, `opencodeModel`, `webServer*`, `userProfile*`, `compaction.*`, `aiSessionRetentionDays`. |
+| CL-025 | If `serverUrl` is missing, the client SHALL report a configuration error (same as current `isConfigured()` behavior) and skip hook registration.                                                                                               |
+| CL-026 | The client SHALL validate that `serverUrl` is a valid HTTP/HTTPS URL at startup.                                                                                                                                                               |
+
+---
+
+## 4. Non-Functional Requirements
+
+### 4.1 Latency
+
+| ID     | Requirement                                                                                                                                                                                                                                     |
+| ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| NF-001 | The `/api/context/inject` endpoint SHALL respond within 500ms for typical loads (10 or fewer memories, no cold start).                                                                                                                          |
+| NF-002 | The `/api/auto-capture` endpoint SHALL be considered asynchronous by the client; the server MAY take up to 30 seconds to complete AI processing. The HTTP response SHALL still return within 5 seconds (server processes synchronously for v1). |
+| NF-003 | The `chat.message` hook SHALL NOT add more than 200ms of additional latency compared to the current in-process plugin under local-network conditions.                                                                                           |
+| NF-004 | The health endpoint SHALL respond within 100ms.                                                                                                                                                                                                 |
+
+### 4.2 Reliability
+
+| ID     | Requirement                                                                                                                                                            |
+| ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| NF-005 | The client SHALL NOT crash or propagate unhandled exceptions when the server is unreachable. All server calls SHALL be wrapped in try/catch with graceful degradation. |
+| NF-006 | The server SHALL restart cleanly after unexpected termination. Database migrations SHALL be idempotent.                                                                |
+| NF-007 | The server SHALL handle concurrent requests without data corruption (reuse existing Postgres connection pool with transaction isolation).                              |
+
+### 4.3 Security
+
+| ID     | Requirement                                                                                         |
+| ------ | --------------------------------------------------------------------------------------------------- |
+| NF-008 | All `/api/*` endpoints (except health) SHALL reject requests without valid API keys.                |
+| NF-009 | API keys SHALL be transmitted only in HTTP headers, never in URL query parameters.                  |
+| NF-010 | The server SHALL enforce HTTPS in production (via reverse proxy or direct TLS configuration).       |
+| NF-011 | The server SHALL NOT log API keys, database URLs, or embedding API keys.                            |
+| NF-012 | The server SHALL enforce request body size limits (maximum 10MB, matching current `MAX_BODY_SIZE`). |
+
+---
+
+## 5. Constraints
+
+### 5.1 Preserved Behaviors
+
+| ID     | Constraint                                                                                                                                                                                                               |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| CN-001 | Memory storage SHALL continue to use PostgreSQL with pgvector for vector similarity search.                                                                                                                              |
+| CN-002 | Embeddings SHALL continue to be 1024-dimensional vectors generated by a remote OpenAI-compatible `/v1/embeddings` API. The embedding dimension SHALL be configurable (matching current auto-detection for known models). |
+| CN-003 | Memory identity SHALL continue to be scoped by project tags in the format `opencode_project_<hash>`.                                                                                                                     |
+| CN-004 | User identity SHALL continue to be resolved from project metadata (displayName, userName, userEmail) rather than server-side authentication.                                                                             |
+| CN-005 | The Management WebUI SHALL continue to be a vanilla JavaScript SPA with no framework dependencies.                                                                                                                       |
+| CN-006 | All existing database migrations (in `src/services/storage/postgres/migrations/`) SHALL remain valid and unchanged.                                                                                                      |
+| CN-007 | The existing `config.ts` file format for client-side configuration SHALL be preserved (minimal new fields, no breaking changes to existing fields in the old plugin).                                                    |
+| CN-008 | The old in-process plugin SHALL continue to work without modification during the migration period (Phase 2 side-by-side).                                                                                                |
+| CN-009 | The `@opencode-ai/plugin` SDK API SHALL NOT be changed by this specification.                                                                                                                                            |
+
+### 5.2 Technology Constraints
+
+| ID     | Constraint                                                                                                |
+| ------ | --------------------------------------------------------------------------------------------------------- |
+| CN-010 | The server SHALL be implemented in TypeScript running on Bun.                                             |
+| CN-011 | The client SHALL be implemented in TypeScript as an OpenCode plugin.                                      |
+| CN-012 | HTTP communication SHALL use the fetch API (native to Bun). No additional HTTP client libraries required. |
+| CN-013 | The Docker image SHALL be based on `oven/bun` (not Node.js).                                              |
+
+---
+
+## 6. Acceptance Criteria
+
+### 6.1 Phase 1 — Standalone Server
+
+| AC-001 | The server starts with `bun run src/server.ts` and logs the listening address. |
+| AC-002 | `GET /api/health` returns `{ status: "ok", dbConnected: true, embeddingReady: true }` within 10 seconds of startup. |
+| AC-003 | `GET /api/stats` without an API key returns HTTP 401. |
+| AC-004 | `GET /api/stats` with a valid `Authorization: Bearer <key>` header returns HTTP 200 with correct memory counts. |
+| AC-005 | The existing WebUI loads at `http://localhost:4747/` and displays memories (assuming API key is provided). |
+| AC-006 | `docker build -t opencode-mem-server . && docker run -p 4747:4747 -e ...` starts the server and serves the WebUI. |
+| AC-007 | Memory CRUD operations (add, list, search, update, delete) work identically to the current in-process plugin via HTTP API. |
+| AC-008 | The old in-process plugin continues to work without changes when tested against the same Postgres database. |
+
+### 6.2 Phase 2 — Thin Client Plugin
+
+| AC-009 | The client plugin starts without Postgres, embedding, or AI provider dependencies. |
+| AC-010 | The client plugin registers all three hooks (`chat.message`, `tool.memory`, `event`) and they function when the server is reachable. |
+| AC-011 | `tool.memory add` sends content via HTTP to the server's `POST /api/memories`, and the memory appears in the server's database and WebUI. |
+| AC-012 | `tool.memory search` returns results matching the server's semantic search results. |
+| AC-013 | `chat.message` injection produces the same `[MEMORY]` block format as the current plugin when the server is reachable. |
+| AC-014 | `chat.message` hook does NOT crash when the server is unreachable (graceful degradation). |
+| AC-015 | The client configuration file requires only `serverUrl` and `apiKey` for full functionality. |
+| AC-016 | Side-by-side operation: the old plugin and new plugin can both run against the same Postgres database and produce functionally identical memory search/injection results. |
+
+### 6.3 Phase 3 — Server-Side Auto-Capture and Profile Learning
+
+| AC-017 | `POST /api/auto-capture` with a valid conversation payload creates a memory in the database with `source: "auto-capture"`. |
+| AC-018 | The `session.idle` client hook sends conversation data to `/api/auto-capture` and the resulting memory appears in the WebUI. |
+| AC-019 | `POST /api/user-profile/learn` with valid prompts creates or updates a user profile. |
+| AC-020 | Auto-capture correctly identifies non-technical conversations and returns `captured: false`. |
+| AC-021 | Auto-capture produces memories with AI-generated tags (2-4 tags per memory). |
+
+### 6.4 Phase 4 — Decommission
+
+| AC-022 | The in-process code path (`LocalMemoryClient`, embedding service as plugin dependency, in-process AI provider, in-process web server) is removed from the client plugin source tree. |
+| AC-023 | The server is the sole owner of Postgres connections, embedding calls, AI provider calls, and WebUI serving. |
+| AC-024 | The plugin repository contains two entry points: `src/server.ts` (standalone server) and `src/index.ts` (thin client plugin). |
+| AC-025 | All existing tests (if any) pass, or equivalent test coverage exists for the split architecture. |
+| AC-026 | The README documents both deployment modes: in-process (legacy, continued support) and server-client (recommended). |
+
+---
+
+## 7. Out of Scope (Explicit)
+
+The following capabilities are explicitly excluded from this specification. They may be addressed in future versions:
+
+### 7.1 Multi-Tenant Authentication
+
+- OAuth 2.0, OpenID Connect, or JWT-based user authentication
+- User registration, login, or session management
+- Role-based access control (admin vs. read-only)
+- Per-user data isolation beyond the project-tag pattern
+
+### 7.2 Transport Upgrades
+
+- WebSocket or Server-Sent Events for real-time updates
+- gRPC or protobuf serialization
+- Streaming responses for large result sets
+
+### 7.3 Client-Side Resilience
+
+- Offline mode with local cache and sync
+- Retry with exponential backoff
+- Circuit breaker pattern
+- Response caching on the client
+
+### 7.4 Operations
+
+- Admin dashboard with system metrics, logs viewer, or user management
+- Horizontal scaling (load-balanced server instances, read replicas)
+- Database backup/restore tooling
+- Monitoring, alerting, or observability beyond basic health checks
+- API rate limiting or quota enforcement
+
+### 7.5 Migration Tooling
+
+- Automated conversion of existing plugin configs to the new format
+- Data migration between instances
+- Schema versioning or API version negotiation
+
+### 7.6 Advanced Features
+
+- Multi-modal memory (images, audio)
+- Memory summarization or consolidation across sessions
+- Collaborative/shared project memories
+- Plugin hot-reload or zero-downtime deployment
+
+---
+
+## Appendix A — API Response Schemas (Reference)
+
+### A.1 Success Response
+
+```json
+{
+  "success": true,
+  "data": { ... }
 }
+```
 
-export interface MemoryRow {
-  id: string;
-  content: string;
-  containerTag: string;
-  tags: string[];
-  type?: string;
-  metadata?: Record<string, unknown>;
-  createdAt: number;
-  updatedAt: number;
-  displayName?: string;
-  userName?: string;
-  userEmail?: string;
-  projectPath?: string;
-  projectName?: string;
-  gitRepoUrl?: string;
-  isPinned?: boolean;
-}
+### A.2 Error Response
 
-export interface MemoryRepository {
-  initialize(): Promise<void>;
-  close(): Promise<void>;
-
-  insert(record: MemoryRecord): Promise<void>;
-  delete(memoryId: string): Promise<boolean>;
-  update(record: MemoryRecord): Promise<void>;
-  getById(memoryId: string): Promise<MemoryRow | null>;
-
-  search(options: MemorySearchOptions): Promise<SearchResult[]>;
-  list(args: {
-    scope: MemoryScopeKind;
-    scopeHash: string;
-    containerTag: string;
-    includeAllContainers?: boolean;
-    limit: number;
-  }): Promise<MemoryRow[]>;
-
-  getBySessionId(args: {
-    sessionId: string;
-    scope: MemoryScopeKind;
-    scopeHash: string;
-    limit: number;
-  }): Promise<SearchResult[]>;
-
-  count(args?: { containerTag?: string; scope?: MemoryScopeKind; scopeHash?: string }): Promise<number>;
-  getDistinctTags(args?: { scope?: MemoryScopeKind; scopeHash?: string }): Promise<TagInfo[]>;
-  pin(memoryId: string): Promise<void>;
-  unpin(memoryId: string): Promise<void>;
+```json
+{
+  "success": false,
+  "error": "Human-readable error message"
 }
 ```
 
-`LocalMemoryClient` must expose `pinMemory()` and `unpinMemory()` or all HTTP/API pinning paths must call the repository directly. Postgres mode must not keep any pin/unpin path that calls `vectorSearch.pinMemory()` or SQLite handles directly.
-
-Non-memory repositories should also be abstracted, because user profiles, prompts, and AI sessions currently use SQLite directly:
-
-- `UserPromptRepository`
-- `UserProfileRepository`
-- `AISessionRepository`
-
-The existing managers can either become SQLite repository implementations or wrap repository implementations internally.
-
-### 5.3 Client Choice
-
-Use the `postgres` npm package (`postgres.js`) for the Postgres implementation.
-
-Reasons:
-
-- Works well under Bun.
-- Includes built-in pooling.
-- Ships TypeScript types.
-- Tagged-template API encourages parameterized queries.
-- Automatic prepared statement handling is suitable for repeated repository queries.
-
-Dependency:
-
-```bash
-bun add postgres
-```
-
-### 5.4 Postgres Client Lifecycle
-
-`src/services/storage/postgres/client.ts` owns the client singleton.
-
-Expected behavior:
-
-- Lazy-create the client only for the Postgres backend.
-- Pool defaults:
-  - `max: 10` unless configured otherwise.
-  - `idle_timeout: 30` seconds.
-  - `connect_timeout: 10` seconds.
-  - `ssl: "require"` for remote URLs unless config disables it.
-- `initialize()` runs a health check and migrations.
-- `close()` calls `sql.end()`.
-- All logs redact connection details.
-
-Example shape:
-
-```ts
-import postgres from "postgres";
-
-export type SqlClient = postgres.Sql;
-
-export function getPostgresClient(): SqlClient { /* lazy singleton */ }
-export async function closePostgresClient(): Promise<void> { /* sql.end() */ }
-export async function checkPostgresHealth(): Promise<void> { /* SELECT 1 */ }
-```
-
-### 5.5 Per-Kind Embedding Input Lengths
-
-The embedding service should support different maximum input lengths by embedding purpose. This is independent of vector output dimension: this deployment still stores `vector(1024)` or `halfvec(1024)` regardless of the input length.
-
-Add an embedding kind concept:
-
-```ts
-export type EmbeddingKind = "content" | "tags" | "query" | "migration";
-
-export interface EmbeddingOptions {
-  kind?: EmbeddingKind;
-  truncationSide?: "left" | "right";
-}
-```
-
-Add config:
-
-```ts
-embeddingMaxTokens?: {
-  content?: number;
-  tags?: number;
-  query?: number;
-  migration?: number;
-};
-embeddingTruncationSide?: {
-  content?: "left" | "right";
-  tags?: "left" | "right";
-  query?: "left" | "right";
-  migration?: "left" | "right";
-};
-```
-
-Recommended defaults for the 1024-dimensional model with up to 2048 input tokens:
-
-| Kind | Max tokens | Truncation side | Rationale |
-|---|---:|---|---|
-| `content` | `2048` | `right` | Preserve the beginning of captured memory summaries/code context unless intentionally favoring recency. |
-| `migration` | `2048` | `right` | Re-embed full existing memory content as faithfully as possible. |
-| `query` | `512` | `right` | User search queries are usually short; keep the beginning if someone pastes a long query. |
-| `tags` | `256` | `right` | Tags are short and should not need the full context window. |
-
-vLLM note:
-
-- vLLM supports per-request `truncate_prompt_tokens` for OpenAI-compatible embeddings.
-- Native vLLM truncation keeps the **last** `k` tokens, i.e. left-truncates by dropping the beginning.
-- vLLM does not natively support right truncation.
-
-Therefore:
-
-- For `truncationSide: "left"`, the remote embedding API path may pass `truncate_prompt_tokens: maxTokens` to vLLM.
-- For `truncationSide: "right"`, `opencode-mem` must truncate before sending the request, preserving the first `maxTokens` tokens or a conservative approximation.
-- If token-accurate truncation is unavailable, use a conservative app-side character/word truncation fallback and document that it is approximate.
-- Cache keys must include the embedding kind, max token setting, truncation side, model, and input text so differently truncated embeddings are not mixed.
-
-Call sites should be updated from:
-
-```ts
-embeddingService.embedWithTimeout(text)
-```
-
-to:
-
-```ts
-embeddingService.embedWithTimeout(content, { kind: "content" });
-embeddingService.embedWithTimeout(tags.join(", "), { kind: "tags" });
-embeddingService.embedWithTimeout(query, { kind: "query" });
-embeddingService.embedWithTimeout(memory.content, { kind: "migration" });
-```
-
-## 6. Postgres Schema
-
-### 6.1 Migration Table
-
-```sql
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version INTEGER PRIMARY KEY,
-  description TEXT NOT NULL,
-  applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-```
-
-### 6.2 Extension Requirements
-
-```sql
-CREATE EXTENSION IF NOT EXISTS vector;
-```
-
-Optionally enable `pgcrypto` if UUID generation is delegated to Postgres. Current code generates text IDs in the application, so `pgcrypto` is not required.
-
-### 6.3 Embedding Configuration Table
-
-Tracks the active embedding model and dimension used by vector columns.
-
-```sql
-CREATE TABLE IF NOT EXISTS embedding_config (
-  id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  model_name TEXT NOT NULL,
-  dimensions INTEGER NOT NULL,
-  vector_type TEXT NOT NULL CHECK (vector_type IN ('vector', 'halfvec')),
-  is_active BOOLEAN NOT NULL DEFAULT TRUE,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_embedding_config_active
-ON embedding_config(is_active)
-WHERE is_active = TRUE;
-```
-
-Activation must be transactional so the partial unique index never sees two active rows:
-
-```sql
-BEGIN;
-UPDATE embedding_config SET is_active = FALSE WHERE is_active = TRUE;
-INSERT INTO embedding_config (model_name, dimensions, vector_type, is_active)
-VALUES ($1, $2, $3, TRUE);
-COMMIT;
-```
-
-### 6.4 Memories Table
-
-Postgres replaces all per-shard SQLite `memories` tables with one table.
-
-The schema should be generated with the configured embedding dimension. This deployment uses a `1024`-dimension embedding model.
-
-Recommended initial vector type: `vector(1024)`.
-
-`halfvec(1024)` may be enabled later or through config, but `vector` preserves current full-precision `Float32Array` semantics and avoids precision drift during the first migration.
-
-```sql
-CREATE TABLE IF NOT EXISTS memories (
-  id TEXT PRIMARY KEY,
-
-  scope TEXT NOT NULL CHECK (scope IN ('user', 'project')),
-  scope_hash TEXT NOT NULL,
-  shard_index INTEGER,
-
-  content TEXT NOT NULL,
-  vector vector(1024) NOT NULL,
-  tags_vector vector(1024),
-
-  container_tag TEXT NOT NULL,
-  tags TEXT,
-  type TEXT,
-
-  created_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL,
-
-  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
-  session_id TEXT GENERATED ALWAYS AS (COALESCE(metadata->>'sessionID', metadata->>'sessionId', metadata->>'session_id')) STORED,
-
-  display_name TEXT,
-  user_name TEXT,
-  user_email TEXT,
-  project_path TEXT,
-  project_name TEXT,
-  git_repo_url TEXT,
-  is_pinned BOOLEAN NOT NULL DEFAULT FALSE,
-
-  migrated_from_db_path TEXT,
-  migrated_at TIMESTAMPTZ
-);
-```
-
-Notes:
-
-- `scope`, `scope_hash`, and optional `shard_index` preserve enough source identity to support migration auditing and existing scope behavior.
-- `shard_index` is not used for runtime query routing in the Postgres path.
-- `session_id` is generated from JSONB metadata so session lookup no longer needs `metadata LIKE`. The expression accepts canonical `sessionID` plus likely legacy spellings; migration should still normalize metadata to `sessionID`.
-- Keep `tags` as text initially to minimize behavioral drift. A future migration may add `tags_array TEXT[]`.
-
-### 6.5 Memories Indexes
-
-```sql
-CREATE INDEX IF NOT EXISTS idx_memories_scope
-ON memories(scope, scope_hash);
-
-CREATE INDEX IF NOT EXISTS idx_memories_container_tag
-ON memories(container_tag);
-
-CREATE INDEX IF NOT EXISTS idx_memories_type
-ON memories(type);
-
-CREATE INDEX IF NOT EXISTS idx_memories_created_at
-ON memories(created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_memories_is_pinned
-ON memories(is_pinned);
-
-CREATE INDEX IF NOT EXISTS idx_memories_session_id
-ON memories(session_id)
-WHERE session_id IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_memories_metadata_gin
-ON memories USING GIN(metadata);
-```
-
-Vector indexes should use HNSW for the Postgres backend:
-
-```sql
-CREATE INDEX IF NOT EXISTS idx_memories_vector_hnsw
-ON memories USING hnsw (vector vector_cosine_ops)
-WITH (m = 16, ef_construction = 256);
-
-CREATE INDEX IF NOT EXISTS idx_memories_tags_vector_hnsw
-ON memories USING hnsw (tags_vector vector_cosine_ops)
-WITH (m = 16, ef_construction = 256)
-WHERE tags_vector IS NOT NULL;
-```
-
-`ef_construction` should be configurable via `postgres.hnswEfConstruction`. `256` is the recommended starting point for a 1024-dimensional recall-sensitive memory workload; higher values improve recall at the cost of slower index builds and larger build-time memory use.
-
-Production index creation should support `CONCURRENTLY` when run after data load. `CREATE INDEX CONCURRENTLY` cannot run inside a transaction.
-
-### 6.6 User Prompt Tables
-
-Port `user_prompts` from SQLite:
-
-```sql
-CREATE TABLE IF NOT EXISTS user_prompts (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  message_id TEXT NOT NULL,
-  project_path TEXT,
-  content TEXT NOT NULL,
-  created_at BIGINT NOT NULL,
-  captured SMALLINT NOT NULL DEFAULT 0,
-  user_learning_captured BOOLEAN NOT NULL DEFAULT FALSE,
-  linked_memory_id TEXT REFERENCES memories(id) ON DELETE SET NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts(session_id);
-CREATE INDEX IF NOT EXISTS idx_user_prompts_captured ON user_prompts(captured);
-CREATE INDEX IF NOT EXISTS idx_user_prompts_created ON user_prompts(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_user_prompts_project ON user_prompts(project_path);
-CREATE INDEX IF NOT EXISTS idx_user_prompts_linked ON user_prompts(linked_memory_id);
-CREATE INDEX IF NOT EXISTS idx_user_prompts_user_learning ON user_prompts(user_learning_captured);
-```
-
-`captured` remains `SMALLINT` because current code uses tri-state values:
-
-- `0`: uncaptured,
-- `1`: captured,
-- `2`: claimed/in progress.
-
-### 6.7 User Profile Tables
-
-```sql
-CREATE TABLE IF NOT EXISTS user_profiles (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL UNIQUE,
-  display_name TEXT NOT NULL,
-  user_name TEXT NOT NULL,
-  user_email TEXT NOT NULL,
-  profile_data JSONB NOT NULL,
-  version INTEGER NOT NULL DEFAULT 1,
-  created_at BIGINT NOT NULL,
-  last_analyzed_at BIGINT NOT NULL,
-  total_prompts_analyzed INTEGER NOT NULL DEFAULT 0,
-  is_active BOOLEAN NOT NULL DEFAULT TRUE
-);
-
-CREATE TABLE IF NOT EXISTS user_profile_changelogs (
-  id TEXT PRIMARY KEY,
-  profile_id TEXT NOT NULL REFERENCES user_profiles(id) ON DELETE CASCADE,
-  version INTEGER NOT NULL,
-  change_type TEXT NOT NULL,
-  change_summary TEXT NOT NULL,
-  profile_data_snapshot JSONB NOT NULL,
-  created_at BIGINT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles(user_id);
-CREATE INDEX IF NOT EXISTS idx_user_profiles_is_active ON user_profiles(is_active);
-CREATE INDEX IF NOT EXISTS idx_user_profile_changelogs_profile_id ON user_profile_changelogs(profile_id);
-CREATE INDEX IF NOT EXISTS idx_user_profile_changelogs_version ON user_profile_changelogs(version DESC);
-```
-
-### 6.8 AI Session Tables
-
-```sql
-CREATE TABLE IF NOT EXISTS ai_sessions (
-  id TEXT PRIMARY KEY,
-  provider TEXT NOT NULL,
-  session_id TEXT NOT NULL,
-  conversation_id TEXT,
-  metadata JSONB,
-  created_at BIGINT NOT NULL,
-  updated_at BIGINT NOT NULL,
-  expires_at BIGINT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS ai_messages (
-  id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  ai_session_id TEXT NOT NULL REFERENCES ai_sessions(id) ON DELETE CASCADE,
-  sequence INTEGER NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT NOT NULL,
-  tool_calls JSONB,
-  tool_call_id TEXT,
-  content_blocks JSONB,
-  created_at BIGINT NOT NULL,
-  UNIQUE(ai_session_id, sequence)
-);
-
-CREATE INDEX IF NOT EXISTS idx_ai_sessions_session_id ON ai_sessions(session_id);
-CREATE INDEX IF NOT EXISTS idx_ai_sessions_expires_at ON ai_sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_ai_sessions_provider ON ai_sessions(provider);
-CREATE INDEX IF NOT EXISTS idx_ai_messages_session ON ai_messages(ai_session_id, sequence);
-CREATE INDEX IF NOT EXISTS idx_ai_messages_role ON ai_messages(ai_session_id, role);
-```
-
-Before adding or relying on `UNIQUE(ai_session_id, sequence)` during import, migration must preflight existing SQLite `ai_messages` rows. SQLite currently does not enforce this uniqueness, so duplicate sequences should be reported or deterministically resolved before insertion.
-
-## 7. Vector Serialization
-
-Current SQLite storage:
-
-```ts
-new Uint8Array(vector.buffer)
-```
-
-Postgres/pgvector storage:
-
-- Convert `Float32Array` to a pgvector literal string: `"[0.1,0.2,...]"`.
-- Always cast query and insert parameters to the configured vector type and dimension.
-
-Helpers:
-
-```ts
-export function vectorToPgLiteral(vector: Float32Array): string {
-  return `[${Array.from(vector).join(",")}]`;
-}
-
-export function assertVectorDimensions(vector: Float32Array, dimensions: number): void {
-  if (vector.length !== dimensions) {
-    throw new Error(`Expected ${dimensions} dimensions, received ${vector.length}`);
+### A.3 Paginated Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "items": [ ... ],
+    "total": 100,
+    "page": 1,
+    "pageSize": 20,
+    "totalPages": 5
   }
 }
 ```
 
-For dynamic dimensions, SQL must be generated from validated numeric config, not untrusted user input:
+### A.4 Memory Object
 
-```ts
-const vectorCast = CONFIG.postgres.vectorType === "halfvec"
-  ? `halfvec(${CONFIG.embeddingDimensions})`
-  : `vector(${CONFIG.embeddingDimensions})`;
+```json
+{
+  "type": "memory",
+  "id": "mem_1716000000000_abc123def",
+  "content": "Memory content text",
+  "memoryType": "feature",
+  "tags": ["react", "auth"],
+  "createdAt": "2024-05-18T12:00:00.000Z",
+  "updatedAt": "2024-05-18T12:00:00.000Z",
+  "similarity": 0.85,
+  "metadata": { "source": "manual" },
+  "displayName": "John Doe",
+  "userName": "johndoe",
+  "userEmail": "john@example.com",
+  "projectPath": "/home/user/project",
+  "projectName": "my-project",
+  "gitRepoUrl": "https://github.com/user/repo",
+  "isPinned": false,
+  "linkedPromptId": "prm_..."
+}
 ```
 
-## 8. Search Semantics
+### A.5 Context Injection Request/Response
 
-### 8.1 Scope Filtering
+**Request:**
 
-Current behavior:
-
-- Project search uses one project scope hash.
-- User search uses one user scope hash.
-- All-project search includes all project memories and ignores one specific `container_tag`.
-
-Postgres behavior:
-
-- For project/user scope: filter by `scope` and `scope_hash`.
-- For all-project scope: filter by `scope = 'project'` and omit `scope_hash` and `container_tag` filters.
-
-### 8.2 Weighted Vector Search
-
-pgvector cosine distance operator: `<=>`.
-
-Similarity is `1 - distance`.
-
-The Postgres path should preserve:
-
-```ts
-similarity = contentSim * 0.6 + finalTagsSim * 0.4;
-finalTagsSim = Math.max(tagsSim, exactMatchBoost);
+```json
+{
+  "sessionID": "sess_abc123",
+  "projectTag": "opencode_project_a1b2c3",
+  "userId": "user@example.com",
+  "maxMemories": 3,
+  "excludeCurrentSession": true,
+  "maxAgeDays": null
+}
 ```
 
-Recommended implementation: retrieve a candidate set using indexed vector order, compute weighted score in SQL, then perform exact tag boost in TypeScript for behavioral parity.
+**Response:**
 
-Candidate SQL shape:
-
-```sql
-WITH candidates AS (
-  (
-    SELECT id
-    FROM memories
-    WHERE scope = $2
-      AND ($3::text = '' OR scope_hash = $3)
-      AND ($4::text = '' OR container_tag = $4)
-    ORDER BY vector <=> $1::vector(1024)
-    LIMIT $5
-  )
-  UNION
-  (
-    SELECT id
-    FROM memories
-    WHERE scope = $2
-      AND ($3::text = '' OR scope_hash = $3)
-      AND ($4::text = '' OR container_tag = $4)
-      AND tags_vector IS NOT NULL
-    ORDER BY tags_vector <=> $1::vector(1024)
-    LIMIT $5
-  )
-)
-SELECT
-  m.*,
-  1 - (m.vector <=> $1::vector(1024)) AS content_sim,
-  CASE
-    WHEN m.tags_vector IS NULL THEN 0
-    ELSE 1 - (m.tags_vector <=> $1::vector(1024))
-  END AS tags_sim
-FROM memories m
-JOIN candidates c ON c.id = m.id;
+```json
+{
+  "success": true,
+  "data": {
+    "context": "[MEMORY]\n\nUser Preferences:\n- [explicit] Prefers code without comments\n\nProject Knowledge:\n- [85%] Added authentication middleware\n- [72%] Fixed pagination bug in API",
+    "memories": [
+      {
+        "id": "mem_001",
+        "summary": "Added authentication middleware",
+        "createdAt": "2024-05-18T12:00:00.000Z",
+        "similarity": 0.85
+      }
+    ],
+    "profileInjected": true
+  }
+}
 ```
 
-Then TypeScript computes exact-match boost, final similarity, threshold filtering, sort, and limit.
+### A.6 Auto-Capture Request/Response
 
-Rationale:
+**Request:**
 
-- `ORDER BY vector <=> query LIMIT n` can use the HNSW index.
-- Unioning content and tag candidates approximates current two-query behavior.
-- Final scoring stays aligned with current code.
-- It avoids relying on an expression order like `(0.6 * content + 0.4 * tags)` that may not use a vector index efficiently.
-- The `($3 = '' OR scope_hash = $3)` clause preserves current all-project behavior, where an empty scope hash means “all project scopes,” not a literal empty hash.
-
-### 8.3 Thresholds and Limits
-
-Current code searches `limit * 4` per vector kind per shard. Postgres should use a candidate multiplier:
-
-```ts
-candidateLimit = Math.max(limit * 4, 50)
+```json
+{
+  "sessionID": "sess_abc123",
+  "projectTag": "opencode_project_a1b2c3",
+  "projectMetadata": {
+    "displayName": "John Doe",
+    "userName": "johndoe",
+    "userEmail": "john@example.com",
+    "projectPath": "/home/user/project",
+    "projectName": "my-project",
+    "gitRepoUrl": "https://github.com/user/repo"
+  },
+  "conversationMessages": [
+    {
+      "role": "user",
+      "parts": [{ "type": "text", "text": "Add auth middleware" }]
+    },
+    {
+      "role": "assistant",
+      "parts": [{ "type": "text", "text": "I've added..." }]
+    }
+  ],
+  "userPrompt": "Add auth middleware to the Express app",
+  "promptMessageId": "msg_xyz789"
+}
 ```
 
-Then apply `CONFIG.similarityThreshold` after final score computation.
+**Response:**
 
-### 8.4 HNSW Query Tuning
-
-Support optional `hnsw.ef_search`:
-
-- default: database default unless configured.
-- if configured, set per transaction/query with `SET LOCAL hnsw.ef_search = <value>` inside an explicit transaction.
-- recommended value for recall-sensitive use: `128`.
-
-## 9. Migration Requirements
-
-Add a migration command/service that reads current SQLite data and writes Postgres data.
-
-Required behavior:
-
-- Discover all SQLite shards via `metadata.db` and `ShardManager` metadata.
-- Read `memories` rows from each shard.
-- Decode `vector` and `tags_vector` BLOBs into `Float32Array`.
-- Validate vector dimensions against Postgres schema dimension.
-- Insert memory rows into Postgres in batches.
-- Preserve IDs, content, tags, type, timestamps, metadata, display/user/project/git fields, pinned state, source scope/hash/shard info.
-- Migrate user prompts, user profiles, profile changelogs, AI sessions, and AI messages.
-- Be idempotent by using primary keys and `ON CONFLICT` behavior.
-- Provide `--dry-run` mode.
-- Provide count verification.
-- Avoid deleting SQLite source data by default.
-- Convert `is_pinned` from SQLite integer `0`/`1` to Postgres boolean.
-- Validate and report `container_tag` values that cannot be parsed into the expected scope/hash format.
-- Normalize metadata session keys during import. The canonical key is `sessionID`; if legacy rows contain `session_id` or `sessionId`, normalize to `sessionID` or make the generated column use `COALESCE`.
-- Use controlled batch concurrency so migration does not exhaust the Postgres connection pool.
-- Warn users that after switching to Postgres and writing new memories, switching back to SQLite will not include those Postgres-only writes unless a reverse export is implemented.
-
-Recommended command shape:
-
-```text
-opencode-mem migrate-to-postgres \
-  --storage-path ~/.opencode-mem/data \
-  --batch-size 500 \
-  --dry-run
+```json
+{
+  "success": true,
+  "data": {
+    "captured": true,
+    "memoryId": "mem_1716000000000_abc123def"
+  }
+}
 ```
 
-The migration command should read the Postgres URL from normal config/secret resolution by default. A `--postgres-url` override may exist for scripts, but docs and implementation should treat config as the primary source.
+---
 
-## 10. Compatibility Requirements
+## Appendix B — Configuration Schemas
 
-- Existing SQLite backend should continue to work while `storageBackend` defaults to `sqlite`.
-- Public tool/API result shapes should stay compatible.
-- Existing config files without Postgres settings should continue to load.
-- `CONFIG.maxVectorsPerShard` and `CONFIG.vectorBackend` remain relevant only for SQLite.
-- Postgres backend should ignore `maxVectorsPerShard` and local vector backend selection.
+### B.1 Server Configuration
 
-## 11. Operational Requirements
+| Key                                  | Required | Default         | Description                                                             |
+| ------------------------------------ | -------- | --------------- | ----------------------------------------------------------------------- |
+| `SERVER_PORT`                        | No       | `4747`          | HTTP listen port                                                        |
+| `SERVER_HOST`                        | No       | `0.0.0.0`       | HTTP listen host                                                        |
+| `SERVER_API_KEY`                     | **Yes**  | —               | API key for client authentication                                       |
+| `POSTGRES_URL`                       | **Yes**  | —               | PostgreSQL connection URL (supports `env://` and `file://` secret refs) |
+| `POSTGRES_SSL`                       | No       | `"require"`     | SSL mode                                                                |
+| `POSTGRES_MAX_CONNECTIONS`           | No       | `10`            | Connection pool size                                                    |
+| `POSTGRES_IDLE_TIMEOUT_SECONDS`      | No       | `30`            | Idle connection timeout                                                 |
+| `POSTGRES_CONNECT_TIMEOUT_SECONDS`   | No       | `10`            | Connection timeout                                                      |
+| `POSTGRES_VECTOR_TYPE`               | No       | `"vector"`      | pgvector type (`vector` or `halfvec`)                                   |
+| `POSTGRES_HNSW_EF_SEARCH`            | No       | `128`           | HNSW ef_search parameter                                                |
+| `POSTGRES_HNSW_EF_CONSTRUCTION`      | No       | `256`           | HNSW ef_construction parameter                                          |
+| `EMBEDDING_API_URL`                  | **Yes**  | —               | OpenAI-compatible embeddings endpoint                                   |
+| `EMBEDDING_API_KEY`                  | **Yes**  | —               | Embeddings API key                                                      |
+| `EMBEDDING_MODEL`                    | **Yes**  | —               | Embedding model name                                                    |
+| `EMBEDDING_DIMENSIONS`               | No       | auto-detected   | Output vector dimensions                                                |
+| `EMBEDDING_MAX_TOKENS_CONTENT`       | No       | `2048`          | Max tokens for content embedding                                        |
+| `EMBEDDING_MAX_TOKENS_TAGS`          | No       | `256`           | Max tokens for tag embedding                                            |
+| `EMBEDDING_MAX_TOKENS_QUERY`         | No       | `512`           | Max tokens for query embedding                                          |
+| `SIMILARITY_THRESHOLD`               | No       | `0.6`           | Minimum similarity score for search                                     |
+| `MAX_MEMORIES`                       | No       | `10`            | Max memories per search                                                 |
+| `INJECT_PROFILE`                     | No       | `true`          | Include user profile in context                                         |
+| `MEMORY_PROVIDER`                    | No       | `"openai-chat"` | AI provider for auto-capture                                            |
+| `MEMORY_MODEL`                       | No       | —               | Model for auto-capture (if not using opencode provider)                 |
+| `MEMORY_API_URL`                     | No       | —               | API URL for auto-capture (if not using opencode provider)               |
+| `MEMORY_API_KEY`                     | No       | —               | API key for auto-capture (if not using opencode provider)               |
+| `MEMORY_TEMPERATURE`                 | No       | `0.3`           | AI temperature (or `false` to omit)                                     |
+| `OPENCODE_PROVIDER`                  | No       | —               | OpenCode provider name for auto-capture (takes precedence)              |
+| `OPENCODE_MODEL`                     | No       | —               | OpenCode model for auto-capture                                         |
+| `AUTO_CAPTURE_MAX_ITERATIONS`        | No       | `5`             | Max AI tool-call loop iterations                                        |
+| `AUTO_CAPTURE_ITERATION_TIMEOUT`     | No       | `30000`         | Timeout per iteration (ms)                                              |
+| `AUTO_CAPTURE_LANGUAGE`              | No       | `"auto"`        | Language for summaries                                                  |
+| `USER_PROFILE_ANALYSIS_INTERVAL`     | No       | `10`            | Prompts before profile analysis                                         |
+| `USER_PROFILE_MAX_PREFERENCES`       | No       | `20`            | Max preferences in profile                                              |
+| `USER_PROFILE_MAX_PATTERNS`          | No       | `15`            | Max patterns in profile                                                 |
+| `USER_PROFILE_MAX_WORKFLOWS`         | No       | `10`            | Max workflows in profile                                                |
+| `USER_PROFILE_CONFIDENCE_DECAY_DAYS` | No       | `30`            | Confidence decay period                                                 |
+| `USER_PROFILE_CHANGELOG_RETENTION`   | No       | `5`             | Changelog versions to keep                                              |
+| `WEB_SERVER_ALLOWED_ORIGIN`          | No       | `"*"`           | CORS allowed origin                                                     |
 
-- Startup should validate Postgres connectivity and pgvector availability when `storageBackend = "postgres"`.
-- Startup should validate `CONFIG.embeddingDimensions` matches the active Postgres vector column dimension/embedding config.
-- Query failures should log actionable messages without leaking secrets.
-- Connection pool should close on plugin shutdown.
-- Remote DB latency should be controlled through query batching and single-query search paths.
-- Admin/status endpoints should expose backend type and health status without exposing credentials.
+### B.2 Client Configuration
 
-## 12. Testing Requirements
+| Key                                 | Required | Default     | Description                                    |
+| ----------------------------------- | -------- | ----------- | ---------------------------------------------- |
+| `serverUrl`                         | **Yes**  | —           | Server HTTP URL (e.g. `http://localhost:4747`) |
+| `apiKey`                            | **Yes**  | —           | Server API key                                 |
+| `autoCaptureEnabled`                | No       | `true`      | Enable auto-capture on idle                    |
+| `chatMessage.enabled`               | No       | `true`      | Enable chat message context injection          |
+| `chatMessage.maxMemories`           | No       | `3`         | Max memories to inject                         |
+| `chatMessage.excludeCurrentSession` | No       | `true`      | Exclude current session memories               |
+| `chatMessage.maxAgeDays`            | No       | —           | Maximum age of injected memories               |
+| `chatMessage.injectOn`              | No       | `"first"`   | When to inject (`"first"` or `"always"`)       |
+| `showAutoCaptureToasts`             | No       | `true`      | Show auto-capture UI toasts                    |
+| `showUserProfileToasts`             | No       | `true`      | Show profile update UI toasts                  |
+| `showErrorToasts`                   | No       | `true`      | Show error UI toasts                           |
+| `memory.defaultScope`               | No       | `"project"` | Default scope for list/search                  |
 
-### Unit Tests
+---
 
-- `vectorToPgLiteral()` and BLOB decode conversion.
-- Repository factory selection.
-- Config parsing and secret resolution for Postgres settings.
-- Search scoring parity function for content/tags/exact-match boost.
+## Appendix C — Migration Path
 
-### Contract Tests
+### C.1 Phase Timeline
 
-Shared test suite for `MemoryRepository` implementations:
+| Phase                           | Duration | Deliverable                                                   |
+| ------------------------------- | -------- | ------------------------------------------------------------- |
+| Phase 1 — Standalone Server     | Week 1-2 | `src/server.ts`, `Dockerfile`, auth middleware, server config |
+| Phase 2 — Thin Client           | Week 3-4 | `RemoteMemoryClient`, thin plugin, side-by-side validation    |
+| Phase 3 — Server-Side Pipelines | Week 5-6 | Server-side auto-capture, profile learning, new endpoints     |
+| Phase 4 — Decommission          | Week 7   | Remove in-process code, documentation, final testing          |
 
-- insert/get/list/delete.
-- project scope search.
-- all-project search.
-- tags-vector ranking.
-- exact tag boost.
-- session ID lookup.
-- pin/unpin.
-- count and distinct tags.
+### C.2 Backward Compatibility During Migration
 
-### Postgres Integration Tests
+1. The old in-process plugin SHALL continue to function throughout all phases.
+2. Both old and new plugins SHALL target the same Postgres database schema.
+3. Both old and new plugins SHALL produce identical search results for the same queries.
+4. Configuration files for the old plugin SHALL NOT require changes.
+5. After Phase 4, the old plugin MAY be deprecated but SHALL remain functional.
 
-- Run against PostgreSQL with pgvector enabled.
-- Apply migrations from a clean database.
-- Verify HNSW indexes exist.
-- Verify vector search returns expected ordering for deterministic vectors.
-- Verify JSONB metadata/session queries.
+---
 
-### Migration Tests
+## Appendix D — Glossary
 
-- Fixture SQLite shard set to Postgres.
-- Count comparison by table.
-- Vector integrity comparison using cosine similarity or exact float comparison before insertion.
-- Idempotent rerun.
-
-## 13. Risks and Mitigations
-
-| Risk | Mitigation |
-|---|---|
-| Sync-to-async refactor affects many call sites | Introduce repository interfaces first and let TypeScript identify missing awaits. |
-| Search ranking drift | Keep final weighted scoring and exact tag boost in TypeScript after pgvector candidate retrieval. Add parity tests. |
-| Vector dimension mismatch | Validate at application boundary and startup; store active embedding config in Postgres. |
-| Remote DB unavailable | Fail fast for Postgres backend; keep SQLite as config-selectable compatibility backend. |
-| Connection string leakage | Redact URLs in logs and errors. Use secret resolver. |
-| HNSW index build locks/slowdowns | Use `CREATE INDEX CONCURRENTLY` for production post-load builds; build after bulk migration. |
-| JSON metadata imported incorrectly as string | Parse SQLite metadata text into JSON before inserting JSONB. Validate `jsonb_typeof(metadata) = 'object'`. |
-| Postgres path accidentally uses SQLite shard assumptions | Make Postgres repository use `scope`/`scope_hash`, not `ShardInfo.dbPath`, for runtime routing. |
-| Bun TLS differences with remote Postgres | Test against the target provider early; document CA/SNI troubleshooting and use proper CA configuration rather than logging or disabling TLS silently. |
-| AI message duplicate sequences block migration | Preflight duplicate `(ai_session_id, sequence)` rows before adding/enforcing the unique constraint, or resolve conflicts during import. |
-| PG-only foreign key behavior differs from SQLite | Document that deleting memories in Postgres can null `user_prompts.linked_memory_id`; update tests to expect backend-specific cleanup semantics. |
-
-## 14. Acceptance Criteria
-
-- `storageBackend: "postgres"` runs without using SQLite memory shard files for memory CRUD/search.
-- pgvector extension and required tables/indexes are created by migrations.
-- `memoryClient.addMemory`, `searchMemories`, `listMemories`, `deleteMemory`, and `searchMemoriesBySessionID` work with Postgres.
-- Auto-capture and user-profile learning work against Postgres-backed repositories.
-- User prompts, user profiles, and AI sessions are persisted in Postgres when selected.
-- SQLite remains usable when selected by config.
-- Migration tool can move existing SQLite data to Postgres and verify counts.
-- Typecheck passes.
-- Existing SQLite tests pass or are updated to the repository interface.
-- Postgres integration tests pass in an environment with pgvector.
+| Term                   | Definition                                                                                                         |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Plugin**             | An OpenCode extension conforming to the `@opencode-ai/plugin` Plugin interface. Runs in-process with OpenCode.     |
+| **Server**             | The standalone Bun HTTP service that hosts Postgres, embeddings, AI providers, and the WebUI.                      |
+| **Client**             | The thin OpenCode plugin that communicates with the server over HTTP.                                              |
+| **LocalMemoryClient**  | The current in-process facade that wraps embedding and Postgres calls directly.                                    |
+| **RemoteMemoryClient** | The new HTTP-based facade that calls the server API instead of local resources.                                    |
+| **Auto-capture**       | The pipeline that analyzes conversation history via AI to extract and store technical memories.                    |
+| **Profile learning**   | The pipeline that analyzes user prompts to build and maintain a user preference/profile document.                  |
+| **Context injection**  | The process of inserting relevant memories and profile data into the chat message as a synthetic `[MEMORY]` block. |
+| **Project tag**        | A unique identifier in the format `opencode_project_<hash>` used to shard memories by project.                     |
+| **pgvector**           | PostgreSQL extension providing vector storage and HNSW similarity search.                                          |

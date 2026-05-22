@@ -255,9 +255,9 @@ export class PostgresMemoryRepository implements MemoryRepository {
     const { scope, hash } = extractScopeFromContainerTag(record.containerTag);
     const metadata = parseMetadata(record.metadata) ?? {};
 
-    const vectorLit = vectorToPgLiteral(record.vector) + "::" + vectorCast;
+    const vectorLit = "'" + vectorToPgLiteral(record.vector) + "'::" + vectorCast;
     const tagsVectorLit = record.tagsVector
-      ? vectorToPgLiteral(record.tagsVector) + "::" + vectorCast
+      ? "'" + vectorToPgLiteral(record.tagsVector) + "'::" + vectorCast
       : null;
 
     await sql`
@@ -313,9 +313,9 @@ export class PostgresMemoryRepository implements MemoryRepository {
     const { scope, hash } = extractScopeFromContainerTag(record.containerTag);
     const metadata = parseMetadata(record.metadata) ?? {};
 
-    const vectorLit = vectorToPgLiteral(record.vector) + "::" + vectorCast;
+    const vectorLit = "'" + vectorToPgLiteral(record.vector) + "'::" + vectorCast;
     const tagsVectorLit = record.tagsVector
-      ? vectorToPgLiteral(record.tagsVector) + "::" + vectorCast
+      ? "'" + vectorToPgLiteral(record.tagsVector) + "'::" + vectorCast
       : null;
 
     await sql`
@@ -539,10 +539,10 @@ export class PostgresMemoryRepository implements MemoryRepository {
     if (tagsVector) {
       assertVectorDimensions(tagsVector, dims);
     }
-
-    const vectorLit = vectorToPgLiteral(vector) + "::" + vectorCast;
-    const tagsVectorLit = tagsVector ? vectorToPgLiteral(tagsVector) + "::" + vectorCast : null;
-
+    const vectorLit = "'" + vectorToPgLiteral(vector) + "'::" + vectorCast;
+    const tagsVectorLit = tagsVector
+      ? "'" + vectorToPgLiteral(tagsVector) + "'::" + vectorCast
+      : null;
     await sql`
       UPDATE memories SET
         tags = ${tags},

@@ -8,9 +8,12 @@
 // ── Vector → pgvector literal ──
 
 /**
- * Convert a Float32Array to a pgvector literal string suitable for
- * interpolation into parameterised SQL (always cast with `::vector(N)` or
- * `::halfvec(N)` at the call site).
+ * Convert a Float32Array to a pgvector literal string (unquoted).
+ *
+ * For raw SQL (via sql.unsafe()): wrap in quotes yourself:
+ *   `'${vectorToPgLiteral(vec)}'::vector(1024)`
+ *
+ * For parameterised queries: pass as-is, Postgres will cast via ::vector(N).
  *
  * Example: `Float32Array([0.1, 0.2, 0.3])` → `"[0.1,0.2,0.3]"`
  */

@@ -16,26 +16,23 @@ import {
 // ── vectorToPgLiteral ──
 
 describe("vectorToPgLiteral", () => {
-  it("formats a Float32Array as a pgvector literal", () => {
-    // Use exact-representable float32 values to avoid IEEE 754 rounding surprises.
+  it("formats a Float32Array as a pgvector literal (unquoted)", () => {
     const vec = new Float32Array([1, 2, 3]);
     expect(vectorToPgLiteral(vec)).toBe("[1,2,3]");
   });
 
   it("handles a single-element vector", () => {
     const vec = new Float32Array([1.5]);
-    // 1.5 is exact in float32.
     expect(vectorToPgLiteral(vec)).toBe("[1.5]");
   });
 
-  it("handles a 768-dimension vector (count only)", () => {
-    const vec = new Float32Array(768).fill(0.5);
+  it("handles a 1024-dimension vector (count only)", () => {
+    const vec = new Float32Array(1024).fill(0.5);
     const lit = vectorToPgLiteral(vec);
     expect(lit.startsWith("[")).toBe(true);
     expect(lit.endsWith("]")).toBe(true);
-    // 768 values → 767 commas
     const commas = lit.split(",").length - 1;
-    expect(commas).toBe(767);
+    expect(commas).toBe(1023);
   });
 
   it("handles zeros", () => {
@@ -43,7 +40,6 @@ describe("vectorToPgLiteral", () => {
   });
 
   it("handles negative values", () => {
-    // Use integers to avoid float32 rounding.
     expect(vectorToPgLiteral(new Float32Array([-1, 2]))).toBe("[-1,2]");
   });
 });

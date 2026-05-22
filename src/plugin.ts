@@ -1,4 +1,4 @@
-// src/plugin.ts
+// src/plugin.ts — Phase 4 update
 import type { PluginModule } from "@opencode-ai/plugin";
 import pkg from "../package.json" with { type: "json" };
 
@@ -7,17 +7,20 @@ export const id =
 
 async function resolvePlugin() {
   try {
-    const { initClientConfig } = await import("./config.js");
+    const { initClientConfig, isClientConfigured } = await import("./config.js");
     initClientConfig(process.cwd());
-    const { isClientConfigured } = await import("./config.js");
     if (isClientConfigured()) {
       const { OpenCodeMemPlugin } = await import("./index-remote.js");
+      console.log("[opencode-mem] Using remote server-client mode");
       return OpenCodeMemPlugin;
     }
   } catch {
-    // Fall through to in-process plugin
+    /* fall through */
   }
 
+  console.warn(
+    "[opencode-mem] Using legacy in-process mode. Configure serverUrl + apiKey for server-client mode."
+  );
   const { OpenCodeMemPlugin } = await import("./index.js");
   return OpenCodeMemPlugin;
 }

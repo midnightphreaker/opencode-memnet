@@ -11,19 +11,19 @@
 
 ## Directory Map
 
-| Directory                        | Responsibility Summary                                                                                                                                             | Detailed Map                                         |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------- |
-| `src/`                           | Plugin entry surface: ESM export (`plugin.ts`), lifecycle orchestration (`index.ts`), configuration loader with JSONC merging and secret resolution (`config.ts`). | [View Map](src/codemap.md)                           |
-| `src/types/`                     | Shared type contracts: `MemoryType`, `MemoryMetadata`, `AIProviderType`. Single barrel file.                                                                       | [View Map](src/types/codemap.md)                     |
-| `src/web/`                       | Management WebUI: vanilla JS SPA for browsing, searching, and managing memories and user profiles with prompt→memory linked views.                                 | [View Map](src/web/codemap.md)                       |
-| `src/services/`                  | Core service layer: `LocalMemoryClient` facade, auto-capture pipeline, user-profile learning, HTTP API handlers, privacy/embedding/tags utilities.                 | [View Map](src/services/codemap.md)                  |
-| `src/services/ai/`               | AI provider abstraction: factory routes to OpenAI chat completions provider; opencode SDK structured-output integration; provider config resolution.               | [View Map](src/services/ai/codemap.md)               |
-| `src/services/ai/providers/`     | Provider implementations: `BaseAIProvider` abstract contract, `OpenAIChatCompletionProvider` with bounded tool-call iteration loops and session persistence.       | [View Map](src/services/ai/providers/codemap.md)     |
-| `src/services/ai/tools/`         | Tool schema contracts: `ChatCompletionTool` interface shared between tool definitions and provider implementations.                                                | [View Map](src/services/ai/tools/codemap.md)         |
-| `src/services/ai/validators/`    | AI output validation: `UserProfileValidator` with two-phase structural/semantic checks, accumulating-error pattern.                                                | [View Map](src/services/ai/validators/codemap.md)    |
-| `src/services/storage/`          | Storage abstraction: repository interfaces (`MemoryRepository`, etc.) and factory routing to Postgres implementations.                                             | [View Map](src/services/storage/codemap.md)          |
-| `src/services/storage/postgres/` | PostgreSQL + pgvector: lazy client singleton, HNSW vector search with weighted scoring, 10 schema migrations, atomic CRUD operations.                              | [View Map](src/services/storage/postgres/codemap.md) |
-| `src/services/user-profile/`     | Profile data model: typed `UserProfile`/`UserProfileData` interfaces and defensive JSON-parsing utilities (`safeArray`, `safeObject`).                             | [View Map](src/services/user-profile/codemap.md)     |
+| Directory                        | Responsibility Summary                                                                                                                                                                                                                                                                                        | Detailed Map                                         |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `src/`                           | Plugin entry surface: ESM export (`plugin.ts`), lifecycle orchestration (`index.ts`), thin remote client plugin (`index-remote.ts`), standalone headless server (`server.ts`), server config from env vars (`server-config.ts`), configuration loader with JSONC merging and secret resolution (`config.ts`). | [View Map](src/codemap.md)                           |
+| `src/types/`                     | Shared type contracts: `MemoryType`, `MemoryMetadata`, `AIProviderType`. Single barrel file.                                                                                                                                                                                                                  | [View Map](src/types/codemap.md)                     |
+| `src/web/`                       | Management WebUI: vanilla JS SPA for browsing, searching, and managing memories and user profiles with prompt→memory linked views.                                                                                                                                                                            | [View Map](src/web/codemap.md)                       |
+| `src/services/`                  | Core service layer: `LocalMemoryClient` facade, auto-capture pipeline, user-profile learning, HTTP API handlers, privacy/embedding/tags utilities.                                                                                                                                                            | [View Map](src/services/codemap.md)                  |
+| `src/services/ai/`               | AI provider abstraction: factory routes to OpenAI chat completions provider; opencode SDK structured-output integration; provider config resolution.                                                                                                                                                          | [View Map](src/services/ai/codemap.md)               |
+| `src/services/ai/providers/`     | Provider implementations: `BaseAIProvider` abstract contract, `OpenAIChatCompletionProvider` with bounded tool-call iteration loops and session persistence.                                                                                                                                                  | [View Map](src/services/ai/providers/codemap.md)     |
+| `src/services/ai/tools/`         | Tool schema contracts: `ChatCompletionTool` interface shared between tool definitions and provider implementations.                                                                                                                                                                                           | [View Map](src/services/ai/tools/codemap.md)         |
+| `src/services/ai/validators/`    | AI output validation: `UserProfileValidator` with two-phase structural/semantic checks, accumulating-error pattern.                                                                                                                                                                                           | [View Map](src/services/ai/validators/codemap.md)    |
+| `src/services/storage/`          | Storage abstraction: repository interfaces (`MemoryRepository`, etc.) and factory routing to Postgres implementations.                                                                                                                                                                                        | [View Map](src/services/storage/codemap.md)          |
+| `src/services/storage/postgres/` | PostgreSQL + pgvector: lazy client singleton, HNSW vector search with weighted scoring, 10 schema migrations, atomic CRUD operations.                                                                                                                                                                         | [View Map](src/services/storage/postgres/codemap.md) |
+| `src/services/user-profile/`     | Profile data model: typed `UserProfile`/`UserProfileData` interfaces and defensive JSON-parsing utilities (`safeArray`, `safeObject`).                                                                                                                                                                        | [View Map](src/services/user-profile/codemap.md)     |
 
 ## Core Modules
 
@@ -57,6 +57,7 @@ HTTP request handlers for the local API server. Routes user actions (CRUD, searc
 ### Supporting Services
 
 - `src/services/client.ts` — `LocalMemoryClient` facade hiding embedding and storage details.
+- `src/services/remote-client.ts` — HTTP client: `RemoteMemoryClient` class with CRUD, search, context injection, and auto-capture methods for server-client mode.
 - `src/services/auto-capture.ts` — idle-event-driven automatic memory capture.
 - `src/services/user-memory-learning.ts` — user-profile learning workflows.
 - `src/services/web-server.ts` / `web-server-worker.ts` — local HTTP server and Management WebUI.
@@ -66,6 +67,13 @@ HTTP request handlers for the local API server. Routes user actions (CRUD, searc
 ### Types — `src/types/`
 
 Shared public TypeScript contracts, including exported memory and provider types.
+
+### Server-Client Architecture
+
+The plugin supports two modes of operation:
+
+- **In-process (legacy)**: All services (storage, embedding, AI) run inside the OpenCode process. This is the default when no `serverUrl` is configured. Uses `src/index.ts` as the plugin factory.
+- **Server-client**: A standalone headless server (`src/server.ts`) runs storage, embedding, and business logic independently. The plugin (`src/index-remote.ts`) connects via HTTP using `RemoteMemoryClient` (`src/services/remote-client.ts`). Activated when `serverUrl` + `apiKey` are configured. `plugin.ts` auto-detects the mode at load time.
 
 ## Architectural Flow
 

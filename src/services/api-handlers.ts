@@ -11,6 +11,7 @@ import type {
   MemoryRepository,
   UserPromptRepository,
   UserProfileRepository,
+  UserProfileData,
   MemoryRow,
   MemoryRecord,
   MemoryScopeKind,
@@ -1283,13 +1284,102 @@ export async function handleAutoCapture(data: {
   }
 }
 
-// Phase 2: Stub — full implementation in Phase 3
-export async function handleUserProfileLearn(
-  _data: any
-): Promise<ApiResponse<{ updated: boolean }>> {
-  return {
-    success: false,
-    error:
-      "Server-side profile learning not yet implemented. Use in-process plugin for profile learning.",
-  };
+export async function handleUserProfileLearn(data: {
+  userId?: string;
+  projectTag?: string;
+}): Promise<ApiResponse<{ updated: boolean }>> {
+  try {
+    await ensureInit();
+
+    // Resolve userId
+    const { getTags } = await import("./tags.js");
+    let userId = data.userId;
+    if (!userId) {
+      const tags = await getTags(process.cwd());
+      userId = tags.user.userEmail || "unknown";
+    }
+
+    // Check if enough unanalyzed prompts exist
+    const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning();
+    const threshold = CONFIG.userProfileAnalysisInterval;
+
+    if (unanalyzedCount < threshold) {
+      return {
+        success: true,
+        data: { updated: false },
+      };
+    }
+
+    // Fetch prompts for analysis
+    const prompts = await promptRepo.getPromptsForUserLearning(threshold);
+    if (prompts.length === 0) {
+      return { success: true, data: { updated: false } };
+    }
+
+    // Fetch existing profile (if any)
+    const existingProfile = await profileRepo.getActiveProfile(userId);
+
+    // Build existing profile JSON for the AI context
+    let existingProfileJson: string | null = null;
+    if (existingProfile) {
+      existingProfileJson = existingProfile.profileData;
+    }
+
+    // Run AI analysis via server-side learner
+    const { analyzeUserProfile, generateChangeSummary } =
+      await import("./user-profile-learner-server.js");
+
+    const promptTexts = prompts.map((p) => p.content);
+    const updatedProfileData = await analyzeUserProfile(promptTexts, existingProfileJson);
+
+    if (!updatedProfileData) {
+      // AI returned nothing useful — mark prompts as analyzed so they don't loop
+      await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+      return { success: true, data: { updated: false } };
+    }
+
+    // Save profile
+    if (existingProfile) {
+      let oldProfileData: UserProfileData;
+      try {
+        oldProfileData = JSON.parse(existingProfile.profileData);
+      } catch {
+        log("Corrupt profile data, skipping learning cycle", {
+          profileId: existingProfile.id,
+        });
+        await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+        return { success: true, data: { updated: false } };
+      }
+
+      // Merge with existing data using the repository's merge logic
+      const mergedData = profileRepo.mergeProfileData(oldProfileData, updatedProfileData);
+      const changeSummary = generateChangeSummary(oldProfileData, mergedData);
+
+      await profileRepo.updateProfile(
+        existingProfile.id,
+        mergedData,
+        prompts.length,
+        changeSummary
+      );
+    } else {
+      // Resolve user metadata from tags
+      const tags = await getTags(process.cwd());
+      await profileRepo.createProfile(
+        userId,
+        tags.user.displayName || "Unknown",
+        tags.user.userName || "unknown",
+        tags.user.userEmail || "unknown",
+        updatedProfileData,
+        prompts.length
+      );
+    }
+
+    // Mark prompts as analyzed
+    await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+
+    return { success: true, data: { updated: true } };
+  } catch (error) {
+    log("handleUserProfileLearn: error", { error: String(error) });
+    return { success: false, error: String(error) };
+  }
 }

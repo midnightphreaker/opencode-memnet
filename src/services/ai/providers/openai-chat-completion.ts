@@ -91,7 +91,7 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
     toolCallId: string,
     content: string
   ): Promise<void> {
-    const sequence = (await this.sessionRepo.getLastSequence(sessionId)) + 1;
+    const sequence = ((await this.sessionRepo.getLastSequence(sessionId)) ?? 0) + 1;
     await this.sessionRepo.addMessage({
       aiSessionId: sessionId,
       sequence,
@@ -155,10 +155,20 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
     let session = await this.sessionRepo.getSession(sessionId, "openai-chat");
 
     if (!session) {
-      session = await this.sessionRepo.createSession({
-        provider: "openai-chat",
-        sessionId,
-      });
+      try {
+        session = await this.sessionRepo.createSession({
+          provider: "openai-chat",
+          sessionId,
+        });
+      } catch (err) {
+        // Session might have been created by a concurrent call — try fetching again
+        const existing = await this.sessionRepo.getSession(sessionId, "openai-chat");
+        if (existing) {
+          session = existing;
+        } else {
+          throw err;
+        }
+      }
     }
 
     const existingMessages = await this.sessionRepo.getMessages(session.id);
@@ -184,7 +194,7 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
     }
 
     if (messages.length === 0) {
-      const sequence = (await this.sessionRepo.getLastSequence(session.id)) + 1;
+      const sequence = ((await this.sessionRepo.getLastSequence(session.id)) ?? 0) + 1;
       await this.sessionRepo.addMessage({
         aiSessionId: session.id,
         sequence,
@@ -195,7 +205,7 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
       messages.push({ role: "system", content: systemPrompt });
     }
 
-    const userSequence = (await this.sessionRepo.getLastSequence(session.id)) + 1;
+    const userSequence = ((await this.sessionRepo.getLastSequence(session.id)) ?? 0) + 1;
     await this.sessionRepo.addMessage({
       aiSessionId: session.id,
       sequence: userSequence,
@@ -326,7 +336,7 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
           };
         }
 
-        const assistantSequence = (await this.sessionRepo.getLastSequence(session.id)) + 1;
+        const assistantSequence = ((await this.sessionRepo.getLastSequence(session.id)) ?? 0) + 1;
         const assistantMsg: AssistantSessionMessage = {
           aiSessionId: session.id,
           sequence: assistantSequence,
@@ -352,11 +362,32 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
             if (toolCall.function.name === toolSchema.function.name) {
               try {
                 const parsed = JSON.parse(toolCall.function.arguments);
-                const result = UserProfileValidator.validate(parsed);
-                if (!result.valid) {
-                  throw new Error(result.errors.join(", "));
+
+                // Only validate with UserProfileValidator for profile-related tools
+                if (
+                  toolSchema.function.name === "updateUserProfile" ||
+                  toolSchema.function.name === "getUserProfile"
+                ) {
+                  const result = UserProfileValidator.validate(parsed);
+                  if (!result.valid) {
+                    throw new Error(result.errors.join(", "));
+                  }
+
+                  await this.addToolResponse(
+                    session.id,
+                    messages,
+                    toolCallId,
+                    JSON.stringify({ success: true })
+                  );
+
+                  return {
+                    success: true,
+                    data: result.data,
+                    iterations,
+                  };
                 }
 
+                // For non-profile tools, return the parsed result directly
                 await this.addToolResponse(
                   session.id,
                   messages,
@@ -366,7 +397,7 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
 
                 return {
                   success: true,
-                  data: result.data,
+                  data: parsed,
                   iterations,
                 };
               } catch (validationError) {
@@ -412,7 +443,7 @@ export class OpenAIChatCompletionProvider extends BaseAIProvider {
           }
         }
 
-        const retrySequence = (await this.sessionRepo.getLastSequence(session.id)) + 1;
+        const retrySequence = ((await this.sessionRepo.getLastSequence(session.id)) ?? 0) + 1;
         const retryPrompt =
           "Please use the save_memories tool to extract and save the memories from the conversation as instructed.";
 

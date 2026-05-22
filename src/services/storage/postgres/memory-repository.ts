@@ -360,10 +360,13 @@ export class PostgresMemoryRepository implements MemoryRepository {
     const candidateLimit = Math.max(options.limit * 4, 50);
     const queryLiteral = vectorToPgLiteral(options.queryVector);
 
-    const efSearch = CONFIG.postgres?.hnswEfSearch;
+    const efSearch = CONFIG.postgres?.hnswEfSearch ?? 100;
+    if (typeof efSearch !== "number" || efSearch < 1 || !Number.isInteger(efSearch)) {
+      throw new Error(`Invalid hnswEfSearch config: ${efSearch}. Must be a positive integer.`);
+    }
 
     let rows: any[];
-    if (efSearch) {
+    if (CONFIG.postgres?.hnswEfSearch) {
       rows = await sql.begin(async (tx) => {
         await tx.unsafe(`SET LOCAL hnsw.ef_search = ${efSearch}`);
         return executeSearchQuery(
@@ -465,6 +468,19 @@ export class PostgresMemoryRepository implements MemoryRepository {
     return Number(rows[0]?.count ?? 0);
   }
 
+  async countByType(): Promise<Record<string, number>> {
+    const sql = getPostgresClient();
+    const rows = await sql`
+      SELECT type, COUNT(*) as count FROM memories GROUP BY type
+    `;
+    const result: Record<string, number> = {};
+    for (const row of rows) {
+      const key = row.type ?? "(untagged)";
+      result[key] = Number(row.count);
+    }
+    return result;
+  }
+
   async getDistinctTags(args?: {
     scope?: MemoryScopeKind;
     scopeHash?: string;
@@ -502,19 +518,23 @@ export class PostgresMemoryRepository implements MemoryRepository {
     await sql`UPDATE memories SET is_pinned = false WHERE id = ${memoryId}`;
   }
 
-  async listOlderThan(cutoffTime: number): Promise<MemoryRow[]> {
+  async listOlderThan(cutoffTime: number, limit?: number, offset?: number): Promise<MemoryRow[]> {
     const sql = getPostgresClient();
     const rows = await sql`
       SELECT * FROM memories
       WHERE updated_at < ${cutoffTime}
       ORDER BY updated_at ASC
+      LIMIT ${limit ?? 1000} OFFSET ${offset ?? 0}
     `;
     return rows.map(rowToMemoryRow);
   }
 
-  async getAllWithVectors(): Promise<MemoryRecord[]> {
+  async getAllWithVectors(limit?: number, offset?: number): Promise<MemoryRecord[]> {
     const sql = getPostgresClient();
-    const rows = await sql`SELECT * FROM memories ORDER BY created_at ASC`;
+    const rows = await sql`
+      SELECT * FROM memories ORDER BY created_at ASC
+      LIMIT ${limit ?? 1000} OFFSET ${offset ?? 0}
+    `;
     return rows.map(rowToMemoryRecord);
   }
 

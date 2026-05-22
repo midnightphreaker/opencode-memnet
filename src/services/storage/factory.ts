@@ -152,6 +152,9 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
   async count(args?: Parameters<MemoryRepository["count"]>[0]): Promise<number> {
     return (await this.repo()).count(args);
   }
+  async countByType(): Promise<Record<string, number>> {
+    return (await this.repo()).countByType();
+  }
   async getDistinctTags(
     args?: Parameters<MemoryRepository["getDistinctTags"]>[0]
   ): Promise<TagInfo[]> {
@@ -163,11 +166,11 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
   async unpin(memoryId: string): Promise<void> {
     await (await this.repo()).unpin(memoryId);
   }
-  async listOlderThan(cutoffTime: number): Promise<MemoryRow[]> {
-    return (await this.repo()).listOlderThan(cutoffTime);
+  async listOlderThan(cutoffTime: number, limit?: number, offset?: number): Promise<MemoryRow[]> {
+    return (await this.repo()).listOlderThan(cutoffTime, limit, offset);
   }
-  async getAllWithVectors(): Promise<MemoryRecord[]> {
-    return (await this.repo()).getAllWithVectors();
+  async getAllWithVectors(limit?: number, offset?: number): Promise<MemoryRecord[]> {
+    return (await this.repo()).getAllWithVectors(limit, offset);
   }
   async countUntagged(): Promise<number> {
     return (await this.repo()).countUntagged();

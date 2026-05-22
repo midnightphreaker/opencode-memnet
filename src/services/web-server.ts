@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { log } from "./logger.js";
+import { CONFIG } from "../config.js";
 import {
   handleListTags,
   handleListMemories,
@@ -31,6 +32,7 @@ interface WebServerConfig {
   port: number;
   host: string;
   enabled: boolean;
+  allowedOrigin?: string;
 }
 
 export class WebServer {
@@ -40,9 +42,11 @@ export class WebServer {
   private startPromise: Promise<void> | null = null;
   private healthCheckInterval: NodeJS.Timeout | null = null;
   private onTakeoverCallback: (() => Promise<void>) | null = null;
+  private readonly allowedOrigin: string;
 
   constructor(config: WebServerConfig) {
     this.config = config;
+    this.allowedOrigin = config.allowedOrigin ?? CONFIG.webServerAllowedOrigin ?? "*";
   }
 
   setOnTakeoverCallback(callback: () => Promise<void>): void {
@@ -179,6 +183,27 @@ export class WebServer {
     }
   }
 
+  private static readonly MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
+
+  private checkBodySize(req: Request): Response | null {
+    const contentLength = parseInt(req.headers.get("content-length") || "0", 10);
+    if (contentLength > WebServer.MAX_BODY_SIZE) {
+      return new Response(JSON.stringify({ error: "Request body too large" }), {
+        status: 413,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    return null;
+  }
+
+  private async parseBody<T = any>(req: Request): Promise<T> {
+    const text = await req.text();
+    if (text.length > WebServer.MAX_BODY_SIZE) {
+      throw Object.assign(new Error("Request body too large"), { status: 413 });
+    }
+    return JSON.parse(text) as T;
+  }
+
   // --- HTTP request handling (inlined from web-server-worker.ts) ---
 
   private async handleRequest(req: Request): Promise<Response> {
@@ -222,7 +247,7 @@ export class WebServer {
       }
 
       if (path === "/api/memories" && method === "POST") {
-        const body = (await req.json()) as any;
+        const body = await this.parseBody(req);
         const result = await handleAddMemory(body);
         return this.jsonResponse(result);
       }
@@ -243,13 +268,13 @@ export class WebServer {
         if (!id) {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
-        const body = (await req.json()) as any;
+        const body = await this.parseBody(req);
         const result = await handleUpdateMemory(id, body);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/memories/bulk-delete" && method === "POST") {
-        const body = (await req.json()) as any;
+        const body = await this.parseBody(req);
         const cascade = body.cascade !== false;
         const result = await handleBulkDelete(body.ids || [], cascade);
         return this.jsonResponse(result);
@@ -298,7 +323,7 @@ export class WebServer {
       }
 
       if (path === "/api/migration/tags/run-batch" && method === "POST") {
-        const body = (await req.json()) as any;
+        const body = await this.parseBody(req);
         const batchSize = body?.batchSize || 5;
         const result = await handleRunTagMigrationBatch(batchSize);
         return this.jsonResponse(result);
@@ -321,7 +346,7 @@ export class WebServer {
       }
 
       if (path === "/api/prompts/bulk-delete" && method === "POST") {
-        const body = (await req.json()) as any;
+        const body = await this.parseBody(req);
         const cascade = body.cascade !== false;
         const result = await handleBulkDeletePrompts(body.ids || [], cascade);
         return this.jsonResponse(result);
@@ -353,7 +378,7 @@ export class WebServer {
       }
 
       if (path === "/api/user-profile/refresh" && method === "POST") {
-        const body = (await req.json().catch(() => ({}))) as any;
+        const body = await this.parseBody(req).catch(() => ({}));
         const userId = body.userId || undefined;
         const result = await handleRefreshProfile(userId);
         return this.jsonResponse(result);
@@ -400,14 +425,21 @@ export class WebServer {
   }
 
   private jsonResponse(data: any, status: number = 200): Response {
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": this.allowedOrigin,
+      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    };
+
+    if (this.allowedOrigin !== "*") {
+      headers["Vary"] = "Origin";
+      headers["Access-Control-Allow-Credentials"] = "true";
+    }
+
     return new Response(JSON.stringify(data), {
       status,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-        "Access-Control-Allow-Headers": "Content-Type",
-      },
+      headers,
     });
   }
 }

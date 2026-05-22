@@ -20,6 +20,22 @@ const memoryRepo: MemoryRepository = createMemoryRepository();
 const promptRepo: UserPromptRepository = createUserPromptRepository();
 const profileRepo: UserProfileRepository = createUserProfileRepository();
 
+// Repositories are singletons from the factory, but initialize() (which runs
+// DB migrations) must be called before first use.  The LocalMemoryClient does
+// this for the memory repo, but the API handlers are invoked independently
+// (e.g. by the web-server) so we guard every handler entry-point.
+let _initPromise: Promise<void> | null = null;
+async function ensureInit(): Promise<void> {
+  if (!_initPromise) {
+    _initPromise = (async () => {
+      await memoryRepo.initialize();
+      await promptRepo.initialize();
+      await profileRepo.initialize();
+    })();
+  }
+  return _initPromise;
+}
+
 interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
@@ -94,6 +110,7 @@ async function getProjectPathFromTag(tag: string): Promise<string | undefined> {
 
 export async function handleListTags(): Promise<ApiResponse<{ project: TagInfo[] }>> {
   try {
+    await ensureInit();
     // Tags are stored as SQLite metadata; embedding model is not needed.
     // Calling warmup() here would block on local transformer init in the worker
     // thread and hang every read API. Only handlers that compute similarity
@@ -124,6 +141,7 @@ export async function handleListMemories(
   includePrompts: boolean = true
 ): Promise<ApiResponse<PaginatedResponse<Memory | any>>> {
   try {
+    await ensureInit();
     // Listing only reads SQLite rows; no vector ops happen here.
     // See handleListTags comment - keep embedding init out of read paths.
     let memoryRows: MemoryRow[];
@@ -274,6 +292,7 @@ export async function handleAddMemory(data: {
     if (!data.content || !data.containerTag) {
       return { success: false, error: "content and containerTag are required" };
     }
+    await ensureInit();
     await embeddingService.warmup();
     const tags = (data.tags || []).map((t) => t.trim().toLowerCase());
     const embeddingInput =
@@ -320,6 +339,7 @@ export async function handleDeleteMemory(
   cascade: boolean = false
 ): Promise<ApiResponse<{ deletedPrompt: boolean }>> {
   try {
+    await ensureInit();
     if (!id) return { success: false, error: "id is required" };
     const memory = await memoryRepo.getById(id);
     if (!memory) return { success: false, error: "Memory not found" };
@@ -361,13 +381,25 @@ export async function handleUpdateMemory(
   data: { content?: string; type?: MemoryType; tags?: string[] }
 ): Promise<ApiResponse<void>> {
   try {
+    await ensureInit();
     if (!id) return { success: false, error: "id is required" };
     await embeddingService.warmup();
     const existingMemory = await memoryRepo.getById(id);
     if (!existingMemory) return { success: false, error: "Memory not found" };
 
     const newContent = data.content || existingMemory.content;
-    const tags = data.tags || existingMemory.tags;
+    // Storage may return tags as comma-separated string despite typed as string[]
+    const rawTags = existingMemory.tags as unknown;
+    const existingTags: string[] =
+      typeof rawTags === "string"
+        ? rawTags
+            .split(",")
+            .map((t: string) => t.trim())
+            .filter(Boolean)
+        : Array.isArray(rawTags)
+          ? rawTags
+          : [];
+    const tags = data.tags !== undefined ? data.tags : existingTags;
 
     const vector = await embeddingService.embedWithTimeout(newContent, { kind: "content" });
     let tagsVector: Float32Array | undefined = undefined;
@@ -448,6 +480,7 @@ export async function handleSearch(
   pageSize: number = 20
 ): Promise<ApiResponse<PaginatedResponse<SearchResultItem>>> {
   try {
+    await ensureInit();
     if (!query) return { success: false, error: "query is required" };
     await embeddingService.warmup();
     const queryVector = await embeddingService.embedWithTimeout(query, { kind: "query" });
@@ -493,7 +526,7 @@ export async function handleSearch(
       createdAt: safeToISOString(p.createdAt),
       projectPath: p.projectPath,
       linkedMemoryId: p.linkedMemoryId,
-      similarity: 1.0,
+      similarity: undefined,
     }));
 
     const formattedMemories: FormattedMemory[] = memoryResults.map((r: any) => ({
@@ -598,23 +631,13 @@ export async function handleStats(): Promise<
   }>
 > {
   try {
-    // Stats only counts SQLite rows; no embedding needed.
-    // See handleListTags comment - keep embedding init out of read paths.
-    const memories = await memoryRepo.list({
-      scope: "project",
-      scopeHash: "",
-      containerTag: "",
-      includeAllContainers: true,
-      limit: 1000000,
-    });
-    let userCount = 0,
-      projectCount = 0;
-    const typeCount: Record<string, number> = {};
-    for (const r of memories) {
-      if (r.containerTag.includes("_user_")) userCount++;
-      else if (r.containerTag.includes("_project_")) projectCount++;
-      if (r.type) typeCount[r.type] = (typeCount[r.type] || 0) + 1;
-    }
+    await ensureInit();
+    // Use COUNT(*) queries instead of loading all rows into memory.
+    const [userCount, projectCount, typeCount] = await Promise.all([
+      memoryRepo.count({ scope: "user" }),
+      memoryRepo.count({ scope: "project" }),
+      memoryRepo.countByType(),
+    ]);
     return {
       success: true,
       data: {
@@ -631,6 +654,7 @@ export async function handleStats(): Promise<
 
 export async function handlePinMemory(id: string): Promise<ApiResponse<void>> {
   try {
+    await ensureInit();
     if (!id) return { success: false, error: "id is required" };
     const memory = await memoryRepo.getById(id);
     if (!memory) return { success: false, error: "Memory not found" };
@@ -644,6 +668,7 @@ export async function handlePinMemory(id: string): Promise<ApiResponse<void>> {
 
 export async function handleUnpinMemory(id: string): Promise<ApiResponse<void>> {
   try {
+    await ensureInit();
     if (!id) return { success: false, error: "id is required" };
     const memory = await memoryRepo.getById(id);
     if (!memory) return { success: false, error: "Memory not found" };
@@ -660,6 +685,7 @@ export async function handleDeletePrompt(
   cascade: boolean = false
 ): Promise<ApiResponse<{ deletedMemory: boolean }>> {
   try {
+    await ensureInit();
     if (!id) return { success: false, error: "id is required" };
     const prompt = await promptRepo.getPromptById(id);
     if (!prompt) return { success: false, error: "Prompt not found" };
@@ -696,10 +722,11 @@ export async function handleBulkDeletePrompts(
 
 export async function handleGetUserProfile(userId?: string): Promise<ApiResponse<any>> {
   try {
+    await ensureInit();
     const { getTags } = await import("./tags.js");
     let targetUserId = userId;
     if (!targetUserId) {
-      const tags = getTags(process.cwd());
+      const tags = await getTags(process.cwd());
       targetUserId = tags.user.userEmail || "unknown";
     }
     const profile = await profileRepo.getActiveProfile(targetUserId);
@@ -740,6 +767,7 @@ export async function handleGetProfileChangelog(
   limit: number = 5
 ): Promise<ApiResponse<any[]>> {
   try {
+    await ensureInit();
     if (!profileId) return { success: false, error: "profileId is required" };
     const changelogs = await profileRepo.getProfileChangelogs(profileId, limit);
     const formattedChangelogs = changelogs.map((c) => ({
@@ -759,6 +787,7 @@ export async function handleGetProfileChangelog(
 
 export async function handleGetProfileSnapshot(changelogId: string): Promise<ApiResponse<any>> {
   try {
+    await ensureInit();
     if (!changelogId) return { success: false, error: "changelogId is required" };
     const changelog = await profileRepo.getChangelogById(changelogId);
     if (!changelog) return { success: false, error: "Changelog not found" };
@@ -780,10 +809,11 @@ export async function handleGetProfileSnapshot(changelogId: string): Promise<Api
 
 export async function handleRefreshProfile(userId?: string): Promise<ApiResponse<any>> {
   try {
+    await ensureInit();
     const { getTags } = await import("./tags.js");
     let targetUserId = userId;
     if (!targetUserId) {
-      const tags = getTags(process.cwd());
+      const tags = await getTags(process.cwd());
       targetUserId = tags.user.userEmail || "unknown";
     }
     const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning();
@@ -805,6 +835,7 @@ export async function handleDetectTagMigration(): Promise<
   ApiResponse<{ needsMigration: boolean; count: number }>
 > {
   try {
+    await ensureInit();
     const untaggedCount = await memoryRepo.countUntagged();
     return { success: true, data: { needsMigration: untaggedCount > 0, count: untaggedCount } };
   } catch (error) {
@@ -838,14 +869,19 @@ export async function handleRunTagMigrationBatch(
   batchSize: number = 5
 ): Promise<ApiResponse<{ processed: number; total: number; hasMore: boolean }>> {
   try {
-    migrationProgress = {
-      processed: 0,
-      total: 0,
-      currentBatch: 0,
-      totalBatches: 0,
-      isComplete: false,
-      errors: [],
-    };
+    await ensureInit();
+    // Only (re)initialize when starting a fresh migration:
+    // either no migration has started yet, or the previous one completed.
+    if (migrationProgress.isComplete || migrationProgress.total === 0) {
+      migrationProgress = {
+        processed: 0,
+        total: 0,
+        currentBatch: 0,
+        totalBatches: 0,
+        isComplete: false,
+        errors: [],
+      };
+    }
     const { AIProviderFactory } = await import("./ai/ai-provider-factory.js");
     const { buildMemoryProviderConfig } = await import("./ai/provider-config.js");
     const providerConfig = buildMemoryProviderConfig(CONFIG, {

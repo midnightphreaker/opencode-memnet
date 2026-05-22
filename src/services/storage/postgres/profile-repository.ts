@@ -162,21 +162,17 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
       workflows: ensureArray(profileData.workflows),
     };
 
-    // Get current version and increment
-    const versionRows = await sql`
-      SELECT version FROM user_profiles WHERE id = ${profileId}
-    `;
-    const currentVersion = Number(versionRows[0]?.version ?? 0);
-    const newVersion = currentVersion + 1;
-
-    await sql`
+    // Atomic version increment — avoids read-modify-write race.
+    const result = await sql`
       UPDATE user_profiles SET
         profile_data = ${sql.json(cleanedData as any)},
-        version = ${newVersion},
+        version = version + 1,
         last_analyzed_at = ${now},
         total_prompts_analyzed = total_prompts_analyzed + ${additionalPromptsAnalyzed}
       WHERE id = ${profileId}
+      RETURNING version
     `;
+    const newVersion = Number(result[0]?.version ?? 0);
 
     await this.addChangelog(sql, profileId, newVersion, "update", changeSummary, cleanedData);
     await this.cleanupOldChangelogs(sql, profileId);

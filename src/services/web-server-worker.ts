@@ -59,6 +59,10 @@ async function handleRequest(req: Request): Promise<Response> {
       return serveStaticFile("app.js", "application/javascript");
     }
 
+    if (path === "/i18n.js") {
+      return serveStaticFile("i18n.js", "application/javascript");
+    }
+
     if (path === "/favicon.ico") {
       return serveStaticFile("favicon.ico", "image/x-icon");
     }

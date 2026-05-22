@@ -7,10 +7,7 @@ const MAX_CACHE_SIZE = 100;
 const CHARS_PER_TOKEN = 4;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(`Timeout after ${ms}ms`)), ms)),
-  ]);
+  return promise; // kept for compat; actual abort logic is in embedWithTimeout
 }
 
 export type EmbeddingKind = "content" | "tags" | "query" | "migration";
@@ -55,7 +52,11 @@ export class EmbeddingService {
     this.isWarmedUp = true;
   }
 
-  async embed(text: string, options?: EmbeddingOptions): Promise<Float32Array> {
+  async embed(
+    text: string,
+    options?: EmbeddingOptions,
+    signal?: AbortSignal
+  ): Promise<Float32Array> {
     const currentModel = CONFIG.embeddingModel ?? null;
     if (this.cachedModelName !== currentModel) {
       this.clearCache();
@@ -96,6 +97,7 @@ export class EmbeddingService {
       const response = await fetch(`${CONFIG.embeddingApiUrl}/embeddings`, {
         method: "POST",
         headers,
+        signal,
         body: JSON.stringify({
           input: text.length > effectiveText.length ? effectiveText : text,
           model: CONFIG.embeddingModel,
@@ -117,6 +119,7 @@ export class EmbeddingService {
       const response = await fetch(`${CONFIG.embeddingApiUrl}/embeddings`, {
         method: "POST",
         headers,
+        signal,
         body: JSON.stringify({
           input: effectiveText,
           model: CONFIG.embeddingModel,
@@ -144,7 +147,13 @@ export class EmbeddingService {
   }
 
   async embedWithTimeout(text: string, options?: EmbeddingOptions): Promise<Float32Array> {
-    return withTimeout(this.embed(text, options), TIMEOUT_MS);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      return await this.embed(text, options, controller.signal);
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   clearCache(): void {

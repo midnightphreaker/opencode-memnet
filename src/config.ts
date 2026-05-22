@@ -63,6 +63,7 @@ interface OpenCodeMemConfig {
   webServerEnabled?: boolean;
   webServerPort?: number;
   webServerHost?: string;
+  webServerAllowedOrigin?: string;
   userProfileAnalysisInterval?: number;
   userProfileMaxPreferences?: number;
   userProfileMaxPatterns?: number;
@@ -112,6 +113,7 @@ const DEFAULTS: Required<
     | "autoCaptureLanguage"
     | "userEmailOverride"
     | "userNameOverride"
+    | "webServerAllowedOrigin"
   >
 > & {
   embeddingApiUrl?: string;
@@ -128,6 +130,7 @@ const DEFAULTS: Required<
   autoCaptureLanguage?: string;
   userEmailOverride?: string;
   userNameOverride?: string;
+  webServerAllowedOrigin?: string;
   memory?: {
     defaultScope?: "project" | "all-projects";
   };
@@ -146,6 +149,7 @@ const DEFAULTS: Required<
   webServerEnabled: true,
   webServerPort: 4747,
   webServerHost: "127.0.0.1",
+  webServerAllowedOrigin: "*",
   userProfileAnalysisInterval: 10,
   userProfileMaxPreferences: 20,
   userProfileMaxPatterns: 15,
@@ -311,6 +315,10 @@ const CONFIG_TEMPLATE = `{
 
   // Host address for web UI (use 127.0.0.1 for local only, 0.0.0.0 for network access)
   "webServerHost": "127.0.0.1",
+
+  // Allowed origin for CORS headers (default: "*" — any origin)
+  // Restrict to a specific origin for better security, e.g. "http://localhost:3000"
+  // "webServerAllowedOrigin": "*",
 
   // ============================================
   // Memory Scope Settings
@@ -553,6 +561,7 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
     webServerEnabled: fileConfig.webServerEnabled ?? DEFAULTS.webServerEnabled,
     webServerPort: fileConfig.webServerPort ?? DEFAULTS.webServerPort,
     webServerHost: fileConfig.webServerHost ?? DEFAULTS.webServerHost,
+    webServerAllowedOrigin: fileConfig.webServerAllowedOrigin ?? DEFAULTS.webServerAllowedOrigin,
     userProfileAnalysisInterval:
       fileConfig.userProfileAnalysisInterval ?? DEFAULTS.userProfileAnalysisInterval,
     userProfileMaxPreferences:

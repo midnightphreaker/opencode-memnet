@@ -2,6 +2,13 @@ import { CONFIG } from "../config.js";
 import { createUserProfileRepository } from "./storage/factory.js";
 import type { UserProfileRepository, UserProfileData } from "./storage/types.js";
 
+// Cache the singleton at module level so we don't allocate on every prompt.
+let _profileRepo: UserProfileRepository | null = null;
+function getProfileRepo(): UserProfileRepository {
+  if (!_profileRepo) _profileRepo = createUserProfileRepository();
+  return _profileRepo;
+}
+
 interface MemoryResultMinimal {
   similarity: number;
   memory?: string;
@@ -43,7 +50,7 @@ export async function formatContextForPrompt(
 }
 
 async function getUserProfileContext(userId: string): Promise<string | null> {
-  const profileRepo: UserProfileRepository = createUserProfileRepository();
+  const profileRepo: UserProfileRepository = getProfileRepo();
 
   const profile = await profileRepo.getActiveProfile(userId);
 

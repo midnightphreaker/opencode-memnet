@@ -35,7 +35,7 @@ export async function performUserProfileLearning(
       return;
     }
 
-    const tags = getTags(directory);
+    const tags = await getTags(directory);
     const userId = tags.user.userEmail || "unknown";
 
     const existingProfile = await profileRepo.getActiveProfile(userId);
@@ -50,10 +50,14 @@ export async function performUserProfileLearning(
     }
 
     if (existingProfile) {
-      const changeSummary = generateChangeSummary(
-        JSON.parse(existingProfile.profileData),
-        updatedProfileData
-      );
+      let profileData;
+      try {
+        profileData = JSON.parse(existingProfile.profileData);
+      } catch {
+        // Corrupt profile data — skip this learning cycle
+        return;
+      }
+      const changeSummary = generateChangeSummary(profileData, updatedProfileData);
       await profileRepo.updateProfile(
         existingProfile.id,
         updatedProfileData,

@@ -80,6 +80,50 @@ export function stripJsoncComments(content: string): string {
     i++;
   }
 
-  // Remove trailing commas before } or ]
-  return result.replace(/,\s*([}\]])/g, "$1");
+  // Remove trailing commas before } or ], respecting string boundaries
+  return stripTrailingCommas(result);
+}
+
+function stripTrailingCommas(input: string): string {
+  let result = "";
+  let inString = false;
+  let i = 0;
+
+  while (i < input.length) {
+    const ch = input[i];
+
+    // Handle string boundaries (quote preceded by even number of backslashes)
+    if (ch === '"') {
+      let backslashCount = 0;
+      let j = i - 1;
+      while (j >= 0 && result[j] === "\\") {
+        backslashCount++;
+        j--;
+      }
+      if (backslashCount % 2 === 0) {
+        inString = !inString;
+      }
+      result += ch;
+      i++;
+      continue;
+    }
+
+    // Only consider trailing comma removal outside strings
+    if (!inString && ch === ",") {
+      // Look ahead: if the rest (after optional whitespace) starts with } or ], skip the comma
+      const rest = input.slice(i + 1);
+      const match = rest.match(/^(\s*[}\]])/);
+      if (match) {
+        // Skip the comma, keep the whitespace + closer
+        result += match[1];
+        i += 1 + match[0].length;
+        continue;
+      }
+    }
+
+    result += ch;
+    i++;
+  }
+
+  return result;
 }

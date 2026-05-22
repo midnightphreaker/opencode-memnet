@@ -1,8 +1,11 @@
 import { createHash } from "node:crypto";
-import { execSync } from "node:child_process";
+import { exec } from "node:child_process";
+import { promisify } from "node:util";
 import { CONFIG } from "../config.js";
 import { normalize, resolve, isAbsolute, basename, dirname } from "node:path";
 import { realpathSync, existsSync } from "node:fs";
+
+const execAsync = promisify(exec);
 
 function sha256(input: string): string {
   return createHash("sha256").update(input).digest("hex").slice(0, 16);
@@ -18,50 +21,50 @@ export interface TagInfo {
   gitRepoUrl?: string;
 }
 
-export function getGitEmail(): string | null {
+export async function getGitEmail(): Promise<string | null> {
   try {
-    const email = execSync("git config user.email", {
+    const { stdout } = await execAsync("git config user.email", {
       encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    });
+    const email = stdout.trim();
     return email || null;
   } catch {
     return null;
   }
 }
 
-export function getGitName(): string | null {
+export async function getGitName(): Promise<string | null> {
   try {
-    const name = execSync("git config user.name", {
+    const { stdout } = await execAsync("git config user.name", {
       encoding: "utf-8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    });
+    const name = stdout.trim();
     return name || null;
   } catch {
     return null;
   }
 }
 
-export function getGitRepoUrl(directory: string): string | null {
+export async function getGitRepoUrl(directory: string): Promise<string | null> {
   try {
-    const url = execSync("git config --get remote.origin.url", {
+    const { stdout } = await execAsync("git config --get remote.origin.url", {
       encoding: "utf-8",
       cwd: directory,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    });
+    const url = stdout.trim();
     return url || null;
   } catch {
     return null;
   }
 }
 
-export function getGitCommonDir(directory: string): string | null {
+export async function getGitCommonDir(directory: string): Promise<string | null> {
   try {
-    const commonDir = execSync("git rev-parse --git-common-dir", {
+    const { stdout } = await execAsync("git rev-parse --git-common-dir", {
       encoding: "utf-8",
       cwd: directory,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    });
+    const commonDir = stdout.trim();
 
     if (!commonDir) {
       return null;
@@ -81,26 +84,26 @@ export function getGitCommonDir(directory: string): string | null {
   }
 }
 
-export function getGitTopLevel(directory: string): string | null {
+export async function getGitTopLevel(directory: string): Promise<string | null> {
   try {
-    const topLevel = execSync("git rev-parse --show-toplevel", {
+    const { stdout } = await execAsync("git rev-parse --show-toplevel", {
       encoding: "utf-8",
       cwd: directory,
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+    });
+    const topLevel = stdout.trim();
     return topLevel || null;
   } catch {
     return null;
   }
 }
 
-export function getProjectRoot(directory: string): string {
-  const commonDir = getGitCommonDir(directory);
+export async function getProjectRoot(directory: string): Promise<string> {
+  const commonDir = await getGitCommonDir(directory);
   if (commonDir && basename(commonDir) === ".git") {
     return dirname(commonDir);
   }
 
-  const topLevel = getGitTopLevel(directory);
+  const topLevel = await getGitTopLevel(directory);
   if (topLevel) {
     return topLevel;
   }
@@ -108,13 +111,13 @@ export function getProjectRoot(directory: string): string {
   return directory;
 }
 
-export function getProjectIdentity(directory: string): string {
-  const commonDir = getGitCommonDir(directory);
+export async function getProjectIdentity(directory: string): Promise<string> {
+  const commonDir = await getGitCommonDir(directory);
   if (commonDir) {
     return `git-common:${commonDir}`;
   }
 
-  const gitRepoUrl = getGitRepoUrl(directory);
+  const gitRepoUrl = await getGitRepoUrl(directory);
   if (gitRepoUrl) {
     return `remote:${gitRepoUrl}`;
   }
@@ -128,9 +131,9 @@ export function getProjectName(directory: string): string {
   return parts[parts.length - 1] || directory;
 }
 
-export function getUserTagInfo(): TagInfo {
-  const email = CONFIG.userEmailOverride || getGitEmail();
-  const name = CONFIG.userNameOverride || getGitName();
+export async function getUserTagInfo(): Promise<TagInfo> {
+  const email = CONFIG.userEmailOverride || (await getGitEmail());
+  const name = CONFIG.userNameOverride || (await getGitName());
 
   if (email) {
     return {
@@ -150,11 +153,13 @@ export function getUserTagInfo(): TagInfo {
   };
 }
 
-export function getProjectTagInfo(directory: string): TagInfo {
-  const projectRoot = getProjectRoot(directory);
+export async function getProjectTagInfo(directory: string): Promise<TagInfo> {
+  const projectRoot = await getProjectRoot(directory);
   const projectName = getProjectName(projectRoot);
-  const gitRepoUrl = getGitRepoUrl(directory);
-  const projectIdentity = getProjectIdentity(projectRoot);
+  const [gitRepoUrl, projectIdentity] = await Promise.all([
+    getGitRepoUrl(directory),
+    getProjectIdentity(projectRoot),
+  ]);
 
   return {
     tag: `${CONFIG.containerTagPrefix}_project_${sha256(projectIdentity)}`,
@@ -165,12 +170,25 @@ export function getProjectTagInfo(directory: string): TagInfo {
   };
 }
 
-export function getTags(directory: string): {
+// --- Cached getTags ---
+
+interface TagsResult {
   user: TagInfo;
   project: TagInfo;
-} {
-  return {
-    user: getUserTagInfo(),
-    project: getProjectTagInfo(directory),
-  };
+}
+
+let cachedTags: TagsResult | null = null;
+let cacheTimestamp = 0;
+const CACHE_TTL = 60_000; // 1 minute
+
+export async function getTags(directory: string): Promise<TagsResult> {
+  if (cachedTags && Date.now() - cacheTimestamp < CACHE_TTL) {
+    return cachedTags;
+  }
+
+  const [user, project] = await Promise.all([getUserTagInfo(), getProjectTagInfo(directory)]);
+
+  cachedTags = { user, project };
+  cacheTimestamp = Date.now();
+  return cachedTags;
 }

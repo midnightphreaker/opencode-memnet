@@ -118,6 +118,12 @@ export interface MemoryRepository {
     scopeHash?: string;
   }): Promise<number>;
 
+  /**
+   * Returns a breakdown of memory counts grouped by type.
+   * Used by handleStats to avoid loading all rows into memory.
+   */
+  countByType(): Promise<Record<string, number>>;
+
   getDistinctTags(args?: { scope?: MemoryScopeKind; scopeHash?: string }): Promise<TagInfo[]>;
 
   pin(memoryId: string): Promise<void>;
@@ -127,13 +133,13 @@ export interface MemoryRepository {
    * Returns memories whose `updatedAt` is older than `cutoffTime`.
    * Used by cleanup-service to identify stale memories.
    */
-  listOlderThan(cutoffTime: number): Promise<MemoryRow[]>;
+  listOlderThan(cutoffTime: number, limit?: number, offset?: number): Promise<MemoryRow[]>;
 
   /**
    * Returns all memory records including their raw Float32Array vectors.
    * Used by deduplication-service for pairwise similarity checks.
    */
-  getAllWithVectors(): Promise<MemoryRecord[]>;
+  getAllWithVectors(limit?: number, offset?: number): Promise<MemoryRecord[]>;
 
   /**
    * Count project memories with NULL or empty tags column.

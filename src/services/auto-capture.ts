@@ -30,12 +30,12 @@ export async function performAutoCapture(
       return;
     }
 
-    if (!(await promptRepo.claimPrompt(prompt.id))) {
+    if (!ctx.client) {
       return;
     }
 
-    if (!ctx.client) {
-      throw new Error("Client not available");
+    if (!(await promptRepo.claimPrompt(prompt.id))) {
+      return;
     }
 
     const response = await ctx.client.session.messages({
@@ -65,7 +65,7 @@ export async function performAutoCapture(
       return;
     }
 
-    const tags = getTags(directory);
+    const tags = await getTags(directory);
     const latestMemory = await getLatestProjectMemory(tags.project.tag);
 
     const context = buildMarkdownContext(prompt.content, textResponses, toolCalls, latestMemory);

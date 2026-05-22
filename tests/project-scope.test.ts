@@ -41,35 +41,35 @@ afterEach(() => {
 });
 
 describe("project scope identity", () => {
-  it("uses one project tag across worktrees in the same repo", () => {
+  it("uses one project tag across worktrees in the same repo", async () => {
     const { repoDir, worktreeDir } = createRepoWithWorktree();
 
-    const mainTag = getProjectTagInfo(repoDir);
-    const worktreeTag = getProjectTagInfo(worktreeDir);
+    const mainTag = await getProjectTagInfo(repoDir);
+    const worktreeTag = await getProjectTagInfo(worktreeDir);
 
     expect(mainTag.tag).toBe(worktreeTag.tag);
     expect(mainTag.projectPath).toBe(worktreeTag.projectPath);
     expect(mainTag.projectName).toBe(basename(repoDir));
   });
 
-  it("uses different project tags for unrelated non-git directories", () => {
+  it("uses different project tags for unrelated non-git directories", async () => {
     const left = mkdtempSync(join(tmpdir(), "opencode-mem-left-"));
     const right = mkdtempSync(join(tmpdir(), "opencode-mem-right-"));
     createdDirs.push(left, right);
 
-    const leftTag = getProjectTagInfo(left);
-    const rightTag = getProjectTagInfo(right);
+    const leftTag = await getProjectTagInfo(left);
+    const rightTag = await getProjectTagInfo(right);
 
     expect(leftTag.tag).not.toBe(rightTag.tag);
   });
 
-  it("uses the same project tag from nested paths inside the same repo", () => {
+  it("uses the same project tag from nested paths inside the same repo", async () => {
     const { repoDir } = createRepoWithWorktree();
     const nestedDir = join(repoDir, "src", "features", "memory");
     mkdirSync(nestedDir, { recursive: true });
 
-    const rootTag = getProjectTagInfo(repoDir);
-    const nestedTag = getProjectTagInfo(nestedDir);
+    const rootTag = await getProjectTagInfo(repoDir);
+    const nestedTag = await getProjectTagInfo(nestedDir);
 
     expect(rootTag.tag).toBe(nestedTag.tag);
     expect(rootTag.projectPath).toBe(nestedTag.projectPath);

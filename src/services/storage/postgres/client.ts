@@ -21,6 +21,12 @@ let sqlInstance: SqlClient | null = null;
 /**
  * Return (or lazily create) the Postgres.js connection pool.
  *
+ * The `postgres()` constructor is synchronous — it returns a connection-pool
+ * proxy immediately, with actual connections established lazily.  Because
+ * JS is single-threaded, two concurrent synchronous callers cannot both see
+ * `sqlInstance === null`.  We assign to `sqlInstance` **before** any
+ * potentially-throwing work to guarantee a single pool is ever created.
+ *
  * @throws Error if `CONFIG.postgres.url` is not set.
  */
 export function getPostgresClient(): SqlClient {
@@ -36,6 +42,7 @@ export function getPostgresClient(): SqlClient {
 
   log("[postgres] Creating connection pool", { url: redactDatabaseUrl(url) });
 
+  // Assign immediately — prevents any re-entrancy from creating a second pool.
   sqlInstance = postgres(url, {
     max: CONFIG.postgres!.maxConnections ?? 10,
     idle_timeout: (CONFIG.postgres!.idleTimeoutSeconds ?? 30) as number,

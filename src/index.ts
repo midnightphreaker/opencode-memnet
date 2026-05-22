@@ -20,13 +20,17 @@ import type { MemoryType } from "./types/index.js";
 import { getLanguageName } from "./services/language-detector.js";
 import type { MemoryScope } from "./services/client.js";
 
-const promptRepo = createUserPromptRepository();
-const profileRepo = createUserProfileRepository();
+let sigintRegistered = false;
+let sigtermRegistered = false;
 
 export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   const { directory } = ctx;
   initConfig(directory);
-  const tags = getTags(directory);
+
+  // Repos must be created after initConfig so CONFIG values are available
+  const promptRepo = createUserPromptRepository();
+  const profileRepo = createUserProfileRepository();
+  const tags = await getTags(directory);
   let webServer: WebServer | null = null;
   let idleTimeout: Timer | null = null;
 
@@ -70,6 +74,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       port: CONFIG.webServerPort,
       host: CONFIG.webServerHost,
       enabled: CONFIG.webServerEnabled,
+      allowedOrigin: CONFIG.webServerAllowedOrigin,
     })
       .then((server) => {
         webServer = server;
@@ -147,8 +152,14 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     }
   };
 
-  process.on("SIGINT", shutdownHandler);
-  process.on("SIGTERM", shutdownHandler);
+  if (!sigintRegistered) {
+    process.once("SIGINT", shutdownHandler);
+    sigintRegistered = true;
+  }
+  if (!sigtermRegistered) {
+    process.once("SIGTERM", shutdownHandler);
+    sigtermRegistered = true;
+  }
 
   return {
     "chat.message": async (input, output) => {
@@ -436,6 +447,13 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                 }
 
                 // --- READ: no content provided ---
+                if (!tags.user.userEmail) {
+                  return JSON.stringify({
+                    success: false,
+                    error:
+                      "Cannot read profile because no user email could be resolved. Configure userEmailOverride or git user.email.",
+                  });
+                }
                 const profile = await profileRepo.getActiveProfile(userId);
                 if (!profile) return JSON.stringify({ success: true, profile: null });
                 const pData = JSON.parse(profile.profileData);
@@ -514,7 +532,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         if (!sessionID) return;
 
         try {
-          const tags = getTags(directory);
+          const tags = await getTags(directory);
 
           const memoriesResult = await memoryClient.searchMemoriesBySessionID(
             sessionID,
@@ -579,6 +597,7 @@ function formatMemoriesForCompaction(memories: any[]): string {
   let output = `## Restored Session Memory\n\n`;
 
   memories.forEach((m, i) => {
+    if (m.memory == null) return;
     output += `### Memory ${i + 1}\n`;
     output += `${m.memory}\n\n`;
     if (m.tags && m.tags.length > 0) {

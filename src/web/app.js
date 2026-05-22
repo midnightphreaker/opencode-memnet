@@ -154,9 +154,10 @@ function renderCombinedCard(pair) {
       ? `<div class="tags-list">${memory.tags.map((t) => `<span class="tag-badge">${escapeHtml(t)}</span>`).join("")}</div>`
       : "";
 
+  const eid = escapeAttr(memory.id);
   const pinButton = isPinned
-    ? `<button class="btn-pin pinned" onclick="unpinMemory('${memory.id}')" title="Unpin"><i data-lucide="pin" class="icon icon-filled"></i></button>`
-    : `<button class="btn-pin" onclick="pinMemory('${memory.id}')" title="Pin"><i data-lucide="pin" class="icon"></i></button>`;
+    ? `<button class="btn-pin pinned" onclick="unpinMemory('${eid}')" title="Unpin"><i data-lucide="pin" class="icon icon-filled"></i></button>`
+    : `<button class="btn-pin" onclick="pinMemory('${eid}')" title="Pin"><i data-lucide="pin" class="icon"></i></button>`;
 
   const createdDate = formatDate(memory.createdAt);
   const updatedDate =
@@ -166,7 +167,7 @@ function renderCombinedCard(pair) {
     ? `<span>${t("date-created")} ${createdDate}</span><span>${t("date-updated")} ${updatedDate}</span>`
     : `<span>${t("date-created")} ${createdDate}</span>`;
   return `
-    <div class="combined-card ${isSelected ? "selected" : ""} ${isPinned ? "pinned" : ""}" data-id="${memory.id}">
+    <div class="combined-card ${isSelected ? "selected" : ""} ${isPinned ? "pinned" : ""}" data-id="${eid}">
       <div class="combined-prompt-section">
         <div class="combined-header">
           <span class="badge badge-prompt">${t("badge-prompt")}</span>
@@ -182,17 +183,17 @@ function renderCombinedCard(pair) {
       <div class="combined-memory-section">
         <div class="memory-header">
           <div class="meta">
-            <input type="checkbox" class="memory-checkbox" data-id="${memory.id}" ${isSelected ? "checked" : ""} />
+            <input type="checkbox" class="memory-checkbox" data-id="${eid}" ${isSelected ? "checked" : ""} />
             <span class="badge badge-memory">${t("badge-memory")}</span>
-            ${memory.memoryType ? `<span class="badge badge-type">${memory.memoryType}</span>` : ""}
+            ${memory.memoryType ? `<span class="badge badge-type">${escapeHtml(memory.memoryType)}</span>` : ""}
             ${similarityHtml}
             ${isPinned ? `<span class="badge badge-pinned">${t("badge-pinned")}</span>` : ""}
             <span class="memory-display-name">${escapeHtml(memory.displayName || memory.id)}</span>
           </div>
           <div class="memory-actions">
             ${pinButton}
-            <button class="btn-edit" onclick="editMemory('${memory.id}')"><i data-lucide="edit-3" class="icon"></i></button>
-            <button class="btn-delete" onclick="deleteMemoryWithLink('${memory.id}', true)">
+            <button class="btn-edit" onclick="editMemory('${eid}')"><i data-lucide="edit-3" class="icon"></i></button>
+            <button class="btn-delete" onclick="deleteMemoryWithLink('${eid}', true)">
               <i data-lucide="trash-2" class="icon"></i> ${t("btn-delete-pair")}
             </button>
           </div>
@@ -201,7 +202,7 @@ function renderCombinedCard(pair) {
         <div class="memory-content markdown-content">${renderMarkdown(memory.content)}</div>
         <div class="memory-footer">
           ${dateInfo}
-          <span>ID: ${memory.id}</span>
+          <span>ID: ${escapeHtml(memory.id)}</span>
         </div>
       </div>
     </div>
@@ -212,19 +213,20 @@ function renderPromptCard(prompt) {
   const isLinked = !!prompt.linkedMemoryId;
   const isSelected = state.selectedMemories.has(prompt.id);
   const promptDate = formatDate(prompt.createdAt);
+  const eid = escapeAttr(prompt.id);
 
   return `
-    <div class="prompt-card ${isSelected ? "selected" : ""}" data-id="${prompt.id}">
+    <div class="prompt-card ${isSelected ? "selected" : ""}" data-id="${eid}">
       <div class="prompt-header">
         <div class="meta">
-          <input type="checkbox" class="memory-checkbox" data-id="${prompt.id}" ${isSelected ? "checked" : ""} />
+          <input type="checkbox" class="memory-checkbox" data-id="${eid}" ${isSelected ? "checked" : ""} />
           <i data-lucide="message-circle" class="icon"></i>
           <span class="badge badge-prompt">${t("badge-prompt")}</span>
           ${isLinked ? `<span class="badge badge-linked"><i data-lucide="link" class="icon-sm"></i> ${t("badge-linked")}</span>` : ""}
           <span class="prompt-date">${promptDate}</span>
         </div>
         <div class="prompt-actions">
-          <button class="btn-delete" onclick="deletePromptWithLink('${prompt.id}', ${isLinked})">
+          <button class="btn-delete" onclick="deletePromptWithLink('${eid}', ${isLinked})">
             <i data-lucide="trash-2" class="icon"></i>
             ${isLinked ? t("btn-delete-pair") : t("btn-delete")}
           </button>
@@ -261,9 +263,10 @@ function renderMemoryCard(memory) {
     subtitle = `<span class="memory-subtitle">${escapeHtml(memory.projectPath)}</span>`;
   }
 
+  const eid = escapeAttr(memory.id);
   const pinButton = isPinned
-    ? `<button class="btn-pin pinned" onclick="unpinMemory('${memory.id}')" title="Unpin"><i data-lucide="pin" class="icon icon-filled"></i></button>`
-    : `<button class="btn-pin" onclick="pinMemory('${memory.id}')" title="Pin"><i data-lucide="pin" class="icon"></i></button>`;
+    ? `<button class="btn-pin pinned" onclick="unpinMemory('${eid}')" title="Unpin"><i data-lucide="pin" class="icon icon-filled"></i></button>`
+    : `<button class="btn-pin" onclick="pinMemory('${eid}')" title="Pin"><i data-lucide="pin" class="icon"></i></button>`;
 
   const createdDate = formatDate(memory.createdAt);
   const updatedDate =
@@ -278,11 +281,11 @@ function renderMemoryCard(memory) {
       : "";
 
   return `
-    <div class="memory-card ${isSelected ? "selected" : ""} ${isPinned ? "pinned" : ""}" data-id="${memory.id}">
+    <div class="memory-card ${isSelected ? "selected" : ""} ${isPinned ? "pinned" : ""}" data-id="${eid}">
       <div class="memory-header">
         <div class="meta">
-          <input type="checkbox" class="memory-checkbox" data-id="${memory.id}" ${isSelected ? "checked" : ""} />
-          ${memory.memoryType ? `<span class="badge badge-type">${memory.memoryType}</span>` : ""}
+          <input type="checkbox" class="memory-checkbox" data-id="${eid}" ${isSelected ? "checked" : ""} />
+          ${memory.memoryType ? `<span class="badge badge-type">${escapeHtml(memory.memoryType)}</span>` : ""}
           ${isLinked ? `<span class="badge badge-linked"><i data-lucide="link" class="icon-sm"></i> ${t("badge-linked")}</span>` : ""}
           ${similarityHtml}
           ${isPinned ? `<span class="badge badge-pinned">${t("badge-pinned")}</span>` : ""}
@@ -291,8 +294,8 @@ function renderMemoryCard(memory) {
         </div>
         <div class="memory-actions">
           ${pinButton}
-          <button class="btn-edit" onclick="editMemory('${memory.id}')"><i data-lucide="edit-3" class="icon"></i></button>
-          <button class="btn-delete" onclick="deleteMemoryWithLink('${memory.id}', ${isLinked})">
+          <button class="btn-edit" onclick="editMemory('${eid}')"><i data-lucide="edit-3" class="icon"></i></button>
+          <button class="btn-delete" onclick="deleteMemoryWithLink('${eid}', ${isLinked})">
             <i data-lucide="trash-2" class="icon"></i>
             ${isLinked ? t("btn-delete-pair") : t("btn-delete")}
           </button>
@@ -303,7 +306,7 @@ function renderMemoryCard(memory) {
       ${isLinked ? `<div class="link-indicator"><i data-lucide="arrow-up" class="icon-sm"></i> ${t("text-from-below")} <i data-lucide="arrow-down" class="icon-sm"></i></div>` : ""}
       <div class="memory-footer">
         ${dateInfo}
-        <span>ID: ${memory.id}</span>
+        <span>ID: ${escapeHtml(memory.id)}</span>
       </div>
     </div>
   `;
@@ -418,7 +421,7 @@ async function loadMemories() {
   let endpoint = `/api/memories?page=${state.currentPage}&pageSize=${state.pageSize}&includePrompts=true`;
 
   if (state.isSearching) {
-    endpoint = `/api/search?q=${encodeURIComponent(state.searchQuery || "")}&page=${state.currentPage}&pageSize=${state.pageSize}`;
+    endpoint = `/api/search?q=${encodeURIComponent(state.searchQuery || "")}&page=${state.currentPage}&pageSize=${state.pageSize}&includePrompts=true`;
     if (state.selectedTag) {
       endpoint += `&tag=${encodeURIComponent(state.selectedTag)}`;
     }
@@ -642,6 +645,13 @@ function showToast(message, type = "success") {
 function showError(message) {
   const container = document.getElementById("memories-list");
   container.innerHTML = `<div class="error-state">Error: ${escapeHtml(message)}</div>`;
+  // If profile tab is active, also show in profile-content so error is visible
+  if (state.currentView === "profile") {
+    const profileContainer = document.getElementById("profile-content");
+    if (profileContainer) {
+      profileContainer.innerHTML = `<div class="error-state">Error: ${escapeHtml(message)}</div>`;
+    }
+  }
 }
 
 function showRefreshIndicator(show) {
@@ -745,6 +755,7 @@ async function checkMigrationStatus() {
 function showTagMigrationModal(count) {
   const overlay = document.getElementById("tag-migration-overlay");
   const status = document.getElementById("tag-migration-status");
+  overlay.classList.remove("hidden");
   status.textContent = t("migration-found-tags", { count });
 
   document.getElementById("start-tag-migration-btn").onclick = runTagMigration;
@@ -807,6 +818,8 @@ async function runTagMigration() {
 function showMigrationWarning(data) {
   const section = document.getElementById("migration-section");
   const message = document.getElementById("migration-message");
+
+  section.classList.remove("hidden");
 
   const shardInfo =
     data.shardMismatches.length > 0
@@ -1085,8 +1098,8 @@ async function showChangelog() {
         (c) => `
       <div class="changelog-item">
         <div class="changelog-header">
-          <span class="changelog-version">v${c.version}</span>
-          <span class="changelog-type">${c.changeType}</span>
+          <span class="changelog-version">v${escapeHtml(c.version)}</span>
+          <span class="changelog-type">${escapeHtml(c.changeType)}</span>
           <span class="changelog-date">${formatDate(c.createdAt)}</span>
         </div>
         <p class="changelog-summary">${escapeHtml(c.changeSummary)}</p>

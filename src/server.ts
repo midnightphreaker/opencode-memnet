@@ -70,8 +70,8 @@ async function main(): Promise<void> {
       process.exit(0);
     };
 
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
   } catch (error) {
     console.error("Failed to start server:", error);
     process.exit(1);

@@ -213,43 +213,36 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               .map((p: any) => p.text)
               .join("\n");
 
-            remoteMemoryClient
-              .autoCapture({
-                sessionID,
-                projectTag: tags.project.tag,
-                projectMetadata: {
-                  displayName: tags.project.displayName,
-                  userName: tags.project.userName,
-                  userEmail: tags.project.userEmail,
-                  projectPath: tags.project.projectPath,
-                  projectName: tags.project.projectName,
-                  gitRepoUrl: tags.project.gitRepoUrl,
-                },
-                conversationMessages: messages.map((m: any) => ({
-                  role: m.info.role,
-                  parts: m.parts,
-                })),
-                userPrompt,
-                promptMessageId: lastUserMsg.info.id,
-              })
-              .then((result) => {
-                if (
-                  result.success &&
-                  result.data?.captured &&
-                  CLIENT_CONFIG.showAutoCaptureToasts
-                ) {
-                  ctx.client?.tui
-                    .showToast({
-                      body: {
-                        title: "Memory Captured",
-                        message: "Project memory saved from conversation",
-                        variant: "success",
-                        duration: 3000,
-                      },
-                    })
-                    .catch(() => {});
-                }
-              });
+            const result = await remoteMemoryClient.autoCapture({
+              sessionID,
+              projectTag: tags.project.tag,
+              projectMetadata: {
+                displayName: tags.project.displayName,
+                userName: tags.project.userName,
+                userEmail: tags.project.userEmail,
+                projectPath: tags.project.projectPath,
+                projectName: tags.project.projectName,
+                gitRepoUrl: tags.project.gitRepoUrl,
+              },
+              conversationMessages: messages.map((m: any) => ({
+                role: m.info.role,
+                parts: m.parts,
+              })),
+              userPrompt,
+              promptMessageId: lastUserMsg.info.id,
+            });
+            if (result.success && result.data?.captured && CLIENT_CONFIG.showAutoCaptureToasts) {
+              ctx.client?.tui
+                .showToast({
+                  body: {
+                    title: "Memory Captured",
+                    message: "Project memory saved from conversation",
+                    variant: "success",
+                    duration: 3000,
+                  },
+                })
+                .catch(() => {});
+            }
           } catch (error) {
             log("Idle auto-capture error", { error: String(error) });
           } finally {

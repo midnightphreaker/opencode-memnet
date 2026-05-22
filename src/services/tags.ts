@@ -177,18 +177,20 @@ interface TagsResult {
   project: TagInfo;
 }
 
-let cachedTags: TagsResult | null = null;
-let cacheTimestamp = 0;
+// #7: Cache is keyed by directory so that server mode serving multiple projects
+// does not return stale tags from a different project.
+let cachedTagsByDir = new Map<string, { tags: TagsResult; timestamp: number }>();
 const CACHE_TTL = 60_000; // 1 minute
 
 export async function getTags(directory: string): Promise<TagsResult> {
-  if (cachedTags && Date.now() - cacheTimestamp < CACHE_TTL) {
-    return cachedTags;
+  const cached = cachedTagsByDir.get(directory);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+    return cached.tags;
   }
 
   const [user, project] = await Promise.all([getUserTagInfo(), getProjectTagInfo(directory)]);
 
-  cachedTags = { user, project };
-  cacheTimestamp = Date.now();
-  return cachedTags;
+  const result = { user, project };
+  cachedTagsByDir.set(directory, { tags: result, timestamp: Date.now() });
+  return result;
 }

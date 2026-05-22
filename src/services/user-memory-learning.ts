@@ -316,7 +316,13 @@ Use the update_user_profile tool to save the ${existingProfile ? "updated" : "ne
   const rawData = result.data;
 
   if (existingProfile) {
-    const existingData: UserProfileData = JSON.parse(existingProfile.profileData);
+    let existingData: UserProfileData;
+    try {
+      existingData = JSON.parse(existingProfile.profileData);
+    } catch {
+      log("Corrupt profile data, skipping", { profileId: existingProfile.id });
+      return rawData as UserProfileData;
+    }
     return profileRepo.mergeProfileData(existingData, rawData);
   }
 

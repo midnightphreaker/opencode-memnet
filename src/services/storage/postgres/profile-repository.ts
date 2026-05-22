@@ -248,30 +248,38 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
 
       // #9: Optimistic lock — only UPDATE if version matches what we read.
       // A concurrent write will bump version, causing 0 rows returned → retry.
-      const result = await sql`
-        UPDATE user_profiles
-        SET profile_data = ${sql.json(cleanedData as any)},
-            version = version + 1,
-            last_analyzed_at = ${now}
-        WHERE id = ${profileId} AND version = ${expectedVersion}
-        RETURNING version
-      `;
+      // #11: Wrap UPDATE + changelog in a transaction so a changelog failure
+      // rolls back the version bump and we never have a version with no changelog.
+      let txResult: { committed: boolean } = { committed: false };
+      await sql.begin(async (tx) => {
+        const result = await tx`
+          UPDATE user_profiles
+          SET profile_data = ${tx.json(cleanedData as any)},
+              version = version + 1,
+              last_analyzed_at = ${now}
+          WHERE id = ${profileId} AND version = ${expectedVersion}
+          RETURNING version
+        `;
 
-      if (result.length === 0) {
+        if (result.length === 0) return; // concurrent modification — will retry
+
+        const newVersion = Number(result[0]!.version);
+        await this.addChangelog(
+          tx,
+          profileId,
+          newVersion,
+          "decay",
+          "Applied confidence decay to preferences",
+          cleanedData
+        );
+        await this.cleanupOldChangelogs(tx, profileId);
+        txResult = { committed: true };
+      });
+
+      if (!txResult.committed) {
         // Concurrent modification — retry with fresh data
         continue;
       }
-
-      const newVersion = Number(result[0]!.version);
-      await this.addChangelog(
-        sql,
-        profileId,
-        newVersion,
-        "decay",
-        "Applied confidence decay to preferences",
-        cleanedData
-      );
-      await this.cleanupOldChangelogs(sql, profileId);
       return;
     }
     // Retries exhausted — concurrent contention; safe to skip, next decay cycle will retry

@@ -158,12 +158,13 @@ export async function handleListMemories(
         limit: 10000,
       });
     } else {
+      // #10: Cap at 1000 rows when no tag filter to prevent unbounded load / OOM.
       memoryRows = await memoryRepo.list({
         scope: "project",
         scopeHash: "",
         containerTag: "",
         includeAllContainers: true,
-        limit: 100000,
+        limit: 1000,
       });
       memoryRows = memoryRows.filter((m) => m.containerTag.includes("_project_"));
     }
@@ -876,6 +877,10 @@ interface MigrationProgress {
   errors: string[];
 }
 
+// NOTE: This module-level state assumes a single-user / single-process model.
+// Concurrent requests from different sessions may race on the isComplete flag.
+// The guard below is a best-effort check — not a hard lock — which is acceptable
+// for the intended single-user usage pattern.
 let migrationProgress: MigrationProgress = {
   processed: 0,
   total: 0,
@@ -1048,11 +1053,13 @@ export async function handleContextInject(data: {
       limit: maxMemories * 3,
     });
 
+    // Memories are listed in recency order (newest first) for context injection.
+    // Set a neutral similarity for consistent response shape.
     let memories = rows.map((r) => ({
       id: r.id,
       summary: r.content,
       createdAt: safeToISOString(r.createdAt),
-      similarity: 1.0,
+      similarity: 0.5,
       _metadata: r.metadata,
     }));
 

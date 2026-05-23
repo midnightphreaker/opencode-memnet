@@ -176,7 +176,8 @@ export async function runTagMigration(): Promise<void> {
       const remaining = await memoryRepo.countUntagged();
       if (remaining === 0) {
         _state = { status: "idle", processed: _state.total, total: _state.total, errors: [] };
-        return;
+        await sleep(5000);
+        continue;
       }
 
       // Wait before next round (avoid hammering the AI API)

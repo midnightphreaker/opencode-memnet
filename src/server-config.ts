@@ -47,6 +47,7 @@ export interface ServerConfig {
   userProfileMaxWorkflows: number;
   userProfileConfidenceDecayDays: number;
   userProfileChangelogRetentionCount: number;
+  autoCleanupRetentionDays: number;
   webServerAllowedOrigin: string;
 }
 
@@ -130,6 +131,7 @@ export function initServerConfig(): ServerConfig {
     userProfileMaxWorkflows: parseInt(env.USER_PROFILE_MAX_WORKFLOWS || "10"),
     userProfileConfidenceDecayDays: parseInt(env.USER_PROFILE_CONFIDENCE_DECAY_DAYS || "30"),
     userProfileChangelogRetentionCount: parseInt(env.USER_PROFILE_CHANGELOG_RETENTION || "5"),
+    autoCleanupRetentionDays: parseInt(env.AUTO_CLEANUP_RETENTION_DAYS || "90"),
     webServerAllowedOrigin: env.WEB_SERVER_ALLOWED_ORIGIN || "*",
   };
   return _config;

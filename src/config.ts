@@ -70,6 +70,7 @@ interface OpenCodeMemConfig {
   userProfileMaxWorkflows?: number;
   userProfileConfidenceDecayDays?: number;
   userProfileChangelogRetentionCount?: number;
+  autoCleanupRetentionDays?: number;
   showAutoCaptureToasts?: boolean;
   showUserProfileToasts?: boolean;
   showErrorToasts?: boolean;
@@ -155,6 +156,7 @@ const DEFAULTS: Required<
   userProfileMaxWorkflows: 10,
   userProfileConfidenceDecayDays: 30,
   userProfileChangelogRetentionCount: 5,
+  autoCleanupRetentionDays: 90,
   showAutoCaptureToasts: true,
   showUserProfileToasts: true,
   showErrorToasts: true,
@@ -570,6 +572,8 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
       fileConfig.userProfileConfidenceDecayDays ?? DEFAULTS.userProfileConfidenceDecayDays,
     userProfileChangelogRetentionCount:
       fileConfig.userProfileChangelogRetentionCount ?? DEFAULTS.userProfileChangelogRetentionCount,
+    autoCleanupRetentionDays:
+      fileConfig.autoCleanupRetentionDays ?? DEFAULTS.autoCleanupRetentionDays,
     showAutoCaptureToasts: fileConfig.showAutoCaptureToasts ?? DEFAULTS.showAutoCaptureToasts,
     showUserProfileToasts: fileConfig.showUserProfileToasts ?? DEFAULTS.showUserProfileToasts,
     showErrorToasts: fileConfig.showErrorToasts ?? DEFAULTS.showErrorToasts,
@@ -823,6 +827,7 @@ export function serverConfigToGlobalConfig(serverConfig: {
   userProfileMaxWorkflows: number;
   userProfileConfidenceDecayDays: number;
   userProfileChangelogRetentionCount: number;
+  autoCleanupRetentionDays: number;
 }): void {
   // Postgres
   CONFIG.postgres = CONFIG.postgres ?? ({} as any);
@@ -863,4 +868,5 @@ export function serverConfigToGlobalConfig(serverConfig: {
   CONFIG.userProfileMaxWorkflows = serverConfig.userProfileMaxWorkflows;
   CONFIG.userProfileConfidenceDecayDays = serverConfig.userProfileConfidenceDecayDays;
   CONFIG.userProfileChangelogRetentionCount = serverConfig.userProfileChangelogRetentionCount;
+  CONFIG.autoCleanupRetentionDays = serverConfig.autoCleanupRetentionDays;
 }

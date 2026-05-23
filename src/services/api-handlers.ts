@@ -917,6 +917,9 @@ let migrationProgress: MigrationProgress = {
   errors: [],
 };
 
+// ── Cleanup guard (best-effort lock; same single-user/single-process model as migrationProgress) ──
+let _cleanupInProgress = false;
+
 // Cached record list for the current migration run – avoids reloading
 // every memory (including vectors) on each batch call.
 let cachedMigrationRecords: MemoryRecord[] | null = null;
@@ -1424,8 +1427,70 @@ export function handleMigrationDetect(): ApiResponse<{ needsMigration: boolean }
   return { success: true, data: { needsMigration: false } };
 }
 
-export function handleCleanup(): ApiResponse {
-  return { success: false, error: "Cleanup not yet implemented" };
+export async function handleCleanup(): Promise<
+  ApiResponse<{
+    deletedMemories: number;
+    deletedMemoriesUser: number;
+    deletedMemoriesProject: number;
+    deletedPrompts: number;
+  }>
+> {
+  if (_cleanupInProgress) {
+    return { success: false, error: "Cleanup is already in progress" };
+  }
+
+  _cleanupInProgress = true;
+  try {
+    await ensureInit();
+
+    const retentionDays = CONFIG.autoCleanupRetentionDays ?? 90;
+    const cutoff = Date.now() - retentionDays * 86_400_000;
+
+    // Step 1: Delete old prompts & collect linked memory IDs (informational)
+    const promptResult = await promptRepo.deleteOldPrompts(cutoff);
+
+    // Step 2: Fetch stale memories (single batch of 1000; known limitation — see SPEC §3.4)
+    const oldMemories = await memoryRepo.listOlderThan(cutoff, 1000, 0);
+
+    // Step 3: Iterate, protect, delete, tally
+    let deletedMemories = 0;
+    let deletedUser = 0;
+    let deletedProject = 0;
+
+    for (const mem of oldMemories) {
+      // Protection P1: pinned memories are never deleted
+      if (mem.isPinned) continue;
+
+      // Protection P2: memories derived from a user prompt are preserved
+      if (mem.metadata?.promptId != null) continue;
+
+      // Delete the memory
+      await memoryRepo.delete(mem.id);
+      deletedMemories++;
+
+      // Classify scope from containerTag
+      if (mem.containerTag.includes("_user_")) {
+        deletedUser++;
+      } else {
+        deletedProject++;
+      }
+    }
+
+    return {
+      success: true,
+      data: {
+        deletedMemories,
+        deletedMemoriesUser: deletedUser,
+        deletedMemoriesProject: deletedProject,
+        deletedPrompts: promptResult.deleted,
+      },
+    };
+  } catch (error) {
+    log("handleCleanup: error", { error: String(error) });
+    return { success: false, error: String(error) };
+  } finally {
+    _cleanupInProgress = false;
+  }
 }
 
 export function handleDeduplicate(): ApiResponse {

@@ -263,7 +263,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (path === "/api/cleanup" && method === "POST") {
-      const result = handleCleanup();
+      const result = await handleCleanup();
       return jsonResponse(result);
     }
 

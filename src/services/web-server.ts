@@ -351,7 +351,7 @@ export class WebServer {
       }
 
       if (path === "/api/cleanup" && method === "POST") {
-        const result = handleCleanup();
+        const result = await handleCleanup();
         return this.jsonResponse(result);
       }
 

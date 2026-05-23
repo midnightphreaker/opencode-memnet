@@ -229,6 +229,16 @@ bun run dev:server   # bun --watch src/server.ts
 bun test             # 160 tests
 ```
 
+## Acknowledgments
+
+This project builds upon the original [OpenCode Memory](https://github.com/tickernelz/opencode-mem) by **tickernelz** — the foundation that made all of this possible. Thank you for creating and sharing this excellent work.
+
+For the original version with local vector database support, a lighter memory footprint suitable for single-user local use, and the initial design that inspired this server-client evolution, visit:
+
+**[github.com/tickernelz/opencode-mem](https://github.com/tickernelz/opencode-mem)**
+
+Thank you to everyone who contributed to the original project.
+
 ## License
 
 MIT

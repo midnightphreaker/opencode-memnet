@@ -1067,8 +1067,8 @@ export async function handleRunTagMigrationBatch(
     cachedMigrationRecords = null;
     return { success: false, error: String(error) };
   } finally {
+    _migrationRunning = false;
     if (migrationProgress.isComplete) {
-      _migrationRunning = false;
       cachedMigrationRecords = null;
     }
   }

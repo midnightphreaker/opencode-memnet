@@ -123,7 +123,8 @@ export async function runTagMigration(): Promise<void> {
           total: _state.processed,
           errors: [],
         };
-        return;
+        await sleep(5000); // wait before next check
+        continue;
       }
 
       const existingTags = await memoryRepo.getDistinctTagValues({ scope: "project" });

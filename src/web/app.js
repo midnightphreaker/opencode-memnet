@@ -1343,6 +1343,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadTags();
     loadMemories();
     loadStats();
+    checkMigrationStatus();
   });
   document.getElementById("settings-apikey").addEventListener("keypress", (e) => {
     if (e.key === "Enter") document.getElementById("settings-save").click();

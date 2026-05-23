@@ -6,7 +6,7 @@ This project builds upon and would not exist without the original [OpenCode Memo
 
 ## Architecture
 
-![opencode-memnet Architecture Diagram](src/web/svg_orchestrator.svg)
+![opencode-memnet Architecture Diagram](src/web/opencode-memnet-diagram.svg)
 
 - **Server**: Standalone Bun process serving REST API + WebUI, connected to Postgres/pgvector
 - **Client**: Thin OpenCode plugin that communicates with the server over HTTP

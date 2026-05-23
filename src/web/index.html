@@ -245,34 +245,6 @@
 
     <div id="toast" class="toast hidden"></div>
 
-    <div id="tag-migration-overlay" class="modal hidden">
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3 data-i18n="modal-migration-title">Memory Tagging Migration</h3>
-          <button class="modal-close" id="tag-migration-close">
-            <i data-lucide="x" class="icon"></i>
-          </button>
-        </div>
-        <div class="migration-progress-body">
-          <p id="tag-migration-status" data-i18n="status-migration-init">
-            Initializing migration...
-          </p>
-          <div class="progress-bar-container">
-            <div id="tag-migration-progress" class="progress-bar" style="width: 0%"></div>
-          </div>
-          <p class="migration-note" data-i18n="migration-note">
-            Please don't close the browser. This will re-vectorize your memories with technical tags
-            to improve search accuracy.
-          </p>
-        </div>
-        <div class="modal-actions" id="tag-migration-actions">
-          <button id="start-tag-migration-btn" class="btn-primary" data-i18n="btn-start-migration">
-            <i data-lucide="play" class="icon"></i> Start Migration
-          </button>
-        </div>
-      </div>
-    </div>
-
     <div id="changelog-modal" class="modal hidden">
       <div class="modal-content">
         <div class="modal-header">
@@ -314,6 +286,8 @@
         </p>
       </div>
     </div>
+
+    <div id="migration-status-bar" class="migration-status-bar">Status: Idle</div>
 
     <script src="/app.js"></script>
   </body>

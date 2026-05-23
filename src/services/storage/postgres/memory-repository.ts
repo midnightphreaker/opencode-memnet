@@ -518,6 +518,21 @@ export class PostgresMemoryRepository implements MemoryRepository {
     }));
   }
 
+  async getDistinctTagValues(args?: { scope?: MemoryScopeKind }): Promise<string[]> {
+    const sql = getPostgresClient();
+    const scope = args?.scope ?? "project";
+    const rows = await sql<
+      { tags: string | null }[]
+    >`SELECT DISTINCT unnest(string_to_array(tags, ',')) AS tags FROM memories WHERE scope = ${scope} AND tags IS NOT NULL AND tags != ''`;
+    const tagSet = new Set<string>();
+    for (const row of rows) {
+      if (row.tags) {
+        tagSet.add(row.tags.trim().toLowerCase());
+      }
+    }
+    return Array.from(tagSet).sort();
+  }
+
   async pin(memoryId: string): Promise<void> {
     const sql = getPostgresClient();
     await sql`UPDATE memories SET is_pinned = true WHERE id = ${memoryId}`;

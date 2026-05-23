@@ -57,6 +57,10 @@ async function main(): Promise<void> {
     log(`WebUI: http://${config.host}:${config.port}/`);
     log(`Health: http://${config.host}:${config.port}/api/health`);
 
+    // Start background tag migration (perpetual loop)
+    const { runTagMigration } = await import("./services/tag-migration-service.js");
+    runTagMigration().catch((err) => log("Tag migration loop error", { error: String(err) }));
+
     // 5. Graceful shutdown
     const shutdown = async () => {
       log("Shutting down...");
@@ -64,6 +68,12 @@ async function main(): Promise<void> {
         await server.stop();
       } catch (e) {
         log("Error stopping server", { error: String(e) });
+      }
+      try {
+        const { stopMigration } = await import("./services/tag-migration-service.js");
+        stopMigration();
+      } catch (e) {
+        log("Error stopping migration", { error: String(e) });
       }
       try {
         const { closeStorage } = await import("./services/storage/factory.js");

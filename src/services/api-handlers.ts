@@ -971,155 +971,28 @@ let _cleanupInProgress = false;
 // every memory (including vectors) on each batch call.
 let cachedMigrationRecords: MemoryRecord[] | null = null;
 
-export async function handleGetTagMigrationProgress(): Promise<ApiResponse<MigrationProgress>> {
-  return { success: true, data: { ...migrationProgress } };
+export async function handleGetTagMigrationProgress(): Promise<
+  ApiResponse<{ status: string; processed: number; total: number; errors: string[] }>
+> {
+  const { getMigrationProgress } = await import("./tag-migration-service.js");
+  return { success: true, data: getMigrationProgress() };
 }
 
 export async function handleRunTagMigrationBatch(
-  batchSize: number = 5
+  _batchSize: number = 5
 ): Promise<ApiResponse<{ processed: number; total: number; hasMore: boolean }>> {
-  // Guard against concurrent migration requests
-  if (_migrationRunning) {
-    return { success: false, error: "Migration already in progress" };
-  }
-
-  try {
-    _migrationRunning = true;
-    await ensureInit();
-    // Only (re)initialize when starting a fresh migration:
-    // either no migration has started yet, or the previous one completed.
-    if (migrationProgress.isComplete || migrationProgress.total === 0) {
-      migrationProgress = {
-        processed: 0,
-        total: 0,
-        currentBatch: 0,
-        totalBatches: 0,
-        isComplete: false,
-        errors: [],
-      };
-      cachedMigrationRecords = null;
-    }
-    const { AIProviderFactory } = await import("./ai/ai-provider-factory.js");
-    const { buildMemoryProviderConfig } = await import("./ai/provider-config.js");
-    const providerConfig = buildMemoryProviderConfig(CONFIG, {
-      maxIterations: 1,
-      iterationTimeout: 30000,
-    });
-    const provider = AIProviderFactory.createProvider(CONFIG.memoryProvider, providerConfig);
-
-    // Load records only once per migration run and cache them to avoid
-    // re-reading every memory (including vectors) on each batch call.
-    if (!cachedMigrationRecords) {
-      cachedMigrationRecords = (await memoryRepo.getAllWithVectors()).filter((record) =>
-        record.containerTag.includes("_project_")
-      );
-    }
-    const allRecords = cachedMigrationRecords;
-
-    migrationProgress.total = allRecords.length;
-    migrationProgress.totalBatches = Math.ceil(allRecords.length / batchSize);
-
-    let batchProcessed = 0;
-    const startIdx = migrationProgress.processed;
-    const endIdx = Math.min(startIdx + batchSize, allRecords.length);
-
-    for (let i = startIdx; i < endIdx; i++) {
-      const m = allRecords[i];
-      if (!m) continue;
-
-      try {
-        let currentTags = m.tags
-          ? m.tags
-              .split(",")
-              .map((t: string) => t.trim().toLowerCase())
-              .filter((t: string) => t)
-          : [];
-
-        if (currentTags.length === 0) {
-          const prompt = `Generate 2-4 short technical tags for this memory content:\n\n${m.content}\n\nReturn ONLY a comma-separated list of tags.`;
-          const result = await provider.executeToolCall(
-            "You are a technical tagger.",
-            prompt,
-            {
-              type: "function",
-              function: {
-                name: "save_tags",
-                description: "Save generated tags",
-                parameters: {
-                  type: "object",
-                  properties: { tags: { type: "array", items: { type: "string" } } },
-                  required: ["tags"],
-                },
-              },
-            },
-            `migration_${m.id}`
-          );
-          if (result.success && result.data?.tags) {
-            currentTags = result.data.tags;
-          }
-        }
-
-        const vector = await embeddingService.embedWithTimeout(m.content, { kind: "content" });
-        const tagsVector = currentTags.length
-          ? await embeddingService.embedWithTimeout(currentTags.join(", "), { kind: "tags" })
-          : undefined;
-
-        await memoryRepo.updateTagsAndVectors(
-          m.id,
-          currentTags.join(","),
-          vector,
-          tagsVector,
-          Date.now()
-        );
-
-        batchProcessed++;
-      } catch (e) {
-        const errorMsg = String(e);
-        migrationProgress.errors.push(errorMsg);
-        log("Migration error for memory", { id: m.id, error: errorMsg });
-      }
-      migrationProgress.processed++;
-    }
-
-    migrationProgress.currentBatch++;
-    const hasMore = migrationProgress.processed < migrationProgress.total;
-
-    if (!hasMore) {
-      migrationProgress.isComplete = true;
-      cachedMigrationRecords = null;
-      // Persist completion marker to survive server restarts
-      try {
-        const fs = await import("node:fs/promises");
-        const path = await import("node:path");
-        const dataDir = CONFIG.storagePath || "/tmp/opencode-memnet-data";
-        await fs.mkdir(path.join(dataDir, ".migration"), { recursive: true });
-        await fs.writeFile(
-          path.join(dataDir, ".migration", "tag-migration.json"),
-          JSON.stringify({
-            completed: true,
-            processed: migrationProgress.processed,
-            timestamp: Date.now(),
-          })
-        );
-      } catch {
-        /* best-effort; suppress nag in Fix 1 is primary fix */
-      }
-    }
-
+  // Delegate to the background service
+  const { getMigrationProgress, runTagMigration } = await import("./tag-migration-service.js");
+  const progress = getMigrationProgress();
+  if (progress.status === "running") {
     return {
       success: true,
-      data: { processed: migrationProgress.processed, total: migrationProgress.total, hasMore },
+      data: { processed: progress.processed, total: progress.total, hasMore: true },
     };
-  } catch (error) {
-    migrationProgress.isComplete = true;
-    cachedMigrationRecords = null;
-    return { success: false, error: String(error) };
-  } finally {
-    _migrationRunning = false;
-    if (migrationProgress.isComplete) {
-      cachedMigrationRecords = null;
-    }
   }
+  // Fire and forget — the service loop handles retries
+  runTagMigration().catch(() => {});
+  return { success: true, data: { processed: 0, total: 0, hasMore: true } };
 }
 
 // ── New endpoints for server-client architecture ────────────

@@ -757,94 +757,6 @@ function startAutoRefresh() {
   }, 30000);
 }
 
-function dismissTagMigration() {
-  document.getElementById("tag-migration-overlay").classList.add("hidden");
-  // Don't show again for 24 hours
-  localStorage.setItem("opencode-memnet-migration-dismissed", Date.now().toString());
-}
-
-async function checkMigrationStatus() {
-  const result = await fetchAPI("/api/migration/detect");
-  if (result.success && result.data.needsMigration) {
-    showMigrationWarning(result.data);
-  }
-
-  // Skip if dismissed within the last 24 hours
-  const dismissedAt = parseInt(localStorage.getItem("opencode-memnet-migration-dismissed") || "0");
-  if (dismissedAt && Date.now() - dismissedAt < 24 * 60 * 60 * 1000) return;
-
-  const tagResult = await fetchAPI("/api/migration/tags/detect");
-  if (tagResult.success && tagResult.data.needsMigration) {
-    showTagMigrationModal(tagResult.data.count);
-  }
-}
-
-function showTagMigrationModal(count) {
-  const overlay = document.getElementById("tag-migration-overlay");
-  const status = document.getElementById("tag-migration-status");
-  overlay.classList.remove("hidden");
-  status.textContent = t("migration-found-tags", { count });
-
-  document.getElementById("start-tag-migration-btn").onclick = runTagMigration;
-}
-
-async function runTagMigration() {
-  const actions = document.getElementById("tag-migration-actions");
-  const status = document.getElementById("tag-migration-status");
-  const progress = document.getElementById("tag-migration-progress");
-
-  actions.classList.add("hidden");
-  status.textContent = t("status-migration-init");
-  progress.style.width = "0%";
-
-  let totalProcessed = 0;
-  let hasMore = true;
-  let attempts = 0;
-  const maxAttempts = 1000;
-
-  while (hasMore && attempts < maxAttempts) {
-    attempts++;
-    const result = await fetchAPI("/api/migration/tags/run-batch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ batchSize: 3 }),
-    });
-
-    if (!result.success) {
-      status.textContent = t("toast-migration-failed") + ": " + result.error;
-      document.getElementById("tag-migration-actions").classList.remove("hidden");
-      return;
-    }
-
-    totalProcessed = result.data.processed;
-    hasMore = result.data.hasMore;
-    const total = result.data.total;
-    const percent = total > 0 ? Math.round((totalProcessed / total) * 100) : 0;
-
-    progress.style.width = percent + "%";
-    status.textContent = t("status-migration-progress", { current: totalProcessed, total: total });
-    if (hasMore) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-
-  if (attempts >= maxAttempts) {
-    status.textContent = t("migration-stopped");
-    document.getElementById("tag-migration-actions").classList.remove("hidden");
-    return;
-  }
-
-  progress.style.width = "100%";
-  status.textContent = t("toast-migration-success");
-  dismissTagMigration();
-  showToast(t("toast-migration-success"), "success");
-  setTimeout(() => {
-    document.getElementById("tag-migration-overlay").classList.add("hidden");
-    loadMemories();
-    loadStats();
-  }, 2000);
-}
-
 function showMigrationWarning(data) {
   const section = document.getElementById("migration-section");
   const message = document.getElementById("migration-message");
@@ -1201,7 +1113,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("tab-project").addEventListener("click", () => switchView("project"));
   document.getElementById("tab-profile").addEventListener("click", () => switchView("profile"));
   document.getElementById("refresh-profile-btn")?.addEventListener("click", refreshProfile);
-  document.getElementById("tag-migration-close")?.addEventListener("click", dismissTagMigration);
 
   document.getElementById("changelog-close")?.addEventListener("click", () => {
     document.getElementById("changelog-modal").classList.add("hidden");
@@ -1344,7 +1255,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadTags();
     loadMemories();
     loadStats();
-    checkMigrationStatus();
   });
   document.getElementById("settings-apikey").addEventListener("keypress", (e) => {
     if (e.key === "Enter") document.getElementById("settings-save").click();
@@ -1358,7 +1268,6 @@ document.addEventListener("DOMContentLoaded", async () => {
   await loadTags();
   await loadMemories();
   await loadStats();
-  await checkMigrationStatus();
 
   // Fallback: if memories still show the loading indicator after init,
   // retry after a short delay (headless Chromium event loop edge case)
@@ -1370,6 +1279,28 @@ document.addEventListener("DOMContentLoaded", async () => {
       loadStats();
     }
   }, 3000);
+
+  // Migration status bar polling
+  setInterval(async () => {
+    try {
+      const headers = {};
+      if (state.authKey) headers["Authorization"] = `Bearer ${state.authKey}`;
+      const res = await fetch("/api/migration/tags/progress", { headers });
+      const data = await res.json();
+      if (data.success) {
+        const bar = document.getElementById("migration-status-bar");
+        if (bar) {
+          if (data.data.status === "running") {
+            bar.textContent = `Status: Migrating Memories (${data.data.processed} of ${data.data.total})...`;
+          } else {
+            bar.textContent = "Status: Idle";
+          }
+        }
+      }
+    } catch {
+      /* ignore poll errors */
+    }
+  }, 2000);
 
   startAutoRefresh();
 

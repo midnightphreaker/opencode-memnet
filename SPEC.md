@@ -1,4 +1,4 @@
-# opencode-mem Server-Client Architecture
+# opencode-memnet Server-Client Architecture
 
 ## Specification v1.0
 
@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-opencode-mem currently operates as an in-process OpenCode plugin: a single Bun process that handles memory storage (PostgreSQL + pgvector), semantic search (remote embeddings), AI-powered auto-capture and profile learning, a local WebUI, and OpenCode plugin hooks. Every plugin instance owns its own process, its own config, and its own connection to shared infrastructure.
+opencode-memnet currently operates as an in-process OpenCode plugin: a single Bun process that handles memory storage (PostgreSQL + pgvector), semantic search (remote embeddings), AI-powered auto-capture and profile learning, a local WebUI, and OpenCode plugin hooks. Every plugin instance owns its own process, its own config, and its own connection to shared infrastructure.
 
 This specification defines a server-client split:
 
@@ -192,7 +192,7 @@ These endpoints from the current `web-server.ts` / `api-handlers.ts` codebase SH
 
 | ID     | Requirement                                                                                                                                                                                                                                    |
 | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| CL-021 | The client SHALL load configuration from files matching the current pattern (`~/.config/opencode/opencode-mem.jsonc`, project `.opencode/opencode-mem.jsonc`).                                                                                 |
+| CL-021 | The client SHALL load configuration from files matching the current pattern (`~/.config/opencode/opencode-memnet.jsonc`, project `.opencode/opencode-memnet.jsonc`).                                                                           |
 | CL-022 | Required client configuration SHALL be: `serverUrl`, `apiKey`.                                                                                                                                                                                 |
 | CL-023 | Optional client configuration SHALL be: `autoCaptureEnabled`, `chatMessage.*` (maxMemories, excludeCurrentSession, maxAgeDays, injectOn), `showErrorToasts`, `showAutoCaptureToasts`, `showUserProfileToasts`.                                 |
 | CL-024 | The client SHALL NOT require any of: `postgres.*`, `embedding*`, `memoryModel`, `memoryApiUrl`, `memoryApiKey`, `memoryProvider`, `opencodeProvider`, `opencodeModel`, `webServer*`, `userProfile*`, `compaction.*`, `aiSessionRetentionDays`. |
@@ -268,7 +268,7 @@ These endpoints from the current `web-server.ts` / `api-handlers.ts` codebase SH
 | AC-003 | `GET /api/stats` without an API key returns HTTP 401. |
 | AC-004 | `GET /api/stats` with a valid `Authorization: Bearer <key>` header returns HTTP 200 with correct memory counts. |
 | AC-005 | The existing WebUI loads at `http://localhost:4747/` and displays memories (assuming API key is provided). |
-| AC-006 | `docker build -t opencode-mem-server . && docker run -p 4747:4747 -e ...` starts the server and serves the WebUI. |
+| AC-006 | `docker build -t opencode-memnet-server . && docker run -p 4747:4747 -e ...` starts the server and serves the WebUI. |
 | AC-007 | Memory CRUD operations (add, list, search, update, delete) work identically to the current in-process plugin via HTTP API. |
 | AC-008 | The old in-process plugin continues to work without changes when tested against the same Postgres database. |
 

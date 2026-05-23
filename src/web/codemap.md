@@ -42,4 +42,4 @@ Browser-based admin UI for exploring, searching, and managing memories and user 
 
 - **Backend API** — all data comes from REST endpoints under `/api/*` served by the Go backend. `fetchAPI()` wraps `fetch` with a 60-second timeout. `API_BASE` is empty (same-origin).
 - **External CDN libs** — Lucide (icons), marked (Markdown), DOMPurify (HTML sanitization), jsonrepair (lenient JSON parsing for profile data).
-- **localStorage** — used by `i18n.js` to persist language preference (`opencode-mem-lang`).
+- **localStorage** — used by `i18n.js` to persist language preference (`opencode-memnet-lang`).

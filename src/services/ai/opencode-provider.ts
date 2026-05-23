@@ -69,13 +69,13 @@ export async function generateStructuredOutput<T>(opts: StructuredOutputOptions<
     ).toJSONSchema?.() ?? (await import("zod")).z.toJSONSchema(schema);
 
   const created = await client.session.create({
-    title: "opencode-mem capture",
+    title: "opencode-memnet capture",
     ...(directory ? { directory } : {}),
   });
   const sessionID = (created as { data?: { id?: string } })?.data?.id;
   if (!sessionID) {
     throw new Error(
-      "opencode-mem: session.create returned no session id; cannot generate structured output"
+      "opencode-memnet: session.create returned no session id; cannot generate structured output"
     );
   }
 
@@ -107,17 +107,17 @@ export async function generateStructuredOutput<T>(opts: StructuredOutputOptions<
 
     const info = data?.info;
     if (!info) {
-      throw new Error("opencode-mem: prompt response missing `info`");
+      throw new Error("opencode-memnet: prompt response missing `info`");
     }
 
     if (info.error) {
       const msg = info.error.data?.message ?? info.error.name;
-      throw new Error(`opencode-mem: opencode reported ${info.error.name}: ${msg}`);
+      throw new Error(`opencode-memnet: opencode reported ${info.error.name}: ${msg}`);
     }
 
     if (info.structured === undefined || info.structured === null) {
       throw new Error(
-        "opencode-mem: opencode returned no structured output (info.structured was empty)"
+        "opencode-memnet: opencode returned no structured output (info.structured was empty)"
       );
     }
 

@@ -260,7 +260,7 @@ async function generateSummary(
     const v2Client = getV2Client();
     if (!v2Client) {
       throw new Error(
-        "opencode-mem: v2 client not initialized; cannot perform structured-output capture"
+        "opencode-memnet: v2 client not initialized; cannot perform structured-output capture"
       );
     }
 

@@ -3,7 +3,7 @@ import type { PluginModule } from "@opencode-ai/plugin";
 import pkg from "../package.json" with { type: "json" };
 
 export const id =
-  typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : "opencode-mem";
+  typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : "opencode-memnet";
 
 async function resolvePlugin() {
   try {
@@ -11,7 +11,7 @@ async function resolvePlugin() {
     initClientConfig(process.cwd());
     if (isClientConfigured()) {
       const { OpenCodeMemPlugin } = await import("./index-remote.js");
-      console.log("[opencode-mem] Using remote server-client mode");
+      console.log("[opencode-memnet] Using remote server-client mode");
       return OpenCodeMemPlugin;
     }
   } catch {
@@ -19,7 +19,7 @@ async function resolvePlugin() {
   }
 
   console.warn(
-    "[opencode-mem] Using legacy in-process mode. Configure serverUrl + apiKey for server-client mode."
+    "[opencode-memnet] Using legacy in-process mode. Configure serverUrl + apiKey for server-client mode."
   );
   const { OpenCodeMemPlugin } = await import("./index.js");
   return OpenCodeMemPlugin;

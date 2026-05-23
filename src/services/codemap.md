@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-- **Core service layer** for opencode-mem: coordinates memory storage, vector embeddings, AI-powered capture/learning, and the web dashboard API.
+- **Core service layer** for opencode-memnet: coordinates memory storage, vector embeddings, AI-powered capture/learning, and the web dashboard API.
 - Provides the main public facade (`LocalMemoryClient`) that the plugin layer calls into for CRUD and vector search on memories.
 - Houses the **auto-capture pipeline** that observes conversations and distills them into saved memories via LLM summarization.
 - Runs **user profile learning** — periodic analysis of user prompts to build/maintain behavioral profiles (preferences, patterns, workflows).

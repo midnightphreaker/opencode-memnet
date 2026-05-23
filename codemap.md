@@ -1,13 +1,13 @@
-# Repository Atlas: opencode-mem
+# Repository Atlas: opencode-memnet
 
 ## Project Responsibility
 
-`opencode-mem` is an OpenCode plugin that gives coding agents persistent, semantically searchable memory. It captures user prompts, embeds them via a remote OpenAI-compatible API (1024-dim vectors), stores memories in PostgreSQL with pgvector HNSW indexes, injects relevant context into future chat messages, supports automatic memory capture and user-profile learning, and exposes a local HTTP API and Management WebUI for memory management.
+`opencode-memnet` is an OpenCode plugin that gives coding agents persistent, semantically searchable memory. It captures user prompts, embeds them via a remote OpenAI-compatible API (1024-dim vectors), stores memories in PostgreSQL with pgvector HNSW indexes, injects relevant context into future chat messages, supports automatic memory capture and user-profile learning, and exposes a local HTTP API and Management WebUI for memory management.
 
 ## System Entry Points
 
 - **`src/index.ts`** — primary OpenCode plugin factory; wires configuration, chat hooks, tools, event handlers, memory injection, auto-capture, profile learning, and web server startup.
-- **`src/config.ts`** — configuration loader/normalizer for global and project-local `opencode-mem` JSON/JSONC files, defaults, path expansion, and secret resolution. Validates required fields: `postgres.url`, `embeddingApiUrl`, `embeddingModel`.
+- **`src/config.ts`** — configuration loader/normalizer for global and project-local `opencode-memnet` JSON/JSONC files, defaults, path expansion, and secret resolution. Validates required fields: `postgres.url`, `embeddingApiUrl`, `embeddingModel`.
 
 ## Directory Map
 

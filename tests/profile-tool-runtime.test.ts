@@ -21,7 +21,7 @@ const profileRepoUrl = new URL(
 const tagsUrl = new URL("../src/services/tags.js", import.meta.url).href;
 
 function runScenario(input: ScenarioInput) {
-  const dir = mkdtempSync(join(tmpdir(), "opencode-mem-profile-runtime-"));
+  const dir = mkdtempSync(join(tmpdir(), "opencode-memnet-profile-runtime-"));
   tempDirs.push(dir);
   const scriptPath = join(dir, "scenario.mjs");
 
@@ -31,10 +31,10 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const tmpDir = ${JSON.stringify(dir)};
-const WARMUP_KEY = Symbol.for("opencode-mem.plugin.warmedup");
+const WARMUP_KEY = Symbol.for("opencode-memnet.plugin.warmedup");
 mkdirSync(join(tmpDir, ".opencode"), { recursive: true });
 writeFileSync(
-  join(tmpDir, ".opencode", "opencode-mem.json"),
+  join(tmpDir, ".opencode", "opencode-memnet.json"),
   JSON.stringify(${JSON.stringify(input.config)}),
   "utf-8"
 );

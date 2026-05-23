@@ -1,4 +1,4 @@
-# opencode-mem Server-Client Split — Implementation Guide
+# opencode-memnet Server-Client Split — Implementation Guide
 
 ## v1.0
 
@@ -562,7 +562,7 @@ import { startWebServer } from "./services/web-server.js";
 import { log } from "./services/logger.js";
 
 async function main(): Promise<void> {
-  log("opencode-mem server starting...");
+  log("opencode-memnet server starting...");
 
   // 1. Load and validate config
   const config = initServerConfig();
@@ -809,7 +809,7 @@ Also update the `"exports"` field to add a server export:
 | 4   | Auth success           | `curl -H "Authorization: Bearer $KEY" localhost:4747/api/stats` | HTTP 200 with data                           |
 | 5   | Memory CRUD            | POST a memory, GET it back, DELETE it                           | All work with auth                           |
 | 6   | WebUI loads            | Browser → `http://localhost:4747/`                              | WebUI renders (API key needed for API calls) |
-| 7   | Docker build           | `docker build -t opencode-mem-server .`                         | Build succeeds                               |
+| 7   | Docker build           | `docker build -t opencode-memnet-server .`                      | Build succeeds                               |
 | 8   | Docker compose         | `docker compose up -d` with env vars                            | Server starts, health OK                     |
 | 9   | Old plugin still works | Run existing plugin against same DB                             | No regression                                |
 
@@ -1168,8 +1168,8 @@ export let CLIENT_CONFIG = buildClientConfig({});
 
 export function initClientConfig(directory: string): void {
   const projectPaths = [
-    join(directory, ".opencode", "opencode-mem.jsonc"),
-    join(directory, ".opencode", "opencode-mem.json"),
+    join(directory, ".opencode", "opencode-memnet.jsonc"),
+    join(directory, ".opencode", "opencode-memnet.json"),
   ];
   const globalConfig = loadConfigFromPaths(CONFIG_FILES) as Partial<ClientConfig>;
   const projectConfig = loadConfigFromPaths(projectPaths) as Partial<ClientConfig>;
@@ -1530,7 +1530,7 @@ import type { PluginModule } from "@opencode-ai/plugin";
 import pkg from "../package.json" with { type: "json" };
 
 export const id =
-  typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : "opencode-mem";
+  typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : "opencode-memnet";
 
 // Detect mode based on config file presence
 // If serverUrl is configured, use the remote thin client
@@ -2096,7 +2096,7 @@ import type { PluginModule } from "@opencode-ai/plugin";
 import pkg from "../package.json" with { type: "json" };
 
 export const id =
-  typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : "opencode-mem";
+  typeof pkg.name === "string" && pkg.name.trim() ? pkg.name.trim() : "opencode-memnet";
 
 async function resolvePlugin() {
   // Prefer remote plugin if configured
@@ -2105,7 +2105,7 @@ async function resolvePlugin() {
     initClientConfig(process.cwd());
     if (isClientConfigured()) {
       const { OpenCodeMemPlugin } = await import("./index-remote.js");
-      console.log("[opencode-mem] Using remote server-client mode");
+      console.log("[opencode-memnet] Using remote server-client mode");
       return OpenCodeMemPlugin;
     }
   } catch {
@@ -2114,7 +2114,7 @@ async function resolvePlugin() {
 
   // Fall back to legacy in-process plugin
   console.warn(
-    "[opencode-mem] Using legacy in-process mode. Configure serverUrl + apiKey for server-client mode."
+    "[opencode-memnet] Using legacy in-process mode. Configure serverUrl + apiKey for server-client mode."
   );
   const { OpenCodeMemPlugin } = await import("./index.js");
   return OpenCodeMemPlugin;

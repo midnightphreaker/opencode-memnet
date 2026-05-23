@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const home = mkdtempSync(join(tmpdir(), "opencode-mem-test-"));
+const home = mkdtempSync(join(tmpdir(), "opencode-memnet-test-"));
 const originalHome = process.env.HOME;
 const originalUserProfile = process.env.USERPROFILE;
 process.env.HOME = home;
@@ -18,8 +18,8 @@ afterAll(() => {
 
 describe("config", () => {
   describe("CONFIG defaults", () => {
-    it("should have a storagePath containing .opencode-mem", () => {
-      expect(CONFIG.storagePath).toContain(".opencode-mem");
+    it("should have a storagePath containing .opencode-memnet", () => {
+      expect(CONFIG.storagePath).toContain(".opencode-memnet");
     });
 
     it("should have numeric embeddingDimensions", () => {

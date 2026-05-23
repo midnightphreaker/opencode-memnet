@@ -7,7 +7,7 @@ import { startWebServer } from "./services/web-server.js";
 import { log } from "./services/logger.js";
 
 async function main(): Promise<void> {
-  log("opencode-mem server starting...");
+  log("opencode-memnet server starting...");
 
   // 1. Load and validate config
   const config = initServerConfig();

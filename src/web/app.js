@@ -14,8 +14,8 @@ const state = {
   selectedMemories: new Set(),
   autoRefreshInterval: null,
   userProfile: null,
-  authKey: localStorage.getItem("opencode-mem-apikey") || "",
-  activeProfileId: localStorage.getItem("opencode-mem-active-profile") || "",
+  authKey: localStorage.getItem("opencode-memnet-apikey") || "",
+  activeProfileId: localStorage.getItem("opencode-memnet-active-profile") || "",
 };
 
 marked.setOptions({
@@ -1302,7 +1302,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     const newProfileId = document.getElementById("settings-profile").value;
     if (state.activeProfileId === newProfileId) return;
     state.activeProfileId = newProfileId;
-    localStorage.setItem("opencode-mem-active-profile", newProfileId);
+    localStorage.setItem("opencode-memnet-active-profile", newProfileId);
     state.currentPage = 1;
 
     // Clear current data and reload for the new profile
@@ -1320,7 +1320,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("settings-save").addEventListener("click", async () => {
     const key = document.getElementById("settings-apikey").value.trim();
     state.authKey = key;
-    localStorage.setItem("opencode-mem-apikey", key);
+    localStorage.setItem("opencode-memnet-apikey", key);
 
     // Try to load profiles and set the default
     await populateProfileDropdown();
@@ -1349,7 +1349,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   setTimeout(() => {
     const list = document.getElementById("memories-list");
     if (list && list.querySelector(".loading")) {
-      console.warn("[opencode-mem] Memories stuck in loading state, retrying...");
+      console.warn("[opencode-memnet] Memories stuck in loading state, retrying...");
       loadMemories();
       loadStats();
     }

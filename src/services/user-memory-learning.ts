@@ -172,7 +172,7 @@ async function analyzeUserProfile(
     const v2Client = getV2Client();
     if (!v2Client) {
       throw new Error(
-        "opencode-mem: v2 client not initialized; cannot perform user-profile learning"
+        "opencode-memnet: v2 client not initialized; cannot perform user-profile learning"
       );
     }
 

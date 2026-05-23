@@ -228,11 +228,11 @@ const translations = {
 };
 
 function getLanguage() {
-  return localStorage.getItem("opencode-mem-lang") || "en";
+  return localStorage.getItem("opencode-memnet-lang") || "en";
 }
 
 function setLanguage(lang) {
-  localStorage.setItem("opencode-mem-lang", lang);
+  localStorage.setItem("opencode-memnet-lang", lang);
   applyLanguage();
 }
 

@@ -2,7 +2,7 @@
 
 ## Responsibility
 
-Shared TypeScript type definitions consumed across the entire opencode-mem plugin. Provides the canonical contracts for memory metadata classification and AI provider discrimination.
+Shared TypeScript type definitions consumed across the entire opencode-memnet plugin. Provides the canonical contracts for memory metadata classification and AI provider discrimination.
 
 ## Design
 

@@ -5,10 +5,10 @@ import { stripJsoncComments } from "./services/jsonc.js";
 import { resolveSecretValue } from "./services/secret-resolver.js";
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode");
-const DATA_DIR = join(homedir(), ".opencode-mem");
+const DATA_DIR = join(homedir(), ".opencode-memnet");
 const CONFIG_FILES = [
-  join(CONFIG_DIR, "opencode-mem.jsonc"),
-  join(CONFIG_DIR, "opencode-mem.json"),
+  join(CONFIG_DIR, "opencode-memnet.jsonc"),
+  join(CONFIG_DIR, "opencode-memnet.json"),
 ];
 
 if (!existsSync(CONFIG_DIR)) {
@@ -235,7 +235,7 @@ const CONFIG_TEMPLATE = `{
   // ============================================
 
   // General data directory (used for cache, user overrides, etc.)
-  "storagePath": "~/.opencode-mem/data",
+  "storagePath": "~/.opencode-memnet/data",
 
   "userEmailOverride": "",
   "userNameOverride": "",
@@ -489,13 +489,13 @@ const CONFIG_TEMPLATE = `{
 `;
 
 function ensureConfigExists(): void {
-  const configPath = join(CONFIG_DIR, "opencode-mem.jsonc");
+  const configPath = join(CONFIG_DIR, "opencode-memnet.jsonc");
 
   if (!existsSync(configPath)) {
     try {
       writeFileSync(configPath, CONFIG_TEMPLATE, "utf-8");
       console.log(`\n✓ Created config template: ${configPath}`);
-      console.log("  Edit this file to customize opencode-mem settings.\n");
+      console.log("  Edit this file to customize opencode-memnet settings.\n");
     } catch {}
   }
 }
@@ -690,8 +690,8 @@ export let CLIENT_CONFIG = buildClientConfig({});
 
 export function initClientConfig(directory: string): void {
   const projectPaths = [
-    join(directory, ".opencode", "opencode-mem.jsonc"),
-    join(directory, ".opencode", "opencode-mem.json"),
+    join(directory, ".opencode", "opencode-memnet.jsonc"),
+    join(directory, ".opencode", "opencode-memnet.json"),
   ];
   const globalConfig = loadConfigFromPaths(CONFIG_FILES) as Partial<ClientConfig>;
   const projectConfig = loadConfigFromPaths(projectPaths) as Partial<ClientConfig>;
@@ -745,8 +745,8 @@ let _configErrors: string[] = validateConfig();
 
 export function initConfig(directory: string): void {
   const projectPaths = [
-    join(directory, ".opencode", "opencode-mem.jsonc"),
-    join(directory, ".opencode", "opencode-mem.json"),
+    join(directory, ".opencode", "opencode-memnet.jsonc"),
+    join(directory, ".opencode", "opencode-memnet.json"),
   ];
   const globalConfig = loadConfigFromPaths(CONFIG_FILES);
   const projectConfig = loadConfigFromPaths(projectPaths);

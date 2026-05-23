@@ -1,4 +1,4 @@
-# opencode-mem
+# opencode-memnet
 
 Persistent memory system for AI coding agents — Postgres + pgvector backend with a standalone server and thin client plugin. This is a fork of the original [opencode-mem](https://github.com/tickernelz/opencode-mem) — to visit the original, [click here](https://github.com/tickernelz/opencode-mem).
 
@@ -41,7 +41,7 @@ This project builds upon and would not exist without the original [OpenCode Memo
 
 ```bash
 git clone https://github.com/tickernelz/opencode-mem
-cd opencode-mem
+cd opencode-memnet
 
 # Set your API endpoints
 export EMBEDDING_API_URL="https://api.openai.com/v1"
@@ -61,7 +61,7 @@ Server runs on **http://localhost:4747** — open the WebUI and enter your `SERV
 
 ```bash
 git clone https://github.com/tickernelz/opencode-mem
-cd opencode-mem
+cd opencode-memnet
 bun install
 
 # Start PostgreSQL with pgvector
@@ -87,7 +87,7 @@ bun run src/server.ts
 
 ### Plugin Configuration
 
-In your OpenCode project, create `.opencode/opencode-mem.jsonc`:
+In your OpenCode project, create `.opencode/opencode-memnet.jsonc`:
 
 ```jsonc
 {

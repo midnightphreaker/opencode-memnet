@@ -33,7 +33,7 @@ type ScenarioInput = {
 };
 
 function runScenario(input: ScenarioInput) {
-  const dir = mkdtempSync(join(tmpdir(), "opencode-mem-tool-scope-"));
+  const dir = mkdtempSync(join(tmpdir(), "opencode-memnet-tool-scope-"));
   tempDirs.push(dir);
 
   const scriptPath = join(dir, "scenario.mjs");

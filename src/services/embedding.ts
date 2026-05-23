@@ -2,7 +2,7 @@ import { CONFIG } from "../config.js";
 import { log } from "./logger.js";
 
 const TIMEOUT_MS = 30000;
-const GLOBAL_EMBEDDING_KEY = Symbol.for("opencode-mem.embedding.instance");
+const GLOBAL_EMBEDDING_KEY = Symbol.for("opencode-memnet.embedding.instance");
 const MAX_CACHE_SIZE = 100;
 const CHARS_PER_TOKEN = 4;
 

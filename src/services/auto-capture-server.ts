@@ -11,7 +11,7 @@ export async function generateSummary(
 ): Promise<{ summary: string; type: string; tags: string[] } | null> {
   if (!CONFIG.memoryModel || !CONFIG.memoryApiUrl) {
     throw new Error(
-      "Server requires memoryModel and memoryApiUrl for auto-capture. Configure these in opencode-mem.jsonc."
+      "Server requires memoryModel and memoryApiUrl for auto-capture. Configure these in opencode-memnet.jsonc."
     );
   }
 

@@ -1,4 +1,4 @@
-# opencode-mem Server-Client Architecture — Design Document
+# opencode-memnet Server-Client Architecture — Design Document
 
 ## v1.0
 
@@ -10,7 +10,7 @@
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                   opencode-mem                  │
+│                   opencode-memnet                  │
 ├──────────────────────┬──────────────────────────┤
 │       CLIENT         │         SERVER           │
 │  (OpenCode Plugin)   │  (Standalone Bun HTTP)   │
@@ -1359,8 +1359,8 @@ import { stripJsoncComments } from "./services/jsonc.js";
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode");
 const CONFIG_FILES = [
-  join(CONFIG_DIR, "opencode-mem.jsonc"),
-  join(CONFIG_DIR, "opencode-mem.json"),
+  join(CONFIG_DIR, "opencode-memnet.jsonc"),
+  join(CONFIG_DIR, "opencode-memnet.json"),
 ];
 
 interface ClientConfig {
@@ -1440,8 +1440,8 @@ export let CLIENT_CONFIG = buildConfig(_fileConfig);
 
 export function initClientConfig(directory: string): void {
   const projectPaths = [
-    join(directory, ".opencode", "opencode-mem.jsonc"),
-    join(directory, ".opencode", "opencode-mem.json"),
+    join(directory, ".opencode", "opencode-memnet.jsonc"),
+    join(directory, ".opencode", "opencode-memnet.json"),
   ];
   const globalConfig = loadConfigFromPaths(CONFIG_FILES);
   const projectConfig = loadConfigFromPaths(projectPaths);
@@ -1838,7 +1838,7 @@ If a migration fails, the server logs the error and exits with code 1. No partia
 
 No API versioning is implemented in v1 (explicitly out of scope per spec section 7.5). The server API is a single version. Backward compatibility is maintained by preserving all existing endpoint shapes.
 
-Future versioning strategy (post-v1) could use URL path prefix (`/api/v2/...`) or request headers (`Accept: application/vnd.opencode-mem.v2+json`).
+Future versioning strategy (post-v1) could use URL path prefix (`/api/v2/...`) or request headers (`Accept: application/vnd.opencode-memnet.v2+json`).
 
 ---
 
@@ -1898,8 +1898,8 @@ The repository serves two deployment modes from the same codebase:
 }
 ```
 
-- `import "opencode-mem"` → Thin client plugin (`src/index.ts` → `dist/plugin.js`)
-- `import "opencode-mem/server"` → Server entry (`src/server.ts` → `dist/server.js`)
+- `import "opencode-memnet"` → Thin client plugin (`src/index.ts` → `dist/plugin.js`)
+- `import "opencode-memnet/server"` → Server entry (`src/server.ts` → `dist/server.js`)
 
 ### 8.2 Build Scripts
 
@@ -1955,7 +1955,7 @@ The repository serves two deployment modes from the same codebase:
 
 2. **Should the old and new plugins share the same npm package?** Currently one package. Options:
    - Single package with conditional exports (recommended for Phase 2).
-   - Separate packages: `opencode-mem` (thin client) and `opencode-mem-server` (server).
+   - Separate packages: `opencode-memnet` (thin client) and `opencode-memnet-server` (server).
 
    _Recommendation: Single package initially. Split only if dependency conflicts or size becomes an issue._
 

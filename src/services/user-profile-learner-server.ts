@@ -111,7 +111,7 @@ export async function analyzeUserProfile(
 ): Promise<UserProfileData | null> {
   if (!CONFIG.memoryModel || !CONFIG.memoryApiUrl) {
     throw new Error(
-      "Server requires memoryModel and memoryApiUrl for user profile learning. Configure these in opencode-mem.jsonc."
+      "Server requires memoryModel and memoryApiUrl for user profile learning. Configure these in opencode-memnet.jsonc."
     );
   }
 

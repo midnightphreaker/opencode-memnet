@@ -1,6 +1,6 @@
 # src/
 
-Source root for the `opencode-mem` OpenCode plugin — a persistent memory system that captures, stores, and retrieves project and user knowledge across coding sessions.
+Source root for the `opencode-memnet` OpenCode plugin — a persistent memory system that captures, stores, and retrieves project and user knowledge across coding sessions.
 
 ## Responsibility
 
@@ -11,7 +11,7 @@ This directory contains the three top-level files that form the plugin's entry s
 - **`index-remote.ts`** — Thin remote client plugin factory (`OpenCodeMemPlugin`). Delegates to `RemoteMemoryClient` over HTTP for chat.message injection, memory tool operations, and idle auto-capture forwarding. Does not initialize storage or embedding locally.
 - **`server.ts`** — Standalone headless server entry point. Loads server config from environment variables (`src/server-config.ts`), initializes storage and embedding, warms up the embedding model, starts the HTTP API server, and registers graceful shutdown handlers.
 - **`server-config.ts`** — Environment-variable-based server configuration loader (`SERVER_PORT`, `SERVER_HOST`, `API_KEY`, etc.). Validates and normalizes config for headless server mode.
-- **`config.ts`** — Configuration loader. Reads `~/.config/opencode/opencode-mem.jsonc` (global) and `.opencode/opencode-mem.jsonc` (project-local), merges them, validates required fields, and exports the resolved `CONFIG` object.
+- **`config.ts`** — Configuration loader. Reads `~/.config/opencode/opencode-memnet.jsonc` (global) and `.opencode/opencode-memnet.jsonc` (project-local), merges them, validates required fields, and exports the resolved `CONFIG` object.
 
 Subdirectories:
 

@@ -37,7 +37,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     return {};
   }
 
-  const GLOBAL_PLUGIN_WARMUP_KEY = Symbol.for("opencode-mem.plugin.warmedup");
+  const GLOBAL_PLUGIN_WARMUP_KEY = Symbol.for("opencode-memnet.plugin.warmedup");
 
   if (!(globalThis as any)[GLOBAL_PLUGIN_WARMUP_KEY] && isConfigured()) {
     // Fire-and-forget: warmup is slow (embedding model load + index rebuild).

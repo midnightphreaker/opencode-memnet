@@ -371,6 +371,26 @@ export class WebServer {
         return this.jsonResponse(result);
       }
 
+      // Generic static file serving (svg, html, png, etc.)
+      const staticExts: Record<string, string> = {
+        ".svg": "image/svg+xml",
+        ".html": "text/html",
+        ".png": "image/png",
+        ".ico": "image/x-icon",
+        ".json": "application/json",
+        ".txt": "text/plain",
+        ".md": "text/markdown",
+      };
+      const ext = path.substring(path.lastIndexOf("."));
+      const contentType = staticExts[ext];
+      if (contentType) {
+        // Prevent directory traversal
+        const filename = path.split("/").pop() || "";
+        if (filename && !filename.includes("..")) {
+          return this.serveStaticFile(filename, contentType);
+        }
+      }
+
       return new Response("Not Found", { status: 404 });
     } catch (error) {
       log("handleRequest: unhandled error", { error: String(error) });

@@ -6,21 +6,7 @@ This project builds upon and would not exist without the original [OpenCode Memo
 
 ## Architecture
 
-```
-┌─────────────────┐     HTTP (API Key)     ┌──────────────────────┐
-│  Thin Plugin    │ ────────────────────→  │  Standalone Server   │
-│  (OpenCode)     │                        │  (Bun + Postgres)    │
-│                 │ ←────────────────────   │                      │
-│  Context inject │     JSON responses     │  API + WebUI + AI    │
-└─────────────────┘                        └──────────────────────┘
-                                                    │
-                                                    ▼
-                                           ┌──────────────────┐
-                                           │  Postgres +      │
-                                           │  pgvector         │
-                                           │  (HNSW indexes)   │
-                                           └──────────────────┘
-```
+![opencode-memnet Architecture Diagram](src/web/svg_orchestrator.svg)
 
 - **Server**: Standalone Bun process serving REST API + WebUI, connected to Postgres/pgvector
 - **Client**: Thin OpenCode plugin that communicates with the server over HTTP

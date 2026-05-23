@@ -757,11 +757,21 @@ function startAutoRefresh() {
   }, 30000);
 }
 
+function dismissTagMigration() {
+  document.getElementById("tag-migration-overlay").classList.add("hidden");
+  // Don't show again for 24 hours
+  localStorage.setItem("opencode-memnet-migration-dismissed", Date.now().toString());
+}
+
 async function checkMigrationStatus() {
   const result = await fetchAPI("/api/migration/detect");
   if (result.success && result.data.needsMigration) {
     showMigrationWarning(result.data);
   }
+
+  // Skip if dismissed within the last 24 hours
+  const dismissedAt = parseInt(localStorage.getItem("opencode-memnet-migration-dismissed") || "0");
+  if (dismissedAt && Date.now() - dismissedAt < 24 * 60 * 60 * 1000) return;
 
   const tagResult = await fetchAPI("/api/migration/tags/detect");
   if (tagResult.success && tagResult.data.needsMigration) {
@@ -802,6 +812,7 @@ async function runTagMigration() {
 
     if (!result.success) {
       status.textContent = t("toast-migration-failed") + ": " + result.error;
+      document.getElementById("tag-migration-actions").classList.remove("hidden");
       return;
     }
 
@@ -819,6 +830,7 @@ async function runTagMigration() {
 
   if (attempts >= maxAttempts) {
     status.textContent = t("migration-stopped");
+    document.getElementById("tag-migration-actions").classList.remove("hidden");
     return;
   }
 
@@ -1188,6 +1200,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("tab-project").addEventListener("click", () => switchView("project"));
   document.getElementById("tab-profile").addEventListener("click", () => switchView("profile"));
   document.getElementById("refresh-profile-btn")?.addEventListener("click", refreshProfile);
+  document.getElementById("tag-migration-close")?.addEventListener("click", dismissTagMigration);
+
   document.getElementById("changelog-close")?.addEventListener("click", () => {
     document.getElementById("changelog-modal").classList.add("hidden");
   });

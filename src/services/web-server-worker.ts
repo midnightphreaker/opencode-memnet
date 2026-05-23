@@ -15,6 +15,7 @@ import {
   handleUnpinMemory,
   handleDetectTagMigration,
   handleRunTagMigrationBatch,
+  handleResetTagMigration,
   handleGetTagMigrationProgress,
   handleDeletePrompt,
   handleBulkDeletePrompts,
@@ -192,6 +193,11 @@ async function handleRequest(req: Request): Promise<Response> {
 
     if (path === "/api/migration/tags/detect" && method === "GET") {
       const result = await handleDetectTagMigration();
+      return jsonResponse(result);
+    }
+
+    if (path === "/api/migration/tags/reset" && method === "POST") {
+      const result = handleResetTagMigration();
       return jsonResponse(result);
     }
 

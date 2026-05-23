@@ -889,6 +889,19 @@ export async function handleDetectTagMigration(): Promise<
   try {
     await ensureInit();
     const untaggedCount = await memoryRepo.countUntagged();
+    if (untaggedCount === 0) {
+      // Auto-reset stale migration state when no untagged memories remain
+      migrationProgress = {
+        processed: 0,
+        total: 0,
+        currentBatch: 0,
+        totalBatches: 0,
+        isComplete: true,
+        errors: [],
+      };
+      _migrationRunning = false;
+      cachedMigrationRecords = null;
+    }
     return { success: true, data: { needsMigration: untaggedCount > 0, count: untaggedCount } };
   } catch (error) {
     return { success: false, error: String(error) };
@@ -917,6 +930,9 @@ let migrationProgress: MigrationProgress = {
   errors: [],
 };
 
+// ── Migration running guard: prevents concurrent batch calls (sequential calls are expected) ──
+let _migrationRunning = false;
+
 // ── Cleanup guard (best-effort lock; same single-user/single-process model as migrationProgress) ──
 let _cleanupInProgress = false;
 
@@ -932,11 +948,12 @@ export async function handleRunTagMigrationBatch(
   batchSize: number = 5
 ): Promise<ApiResponse<{ processed: number; total: number; hasMore: boolean }>> {
   // Guard against concurrent migration requests
-  if (migrationProgress.isComplete === false) {
+  if (_migrationRunning) {
     return { success: false, error: "Migration already in progress" };
   }
 
   try {
+    _migrationRunning = true;
     await ensureInit();
     // Only (re)initialize when starting a fresh migration:
     // either no migration has started yet, or the previous one completed.
@@ -1024,13 +1041,13 @@ export async function handleRunTagMigrationBatch(
           Date.now()
         );
 
-        migrationProgress.processed++;
         batchProcessed++;
       } catch (e) {
         const errorMsg = String(e);
         migrationProgress.errors.push(errorMsg);
         log("Migration error for memory", { id: m.id, error: errorMsg });
       }
+      migrationProgress.processed++;
     }
 
     migrationProgress.currentBatch++;
@@ -1049,6 +1066,11 @@ export async function handleRunTagMigrationBatch(
     migrationProgress.isComplete = true;
     cachedMigrationRecords = null;
     return { success: false, error: String(error) };
+  } finally {
+    if (migrationProgress.isComplete) {
+      _migrationRunning = false;
+      cachedMigrationRecords = null;
+    }
   }
 }
 
@@ -1532,4 +1554,18 @@ export async function handleListUserProfiles(): Promise<
     log("handleListUserProfiles: error", { error: String(error) });
     return { success: false, error: String(error) };
   }
+}
+
+export function handleResetTagMigration(): ApiResponse {
+  migrationProgress = {
+    processed: 0,
+    total: 0,
+    currentBatch: 0,
+    totalBatches: 0,
+    isComplete: true,
+    errors: [],
+  };
+  _migrationRunning = false;
+  cachedMigrationRecords = null;
+  return { success: true };
 }

@@ -16,6 +16,7 @@ import {
   handleUnpinMemory,
   handleDetectTagMigration,
   handleRunTagMigrationBatch,
+  handleResetTagMigration,
   handleGetTagMigrationProgress,
   handleDeletePrompt,
   handleBulkDeletePrompts,
@@ -262,6 +263,11 @@ export class WebServer {
 
       if (path === "/api/migration/tags/detect" && method === "GET") {
         const result = await handleDetectTagMigration();
+        return this.jsonResponse(result);
+      }
+
+      if (path === "/api/migration/tags/reset" && method === "POST") {
+        const result = handleResetTagMigration();
         return this.jsonResponse(result);
       }
 

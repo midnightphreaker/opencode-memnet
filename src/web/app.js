@@ -16,6 +16,7 @@ const state = {
   userProfile: null,
   authKey: localStorage.getItem("opencode-memnet-apikey") || "",
   activeProfileId: localStorage.getItem("opencode-memnet-active-profile") || "",
+  authDisabled: false,
 };
 
 marked.setOptions({
@@ -1170,9 +1171,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   // ── Settings panel ──
 
   async function populateProfileDropdown() {
-    if (!state.authKey) return;
+    if (!state.authKey && !state.authDisabled) return;
     try {
-      const headers = { Authorization: `Bearer ${state.authKey}` };
+      const headers = {};
+      if (state.authKey) headers["Authorization"] = `Bearer ${state.authKey}`;
       const res = await fetch("/api/user-profiles", { headers });
       const data = await res.json();
 
@@ -1211,9 +1213,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     const panel = document.getElementById("settings-panel");
     panel.classList.toggle("hidden");
     if (!panel.classList.contains("hidden")) {
-      document.getElementById("settings-apikey").value = state.authKey;
-      document.getElementById("settings-apikey").focus();
-      if (state.authKey) populateProfileDropdown();
+      if (!state.authDisabled) {
+        document.getElementById("settings-apikey").value = state.authKey;
+        document.getElementById("settings-apikey").focus();
+      }
+      if (state.authKey || state.authDisabled) populateProfileDropdown();
       if (state.activeProfileId && state.memories.length === 0) {
         loadMemories();
         loadStats();
@@ -1244,9 +1248,11 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (state.currentView === "profile") loadUserProfile();
   });
   document.getElementById("settings-save").addEventListener("click", async () => {
-    const key = document.getElementById("settings-apikey").value.trim();
-    state.authKey = key;
-    localStorage.setItem("opencode-memnet-apikey", key);
+    if (!state.authDisabled) {
+      const key = document.getElementById("settings-apikey").value.trim();
+      state.authKey = key;
+      localStorage.setItem("opencode-memnet-apikey", key);
+    }
 
     // Try to load profiles and set the default
     await populateProfileDropdown();
@@ -1264,6 +1270,22 @@ document.addEventListener("DOMContentLoaded", async () => {
       document.getElementById("settings-panel").classList.add("hidden");
     }
   });
+
+  // Check if auth is disabled by testing an authenticated endpoint without credentials
+  try {
+    const testRes = await fetch("/api/tags");
+    if (testRes.ok) {
+      state.authDisabled = true;
+      console.log("Auth disabled — loading data without API key");
+      document.getElementById("settings-apikey").value = "(auth disabled)";
+      document.getElementById("settings-apikey").readOnly = true;
+      document.getElementById("settings-profile").disabled = false;
+      // Auto-load profiles since we have access
+      populateProfileDropdown();
+    }
+  } catch (e) {
+    console.warn("Auth check failed:", e);
+  }
 
   await loadTags();
   await loadMemories();

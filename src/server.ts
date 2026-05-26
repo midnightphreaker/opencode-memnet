@@ -50,12 +50,27 @@ async function main(): Promise<void> {
         enabled: true,
         allowedOrigin: config.webServerAllowedOrigin,
       },
-      config.serverApiKey
+      config.serverApiKey,
+      {
+        disableWebuiAuth: config.disableWebuiAuth,
+        disableClientAuth: config.disableClientAuth,
+      }
     );
 
     log(`Server listening on http://${config.host}:${config.port}`);
     log(`WebUI: http://${config.host}:${config.port}/`);
     log(`Health: http://${config.host}:${config.port}/api/health`);
+
+    if (config.disableWebuiAuth) {
+      log("WARNING: DISABLE_WEBUI_AUTH is enabled — WebUI does not require API key authentication");
+      log("WARNING: Ensure the server is secured by other means (reverse proxy, firewall, etc.)");
+    }
+    if (config.disableClientAuth) {
+      log(
+        "WARNING: DISABLE_CLIENT_AUTH is enabled — client API does not require API key authentication"
+      );
+      log("WARNING: Ensure the server is secured by other means (reverse proxy, firewall, etc.)");
+    }
 
     // Start background tag migration (perpetual loop)
     const { runTagMigration } = await import("./services/tag-migration-service.js");

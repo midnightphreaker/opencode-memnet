@@ -388,13 +388,13 @@ This section covers the most commonly used variables. The complete reference wit
 
 These must be set before the server will start.
 
-| Variable            | Description                                                                |
-| ------------------- | -------------------------------------------------------------------------- |
-| `SERVER_API_KEY`    | API key for authenticating all `/api/*` requests (Bearer token)            |
-| `POSTGRES_URL`      | PostgreSQL connection string (e.g., `postgresql://user:pass@host:5432/db`) |
-| `EMBEDDING_API_URL` | OpenAI-compatible embedding API base URL                                   |
-| `EMBEDDING_MODEL`   | Embedding model name (e.g., `text-embedding-3-small`)                      |
-| `EMBEDDING_API_KEY` | API key for the embedding service (falls back to `OPENAI_API_KEY`)         |
+| Variable            | Description                                                                                                                                 |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `SERVER_API_KEY`    | API key for authenticating all `/api/*` requests (Bearer token). Optional if both `DISABLE_WEBUI_AUTH` and `DISABLE_CLIENT_AUTH` are `true` |
+| `POSTGRES_URL`      | PostgreSQL connection string (e.g., `postgresql://user:pass@host:5432/db`)                                                                  |
+| `EMBEDDING_API_URL` | OpenAI-compatible embedding API base URL                                                                                                    |
+| `EMBEDDING_MODEL`   | Embedding model name (e.g., `text-embedding-3-small`)                                                                                       |
+| `EMBEDDING_API_KEY` | API key for the embedding service (falls back to `OPENAI_API_KEY`)                                                                          |
 
 #### Optional Variables
 
@@ -414,6 +414,8 @@ These must be set before the server will start.
 | `MEMORY_API_KEY`            | --        | API key for chat completions (required for auto-capture)                                                             |
 | `MEMORY_TEMPERATURE`        | `0.3`     | Temperature for memory generation (set to `false` to disable)                                                        |
 | `WEB_SERVER_ALLOWED_ORIGIN` | `*`       | CORS allowed origin                                                                                                  |
+| `DISABLE_WEBUI_AUTH`        | `false`   | Disable API key auth for WebUI. **WARNING:** Secure the server by other means (reverse proxy, firewall, etc.)        |
+| `DISABLE_CLIENT_AUTH`       | `false`   | Disable API key auth for client plugin. **WARNING:** Secure the server by other means                                |
 
 #### Advanced Variables
 
@@ -513,11 +515,13 @@ Full configuration with defaults:
 
 ## API Reference
 
-All `/api/*` endpoints (except health) require authentication via the `Authorization` header:
+All `/api/*` endpoints (except health) require authentication via the `Authorization` header, unless authentication is disabled via `DISABLE_WEBUI_AUTH` and/or `DISABLE_CLIENT_AUTH`:
 
 ```
 Authorization: Bearer <SERVER_API_KEY>
 ```
+
+When `DISABLE_WEBUI_AUTH=true` and `DISABLE_CLIENT_AUTH=true`, no API key is needed and all endpoints are accessible without authentication. **Only use this when the server is secured by other means** (reverse proxy, firewall, VPN, network isolation).
 
 ### Health
 
@@ -583,7 +587,7 @@ A management interface served at `/` with:
 - **i18n** -- English and Chinese language support
 - **Migration tools** -- tag migration and dimension migration workflows
 
-Open `http://localhost:4747` in your browser and enter your `SERVER_API_KEY` in the settings panel (gear icon).
+Open `http://localhost:4747` in your browser. If authentication is enabled (default), enter your `SERVER_API_KEY` in the settings panel (gear icon). If `DISABLE_WEBUI_AUTH=true`, the WebUI loads automatically without requiring an API key.
 
 ---
 

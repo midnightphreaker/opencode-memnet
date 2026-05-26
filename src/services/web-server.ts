@@ -47,12 +47,20 @@ export class WebServer {
   private isOwner: boolean = false;
   private startPromise: Promise<void> | null = null;
   private readonly allowedOrigin: string;
-  private readonly auth: AuthMiddleware;
+  private readonly auth: AuthMiddleware | null;
+  private readonly disableWebuiAuth: boolean;
+  private readonly disableClientAuth: boolean;
 
-  constructor(config: WebServerConfig, apiKey: string) {
+  constructor(
+    config: WebServerConfig,
+    apiKey: string,
+    options?: { disableWebuiAuth?: boolean; disableClientAuth?: boolean }
+  ) {
     this.config = config;
     this.allowedOrigin = config.allowedOrigin ?? "*";
-    this.auth = new AuthMiddleware(apiKey);
+    this.disableWebuiAuth = options?.disableWebuiAuth ?? false;
+    this.disableClientAuth = options?.disableClientAuth ?? false;
+    this.auth = apiKey ? new AuthMiddleware(apiKey, options) : null;
   }
 
   async start(): Promise<void> {
@@ -141,10 +149,12 @@ export class WebServer {
       return new Response(null, { status: 204, headers });
     }
 
-    // Auth: all /api/* routes (except health) require API key
+    // Auth: all /api/* routes (except health) require API key unless auth is disabled
     if (path.startsWith("/api/") && path !== "/api/health") {
-      const authError = this.auth.authenticate(req);
-      if (authError) return authError;
+      if (!this.disableWebuiAuth && !this.disableClientAuth && this.auth) {
+        const authError = this.auth.authenticate(req);
+        if (authError) return authError;
+      }
     }
 
     try {
@@ -458,8 +468,12 @@ export class WebServer {
   }
 }
 
-export async function startWebServer(config: WebServerConfig, apiKey: string): Promise<WebServer> {
-  const server = new WebServer(config, apiKey);
+export async function startWebServer(
+  config: WebServerConfig,
+  apiKey: string,
+  options?: { disableWebuiAuth?: boolean; disableClientAuth?: boolean }
+): Promise<WebServer> {
+  const server = new WebServer(config, apiKey, options);
   await server.start();
   return server;
 }

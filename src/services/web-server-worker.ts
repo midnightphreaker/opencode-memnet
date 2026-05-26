@@ -35,6 +35,9 @@ const __dirname = dirname(__filename);
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
 
+const disableWebuiAuth = (CONFIG as any).disableWebuiAuth ?? false;
+const disableClientAuth = (CONFIG as any).disableClientAuth ?? false;
+
 async function parseBody(req: Request): Promise<any> {
   const contentLength = parseInt(req.headers.get("content-length") || "0", 10);
   if (contentLength > MAX_BODY_SIZE) {
@@ -81,6 +84,23 @@ async function handleRequest(req: Request): Promise<Response> {
         headers.set("Vary", "Origin");
       }
       return new Response(null, { status: 204, headers });
+    }
+
+    // Auth: /api/* routes require authentication unless disabled
+    if (path.startsWith("/api/") && path !== "/api/health") {
+      if (!disableWebuiAuth && !disableClientAuth && (CONFIG as any).server?.apiKey) {
+        const authHeader = req.headers.get("Authorization");
+        if (!authHeader) {
+          return jsonResponse({ success: false, error: "Missing Authorization header" }, 401);
+        }
+        const parts = authHeader.split(" ");
+        if (parts.length !== 2 || parts[0] !== "Bearer") {
+          return jsonResponse({ success: false, error: "Invalid Authorization format" }, 401);
+        }
+        if (parts[1] !== (CONFIG as any).server!.apiKey) {
+          return jsonResponse({ success: false, error: "Invalid API key" }, 401);
+        }
+      }
     }
 
     if (path === "/" || path === "/index.html") {

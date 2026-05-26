@@ -49,6 +49,8 @@ export interface ServerConfig {
   userProfileChangelogRetentionCount: number;
   autoCleanupRetentionDays: number;
   webServerAllowedOrigin: string;
+  disableWebuiAuth: boolean;
+  disableClientAuth: boolean;
 }
 
 function getEmbeddingDimensions(model: string): number {
@@ -133,6 +135,8 @@ export function initServerConfig(): ServerConfig {
     userProfileChangelogRetentionCount: parseInt(env.USER_PROFILE_CHANGELOG_RETENTION || "5"),
     autoCleanupRetentionDays: parseInt(env.AUTO_CLEANUP_RETENTION_DAYS || "90"),
     webServerAllowedOrigin: env.WEB_SERVER_ALLOWED_ORIGIN || "*",
+    disableWebuiAuth: env.DISABLE_WEBUI_AUTH === "true",
+    disableClientAuth: env.DISABLE_CLIENT_AUTH === "true",
   };
   return _config;
 }
@@ -148,6 +152,12 @@ export function validateServerConfig(config: ServerConfig): string[] {
   if (!config.embeddingApiUrl) errors.push("EMBEDDING_API_URL is required");
   if (!config.embeddingModel) errors.push("EMBEDDING_MODEL is required");
   if (!config.embeddingApiKey) errors.push("EMBEDDING_API_KEY is required (or OPENAI_API_KEY)");
-  if (!config.serverApiKey) errors.push("SERVER_API_KEY is required");
+  if (!config.serverApiKey) {
+    if (!config.disableWebuiAuth || !config.disableClientAuth) {
+      errors.push(
+        "SERVER_API_KEY is required (unless both DISABLE_WEBUI_AUTH and DISABLE_CLIENT_AUTH are true)"
+      );
+    }
+  }
   return errors;
 }

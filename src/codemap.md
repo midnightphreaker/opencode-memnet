@@ -6,11 +6,11 @@ Source root for the `opencode-memnet` OpenCode plugin — a persistent memory sy
 
 This directory contains the three top-level files that form the plugin's entry surface, plus three subdirectories that house all runtime logic:
 
-- **`plugin.ts`** — ESM plugin module export (`PluginModule`). Auto-detects server-client vs. in-process mode: if `serverUrl` is configured, loads `index-remote.ts`; otherwise falls back to `index.ts` with a deprecation warning.
+- **`plugin.ts`** — ESM plugin module export (`PluginModule`). Auto-detects server-client vs. in-process mode: calls `initClientConfig(process.cwd())` then `isClientConfigured()` to check if remote mode is available; if configured, loads `index-remote.ts`; otherwise falls back to `index.ts` with a deprecation warning.
 - **`index.ts`** — Legacy in-process plugin factory function (`OpenCodeMemPlugin`). Orchestrates initialization and registers all handlers (`chat.message`, `tool.memory`, `event`).
-- **`index-remote.ts`** — Thin remote client plugin factory (`OpenCodeMemPlugin`). Delegates to `RemoteMemoryClient` over HTTP for chat.message injection, memory tool operations, and idle auto-capture forwarding. Does not initialize storage or embedding locally.
-- **`server.ts`** — Standalone headless server entry point. Loads server config from environment variables (`src/server-config.ts`), initializes storage and embedding, warms up the embedding model, starts the HTTP API server, and registers graceful shutdown handlers.
-- **`server-config.ts`** — Environment-variable-based server configuration loader (`SERVER_PORT`, `SERVER_HOST`, `API_KEY`, etc.). Validates and normalizes config for headless server mode.
+- **`index-remote.ts`** — Thin remote client plugin factory (`OpenCodeMemPlugin`). Delegates all operations to `RemoteMemoryClient` over HTTP — does not initialize storage or embedding locally. Handles: `chat.message` (injects memory context), `tool.memory` (add/search/profile/list/forget via remote API), and `event` (idle auto-capture forwarding with debounce + toast notification, session compaction memory restoration via `searchMemoriesBySessionID`). Uses `initClientConfig` and `CLIENT_CONFIG` for client-side configuration.
+- **`server.ts`** — Standalone headless server entry point. Loads server config from environment variables (`src/server-config.ts`), initializes storage and embedding, warms up the embedding model, starts the HTTP API server (with API key auth via `config.serverApiKey`), launches the background tag migration loop (`runTagMigration()`), and registers graceful shutdown handlers that stop the server, migration loop, and storage in order.
+- **`server-config.ts`** — Environment-variable-based server configuration loader. Exports the `ServerConfig` interface (comprehensive fields for Postgres, embedding, memory provider, auto-capture, user profile, etc.). Uses `resolveSecretValue()` for `env://` and `file://` secret resolution in API keys/URLs, and `getEmbeddingDimensions()` to auto-detect embedding vector dimensions from the model name (with a fallback default of 1024). `validateServerConfig()` enforces required fields including `SERVER_API_KEY`. Exports `initServerConfig()`, `getServerConfig()`, and `validateServerConfig()`.
 - **`config.ts`** — Configuration loader. Reads `~/.config/opencode/opencode-memnet.jsonc` (global) and `.opencode/opencode-memnet.jsonc` (project-local), merges them, validates required fields, and exports the resolved `CONFIG` object.
 
 Subdirectories:
@@ -28,9 +28,9 @@ Subdirectories:
 
 ## Flow
 
-1. **OpenCode loads `plugin.ts`** → dynamic import of `index.ts` → exports `PluginModule` with `server: OpenCodeMemPlugin`.
+1. **OpenCode loads `plugin.ts`** → `resolvePlugin()` calls `initClientConfig(process.cwd())` + `isClientConfigured()` → if client-configured, dynamic imports `index-remote.ts`; otherwise imports `index.ts`. Exports `PluginModule` with `server: OpenCodeMemPlugin`.
 2. **OpenCode calls `OpenCodeMemPlugin(ctx)`** with `{ directory }`.
-3. **`initConfig(directory)`** loads global config, then project-local config, merges, validates. Exports resolved `CONFIG`.
+3. **Config initialized**: In-process mode calls `initConfig(directory)` (loads global + project-local JSONC). Remote mode calls `initClientConfig(directory)` (loads minimal client config with `serverUrl`/`apiKey`). Server mode uses `initServerConfig()` (environment variables).
 4. **Repositories created**: `createUserPromptRepository()` and `createUserProfileRepository()` (depend on `CONFIG`).
 5. **Tags resolved**: `getTags(directory)` gathers user/project identity (git email, project path, repo URL).
 6. **Async warmup**: `memoryClient.warmup()` fires in background (embedding model load + vector index rebuild).

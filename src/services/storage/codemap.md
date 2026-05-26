@@ -20,16 +20,17 @@ pgvector details behind a thin factory.
 
 ## Interfaces (`types.ts`)
 
-| Interface               | Purpose                                                 |
-| ----------------------- | ------------------------------------------------------- |
-| `MemoryRepository`      | Vector memory CRUD, similarity search, pinning, cleanup |
-| `UserPromptRepository`  | Capture/analytics lifecycle for user prompts            |
-| `UserProfileRepository` | User profile CRUD with confidence-based merge           |
-| `AISessionRepository`   | AI session + message persistence & expiry               |
+| Interface               | Purpose                                                                               |
+| ----------------------- | ------------------------------------------------------------------------------------- |
+| `MemoryRepository`      | Vector memory CRUD, similarity search, pinning, cleanup, tag migration, deduplication |
+| `UserPromptRepository`  | Capture/analytics lifecycle for user prompts                                          |
+| `UserProfileRepository` | User profile CRUD with confidence-based merge                                         |
+| `AISessionRepository`   | AI session + message persistence & expiry                                             |
 
-Shared row/result types (`MemoryRow`, `SearchResult`, `UserPromptRow`,
-`UserProfileRow`, `AISessionRow`, `AIMessageRow`, etc.) live alongside
-their interfaces.
+Shared row/result types (`MemoryRow`, `MemoryRecord`, `SearchResult`,
+`TagInfo`, `UserPromptRow`, `UserProfileRow`, `UserProfileChangelogRow`,
+`AISessionRow`, `AIMessageRow`, `MemorySearchOptions`, `MemoryScopeKind`,
+`UserProfileData`, etc.) live alongside their interfaces.
 
 ## Subdirectories
 

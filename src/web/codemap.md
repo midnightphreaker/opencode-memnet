@@ -13,25 +13,27 @@ Browser-based admin UI for exploring, searching, and managing memories and user 
 ## Design
 
 - **Vanilla JS SPA** — `app.js` holds a global `state` object and imperative DOM manipulation. No framework; all rendering is template-literal HTML injected via `innerHTML`.
-- **Centralized state** (`state` object): tracks tags, memories, pagination, search, selection, and active view.
+- **Centralized state** (`state` object): tracks tags, memories, pagination, search, selection, active view, auth key (`opencode-memnet-apikey`), and active profile ID.
 - **i18n via `data-i18n` attributes** — `i18n.js` exposes `t(key, params)` with `{placeholder}` interpolation and persists language choice in `localStorage`. Static elements are translated with `applyLanguage()`; dynamic content calls `t()` at render time.
 - **Markdown rendering** — uses `marked` + `DOMPurify` for safe rendering of memory content.
-- **CDN dependencies** — Lucide icons, marked, DOMPurify, jsonrepair loaded via `<script>` tags in `index.html`.
+- **CDN dependencies** — Lucide icons, marked@17, DOMPurify@3.2, jsonrepair loaded via `<script>` tags in `index.html`.
 - **Terminal-inspired aesthetic** — monospace fonts, dark background (#0a0a0a), green (#00ff00) / cyan (#00ccff) / magenta (#ff00ff) accent palette. Responsive layout with `@media (max-width: 768px)` breakpoints.
+- **Bearer token auth** — `fetchAPI()` reads `state.authKey` (persisted in `localStorage` as `opencode-memnet-apikey`) and sends `Authorization: Bearer <key>` header on every API call. Settings panel lets users configure the API key.
 
 ### Key files
 
-| File          | Role                                                                                                                                                                                           |
-| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `index.html`  | Page structure: header, scope tabs (Project / Profile), controls bar, memory list, add-memory form, edit modal, toast, migration modals, changelog modal                                       |
-| `app.js`      | All application logic: API calls (`fetchAPI`), CRUD operations, rendering (`renderMemories`, `renderUserProfile`), pagination, search, bulk selection, auto-refresh (30s), migration workflows |
-| `styles.css`  | Full stylesheet: layout, card styles, badges, modals, animations, responsive breakpoints                                                                                                       |
-| `i18n.js`     | Translation dictionaries (EN/ZH), `t()` helper with interpolation, `applyLanguage()` for DOM updates                                                                                           |
-| `favicon.ico` | Browser tab icon                                                                                                                                                                               |
+| File                          | Role                                                                                                                                                                                                            |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `index.html`                  | Page structure: header, scope tabs (Project / Profile), settings panel (API key), controls bar, memory list, add-memory form, edit modal, toast, migration modals, changelog modal                              |
+| `app.js`                      | All application logic: API calls (`fetchAPI` with Bearer auth), CRUD operations, rendering (`renderMemories`, `renderUserProfile`), pagination, search, bulk selection, auto-refresh (30s), migration workflows |
+| `styles.css`                  | Full stylesheet: layout, card styles, badges, modals, animations, settings panel, responsive breakpoints                                                                                                        |
+| `i18n.js`                     | Translation dictionaries (EN/ZH), `t()` helper with interpolation, `applyLanguage()` for DOM updates                                                                                                            |
+| `favicon.ico`                 | Browser tab icon                                                                                                                                                                                                |
+| `opencode-memnet-diagram.svg` | Architecture diagram (SVG) served by the static file handler                                                                                                                                                    |
 
 ## Flow
 
-1. **Init** (`DOMContentLoaded`): binds all event listeners, then sequentially calls `loadTags()` → `loadMemories()` → `loadStats()` → `checkMigrationStatus()`, then starts a 30-second `autoRefresh` interval.
+1. **Init** (`DOMContentLoaded`): binds all event listeners, restores auth key from `localStorage`, then sequentially calls `loadTags()` → `loadMemories()` → `loadStats()` → `checkMigrationStatus()`, then starts a 30-second `autoRefresh` interval.
 2. **Read**: `loadMemories()` calls `GET /api/memories` (or `GET /api/search` when searching) with pagination/tag params, updates `state.memories`, then calls `renderMemories()` → `groupMemories()` pairs linked items → renders combined/prompt/memory cards.
 3. **Write**: `addMemory()` posts to `POST /api/memories`; `saveEdit()` puts to `PUT /api/memories/:id`; deletes hit `DELETE /api/memories/:id?cascade=true` or `DELETE /api/prompts/:id?cascade=true`.
 4. **Bulk ops**: selection tracked via `state.selectedMemories` (Set); bulk delete splits IDs into prompt vs memory arrays and calls respective bulk-delete endpoints.
@@ -40,6 +42,6 @@ Browser-based admin UI for exploring, searching, and managing memories and user 
 
 ## Integration
 
-- **Backend API** — all data comes from REST endpoints under `/api/*` served by the Go backend. `fetchAPI()` wraps `fetch` with a 60-second timeout. `API_BASE` is empty (same-origin).
-- **External CDN libs** — Lucide (icons), marked (Markdown), DOMPurify (HTML sanitization), jsonrepair (lenient JSON parsing for profile data).
-- **localStorage** — used by `i18n.js` to persist language preference (`opencode-memnet-lang`).
+- **Backend API** — all data comes from REST endpoints under `/api/*` served by the web server. `fetchAPI()` wraps `fetch` with a 60-second timeout and Bearer token auth. `API_BASE` is empty (same-origin).
+- **External CDN libs** — Lucide (icons), marked@17 (Markdown), DOMPurify@3.2 (HTML sanitization), jsonrepair (lenient JSON parsing for profile data).
+- **localStorage** — used by `i18n.js` to persist language preference (`opencode-memnet-lang`), by `app.js` for API key (`opencode-memnet-apikey`) and active profile ID (`opencode-memnet-active-profile`).

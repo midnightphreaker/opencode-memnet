@@ -2,8 +2,6 @@
   <img src="docs/logo/logo-banner.svg" alt="opencode MEMnet">
 </p>
 
-# opencode-memnet
-
 [![MIT License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/tickernelz/opencode-mem) [![Version](https://img.shields.io/badge/version-3.0.0-green)](package.json)
 
 Persistent memory for AI coding agents. AI assistants forget everything between sessions -- preferences, patterns, past decisions, project context. opencode-memnet gives them a long-term memory layer backed by semantic search, so every conversation picks up where the last one left off.

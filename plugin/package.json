@@ -1,0 +1,43 @@
+{
+  "name": "opencode-memnet-plugin",
+  "version": "3.0.0",
+  "description": "OpenCode plugin client for persistent AI memory via opencode-memnet server",
+  "type": "module",
+  "main": "dist/opencode-memnet.js",
+  "exports": {
+    ".": {
+      "import": "./dist/opencode-memnet.js"
+    }
+  },
+  "scripts": {
+    "build": "bun run build.ts",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "opencode": {
+    "type": "plugin",
+    "hooks": [
+      "chat.message",
+      "event"
+    ]
+  },
+  "dependencies": {
+    "@opencode-ai/plugin": "^1.3.0",
+    "@opencode-ai/sdk": "^1.3.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.8",
+    "typescript": "^5.7.3"
+  },
+  "files": [
+    "dist",
+    "package.json"
+  ],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "memory",
+    "ai",
+    "coding-agent"
+  ],
+  "license": "MIT"
+}

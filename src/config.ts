@@ -629,6 +629,7 @@ export let CONFIG = buildConfig(_globalFileConfig);
 
 // ── Client-only config (for thin remote plugin) ───────────────
 
+/** @deprecated Canonical version is in shared/client-config.ts. Kept for backward compat — excluded from server build in Step 5.2. */
 export interface ClientConfig {
   serverUrl: string;
   apiKey: string;
@@ -690,8 +691,10 @@ function buildClientConfig(fileConfig: Partial<ClientConfig>): ClientConfig {
   };
 }
 
+/** @deprecated Canonical version is in shared/client-config.ts */
 export let CLIENT_CONFIG = buildClientConfig({});
 
+/** @deprecated Canonical version is in shared/client-config.ts */
 export function initClientConfig(directory: string): void {
   const projectPaths = [
     join(directory, ".opencode", "opencode-memnet.jsonc"),
@@ -709,6 +712,7 @@ export function initClientConfig(directory: string): void {
   CLIENT_CONFIG = buildClientConfig(merged);
 }
 
+/** @deprecated Canonical version is in shared/client-config.ts */
 export function isClientConfigured(): boolean {
   return !!CLIENT_CONFIG.serverUrl && !!CLIENT_CONFIG.apiKey;
 }

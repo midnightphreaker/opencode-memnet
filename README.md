@@ -92,28 +92,7 @@ Done. Start OpenCode and the plugin will connect automatically.
 
 ## Architecture
 
-```
-┌──────────────────────┐       HTTP        ┌──────────────────────────────┐
-│   OpenCode Plugin    │ ◄──────────────► │      opencode-memnet         │
-│   (client side)      │                   │         Server               │
-│                      │                   │                              │
-│  - chat.message hook │                   │  REST API  ──►  Services    │
-│  - session.idle      │                   │  WebUI     ──►  Storage     │
-│  - tool.memory       │                   │                              │
-└──────────────────────┘                   │  ┌─────────────────────────┐ │
-                                           │  │  PostgreSQL + pgvector   │ │
-                                           │  │  - memories (embeddings) │ │
-                                           │  │  - user_profiles         │ │
-                                           │  │  - ai_sessions           │ │
-                                           │  └─────────────────────────┘ │
-                                           │                              │
-                                           │  ┌─────────────────────────┐ │
-                                           │  │  External APIs           │ │
-                                           │  │  - Embedding API         │ │
-                                           │  │  - Chat Completions API  │ │
-                                           │  └─────────────────────────┘ │
-                                           └──────────────────────────────┘
-```
+![opencode-memnet Architecture](docs/diagrams/diagram-03.svg)
 
 | Component         | Directory | Description                                                                     |
 | ----------------- | --------- | ------------------------------------------------------------------------------- |

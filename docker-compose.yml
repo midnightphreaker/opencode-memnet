@@ -33,7 +33,10 @@ services:
       # SERVER_PORT = port the server listens on INSIDE the container
       SERVER_PORT: ${SERVER_PORT:-4747}
       SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
-      SERVER_API_KEY: ${SERVER_API_KEY:?SERVER_API_KEY is required}
+      # ── Security ──
+      SERVER_API_KEY: ${SERVER_API_KEY:-}
+      DISABLE_WEBUI_AUTH: ${DISABLE_WEBUI_AUTH:-false}
+      DISABLE_CLIENT_AUTH: ${DISABLE_CLIENT_AUTH:-false}
       WEB_SERVER_ALLOWED_ORIGIN: ${WEB_SERVER_ALLOWED_ORIGIN:-*}
       # ── Database ──
       POSTGRES_URL: ${POSTGRES_URL:-postgresql://${POSTGRES_USER:-opencode}:${POSTGRES_PASSWORD:-opencode}@db:5432/${POSTGRES_DB:-opencode_mem}}

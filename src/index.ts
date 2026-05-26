@@ -1,3 +1,6 @@
+// @deprecated — Legacy in-process mode.
+// This module is kept for reference only. In-process mode is removed in v3.0.0.
+// All users should migrate to server-client mode (plugin/ + server).
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Part } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin";

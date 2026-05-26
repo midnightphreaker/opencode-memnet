@@ -1,3 +1,6 @@
+// @deprecated — This file is kept for reference only.
+// The active plugin entry point is now at plugin/src/plugin.ts
+// This file will not be included in any build output.
 // src/plugin.ts — Phase 4 update
 import type { PluginModule } from "@opencode-ai/plugin";
 import pkg from "../package.json" with { type: "json" };

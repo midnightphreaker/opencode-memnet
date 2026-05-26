@@ -28,5 +28,12 @@
     "noPropertyAccessFromIndexSignature": false
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist", "plugin"]
+  "exclude": [
+    "node_modules",
+    "dist",
+    "plugin",
+    "src/plugin.ts",
+    "src/index.ts",
+    "src/index-remote.ts"
+  ]
 }

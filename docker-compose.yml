@@ -18,12 +18,15 @@ services:
 
   server:
     build: .
-    # Port mapping: HOST_PORT:SERVER_PORT
-    # SERVER_PORT = port inside the container (the app listens on this)
-    # HOST_PORT  = port on your host machine (access the server via this)
-    # To bind to localhost only: HOST_PORT="127.0.0.1:4747"
+    # Port mapping: EXTERNAL_HOST:HOST_PORT:SERVER_PORT
+    # EXTERNAL_HOST = IP/hostname on the host machine to bind to (default: localhost)
+    #                 Set to 0.0.0.0 to expose on all interfaces (e.g. for LAN access)
+    # HOST_PORT    = port on the host machine (default: 4747)
+    # SERVER_PORT  = port inside the container (default: 4747)
+    # Example: "localhost:8080:4747" → access via http://localhost:8080
+    # Example: "0.0.0.0:4747:4747"  → access from any machine on the network
     ports:
-      - "${HOST_PORT:-4747}:${SERVER_PORT:-4747}"
+      - "${EXTERNAL_HOST:-localhost}:${HOST_PORT:-4747}:${SERVER_PORT:-4747}"
     environment:
       # ── Server ──
       # SERVER_HOST = IP the server binds to INSIDE the container (0.0.0.0 = all interfaces)

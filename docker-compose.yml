@@ -18,10 +18,16 @@ services:
 
   server:
     build: .
+    # Port mapping: HOST_PORT:SERVER_PORT
+    # SERVER_PORT = port inside the container (the app listens on this)
+    # HOST_PORT  = port on your host machine (access the server via this)
+    # To bind to localhost only: HOST_PORT="127.0.0.1:4747"
     ports:
-      - "${SERVER_PORT:-4747}:${SERVER_PORT:-4747}"
+      - "${HOST_PORT:-4747}:${SERVER_PORT:-4747}"
     environment:
       # ── Server ──
+      # SERVER_HOST = IP the server binds to INSIDE the container (0.0.0.0 = all interfaces)
+      # SERVER_PORT = port the server listens on INSIDE the container
       SERVER_PORT: ${SERVER_PORT:-4747}
       SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
       SERVER_API_KEY: ${SERVER_API_KEY:?SERVER_API_KEY is required}

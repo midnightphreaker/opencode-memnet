@@ -367,12 +367,19 @@ The client plugin compiles to a single JS file (`plugin/dist/opencode-memnet.js`
 
 ## Docker Deployment
 
+Two deployment options are available — **Bundled Database** for quick start and local development, and **External Database** for production use with managed Postgres services.
+
+### Option 1: Bundled Database (Quick Start)
+
+Spins up both the server **and** a pgvector Postgres container. Best for testing, local dev, and simple deployments.
+
 ```bash
 # 1. Copy and configure environment
 cp .env.example .env
-# Edit .env — set SERVER_API_KEY, EMBEDDING_API_URL, EMBEDDING_MODEL, EMBEDDING_API_KEY
+# Edit .env — set at minimum:
+#   SERVER_API_KEY, EMBEDDING_API_URL, EMBEDDING_MODEL, EMBEDDING_API_KEY
 
-# 2. Start all services
+# 2. Start all services (server + database)
 docker compose up -d
 
 # 3. View logs
@@ -381,6 +388,38 @@ docker compose logs -f
 # 4. Stop
 docker compose down
 ```
+
+The bundled `docker-compose.yml` includes a `db` service running `pgvector/pgvector:pg16`. Data is stored in a Docker volume (`pgdata`).
+
+### Option 2: External Database (Production)
+
+Uses an existing Postgres instance you manage separately (e.g., AWS RDS, Supabase, Neon, self-hosted). Better for production where you already have a managed database.
+
+**Prerequisites:**
+
+- Postgres 16+ with `pgvector` extension installed
+- Database and user created, user is the database owner
+- `CREATE EXTENSION IF NOT EXISTS vector` run on the target database
+
+```bash
+# 1. Copy and configure environment
+cp .env.example .env
+# Edit .env — set at minimum:
+#   POSTGRES_URL=postgresql://user:password@your-db-host:5432/opencode_mem
+#   POSTGRES_SSL=require
+#   SERVER_API_KEY, EMBEDDING_API_URL, EMBEDDING_MODEL, EMBEDDING_API_KEY
+
+# 2. Start the server (no database container)
+docker compose -f docker-compose.external-db.yml up -d
+
+# 3. View logs
+docker compose -f docker-compose.external-db.yml logs -f
+
+# 4. Stop
+docker compose -f docker-compose.external-db.yml down
+```
+
+> **Tip:** With an external database, `POSTGRES_SSL` defaults to `require`. For local dev or non-TLS connections, set it to `false`.
 
 See `.env.example` for the full list of configuration options with descriptions and defaults.
 

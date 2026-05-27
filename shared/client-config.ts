@@ -3,6 +3,7 @@ import { existsSync, readFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { stripJsoncComments } from "./jsonc.js";
+import { initLogger } from "./logger.js";
 
 const CONFIG_DIR = join(homedir(), ".config", "opencode");
 const CONFIG_FILES = [
@@ -32,6 +33,7 @@ export interface ClientConfig {
   memory: {
     defaultScope: "project" | "all-projects";
   };
+  logLevel?: "debug" | "info" | "warn" | "error";
 }
 
 const CLIENT_DEFAULTS: ClientConfig = {
@@ -50,6 +52,7 @@ const CLIENT_DEFAULTS: ClientConfig = {
   memory: {
     defaultScope: "project",
   },
+  logLevel: undefined,
 };
 
 function buildClientConfig(fileConfig: Partial<ClientConfig>): ClientConfig {
@@ -74,6 +77,7 @@ function buildClientConfig(fileConfig: Partial<ClientConfig>): ClientConfig {
     memory: {
       defaultScope: fileConfig.memory?.defaultScope ?? CLIENT_DEFAULTS.memory.defaultScope,
     },
+    logLevel: fileConfig.logLevel ?? CLIENT_DEFAULTS.logLevel,
   };
 }
 
@@ -110,6 +114,10 @@ export function initClientConfig(directory: string): void {
     merged.memory = { ...globalConfig.memory, ...projectConfig.memory };
   }
   CLIENT_CONFIG = buildClientConfig(merged);
+  // Initialize logger with config level (env var fallback handled inside initLogger)
+  if (CLIENT_CONFIG.logLevel) {
+    initLogger({ level: CLIENT_CONFIG.logLevel });
+  }
 }
 
 export function isClientConfigured(): boolean {

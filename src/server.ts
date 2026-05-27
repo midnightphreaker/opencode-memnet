@@ -4,11 +4,9 @@ import { initializeStorage } from "./services/storage/factory.js";
 import { embeddingService } from "./services/embedding.js";
 import { setDbConnected } from "./services/health-handler.js";
 import { startWebServer } from "./services/web-server.js";
-import { log } from "./services/logger.js";
+import { logInfo, logWarn, logError, logDebug, initLogger } from "./services/logger.js";
 
 async function main(): Promise<void> {
-  log("opencode-memnet server starting...");
-
   // 1. Load and validate config
   const config = initServerConfig();
   const errors = validateServerConfig(config);
@@ -22,11 +20,19 @@ async function main(): Promise<void> {
   const { serverConfigToGlobalConfig } = await import("./config.js");
   serverConfigToGlobalConfig(config);
 
+  // Initialize leveled logger
+  initLogger({ level: config.logLevel });
+  logInfo("opencode-memnet server starting...", {
+    port: config.port,
+    host: config.host,
+    logLevel: config.logLevel,
+  });
+
   // 2. Initialize storage (runs DB migrations)
   try {
     await initializeStorage();
     setDbConnected(true);
-    log("Storage initialized (migrations complete)");
+    logInfo("Storage initialized (migrations complete)");
   } catch (error) {
     console.error("Failed to initialize storage:", error);
     process.exit(1);
@@ -35,7 +41,7 @@ async function main(): Promise<void> {
   // 3. Warm up embedding service
   try {
     await embeddingService.warmup();
-    log("Embedding service ready");
+    logInfo("Embedding service ready");
   } catch (error) {
     console.error("Failed to warm up embedding service:", error);
     process.exit(1);
@@ -57,44 +63,50 @@ async function main(): Promise<void> {
       }
     );
 
-    log(`Server listening on http://${config.host}:${config.port}`);
-    log(`WebUI: http://${config.host}:${config.port}/`);
-    log(`Health: http://${config.host}:${config.port}/api/health`);
+    logInfo(`Server listening on http://${config.host}:${config.port}`);
+    logInfo(`WebUI: http://${config.host}:${config.port}/`);
+    logInfo(`Health: http://${config.host}:${config.port}/api/health`);
 
     if (config.disableWebuiAuth) {
-      log("WARNING: DISABLE_WEBUI_AUTH is enabled — WebUI does not require API key authentication");
-      log("WARNING: Ensure the server is secured by other means (reverse proxy, firewall, etc.)");
+      logWarn("DISABLE_WEBUI_AUTH is enabled — WebUI does not require API key authentication");
     }
     if (config.disableClientAuth) {
-      log(
-        "WARNING: DISABLE_CLIENT_AUTH is enabled — client API does not require API key authentication"
+      logWarn(
+        "DISABLE_CLIENT_AUTH is enabled — client API does not require API key authentication"
       );
-      log("WARNING: Ensure the server is secured by other means (reverse proxy, firewall, etc.)");
     }
+
+    logInfo("Server ready", {
+      port: config.port,
+      host: config.host,
+      auth: config.serverApiKey ? "enabled" : "disabled",
+      webuiAuth: config.disableWebuiAuth ? "disabled" : "enabled",
+      clientAuth: config.disableClientAuth ? "disabled" : "enabled",
+    });
 
     // Start background tag migration (perpetual loop)
     const { runTagMigration } = await import("./services/tag-migration-service.js");
-    runTagMigration().catch((err) => log("Tag migration loop error", { error: String(err) }));
+    runTagMigration().catch((err) => logError("Tag migration loop error", { error: String(err) }));
 
     // 5. Graceful shutdown
     const shutdown = async () => {
-      log("Shutting down...");
+      logInfo("Shutting down...");
       try {
         await server.stop();
       } catch (e) {
-        log("Error stopping server", { error: String(e) });
+        logError("Error stopping server", { error: String(e) });
       }
       try {
         const { stopMigration } = await import("./services/tag-migration-service.js");
         stopMigration();
       } catch (e) {
-        log("Error stopping migration", { error: String(e) });
+        logError("Error stopping migration", { error: String(e) });
       }
       try {
         const { closeStorage } = await import("./services/storage/factory.js");
         await closeStorage();
       } catch (e) {
-        log("Error closing storage", { error: String(e) });
+        logError("Error closing storage", { error: String(e) });
       }
       process.exit(0);
     };

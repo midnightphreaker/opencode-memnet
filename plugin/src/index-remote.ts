@@ -8,7 +8,7 @@ import { getTags, type TagsConfig } from "../../shared/tags.js";
 import { stripPrivateContent, isFullyPrivate } from "../../shared/privacy.js";
 
 import { isClientConfigured, CLIENT_CONFIG, initClientConfig } from "../../shared/client-config.js";
-import { log } from "../../shared/logger.js";
+import { log, logInfo, logWarn, logError, logDebug } from "../../shared/logger.js";
 
 // NOTE: Must match src/config.ts DEFAULTS.containerTagPrefix — if server changes this, update both places.
 const TAGS_CONFIG: TagsConfig = {
@@ -27,12 +27,20 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   }
 
   const tags = await getTags(directory, TAGS_CONFIG);
+  logInfo("Plugin initialized", {
+    project: tags.project.projectName || tags.project.tag,
+    user: tags.user.userEmail || "unknown",
+  });
   let idleTimeout: Timer | null = null;
   let captureInProgress = false;
 
   return {
     "chat.message": async (input, output) => {
       if (!isClientConfigured() || !CLIENT_CONFIG.chatMessage.enabled) return;
+      logDebug("chat.message hook fired", {
+        sessionId: input.sessionID,
+        partsCount: output.parts.length,
+      });
 
       try {
         const textParts = output.parts.filter(
@@ -61,9 +69,13 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
             synthetic: true,
           } as any;
           output.parts.unshift(contextPart);
+          logDebug("Memory context injected", {
+            sessionId: input.sessionID,
+            hasContext: !!(ctxResult.success && ctxResult.data?.context),
+          });
         }
       } catch (error) {
-        log("chat.message: ERROR", { error: String(error) });
+        logError("chat.message: ERROR", { error: String(error) });
       }
     },
 
@@ -84,6 +96,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           if (!isClientConfigured()) {
             return JSON.stringify({ success: false, error: "Memory system not configured." });
           }
+          logDebug("memory tool called", { mode: args.mode || "help" });
 
           const mode = args.mode || "help";
 
@@ -249,9 +262,14 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                   },
                 })
                 .catch(() => {});
+              logDebug("Auto-capture completed", {
+                sessionId: sessionID,
+                success: result.success,
+                captured: result.data?.captured,
+              });
             }
           } catch (error) {
-            log("Idle auto-capture error", { error: String(error) });
+            logError("Idle auto-capture error", { error: String(error) });
           } finally {
             idleTimeout = null;
             captureInProgress = false;
@@ -262,6 +280,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       if (event.type === "session.compacted") {
         const sessionID = event.properties?.sessionID;
         if (!sessionID) return;
+        logDebug("session.compacted event", { sessionId: sessionID });
         try {
           const memoriesResult = await remoteMemoryClient.searchMemoriesBySessionID(
             sessionID,
@@ -283,7 +302,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
             },
           });
         } catch (error) {
-          log("Compaction handler error", { error: String(error) });
+          logError("Compaction handler error", { error: String(error) });
         }
       }
     },

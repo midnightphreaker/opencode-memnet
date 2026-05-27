@@ -18,7 +18,7 @@ import {
 import { startWebServer, WebServer } from "./services/web-server.js";
 
 import { isConfigured, CONFIG, initConfig } from "./config.js";
-import { log } from "./services/logger.js";
+import { log, logInfo, logWarn, logError, logDebug } from "./services/logger.js";
 import type { MemoryType } from "./types/index.js";
 import { getLanguageName } from "./services/language-detector.js";
 import type { MemoryScope } from "./services/client.js";
@@ -31,12 +31,13 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   const promptRepo = createUserPromptRepository();
   const profileRepo = createUserProfileRepository();
   const tags = await getTags(directory);
+  logInfo("Plugin initialized", { project: tags.project.projectName || tags.project.tag });
   let webServer: WebServer | null = null;
   let idleTimeout: Timer | null = null;
   let captureInProgress = false;
 
   if (!isConfigured()) {
-    log("Plugin not configured — skipping handler registration. Check your config.");
+    logWarn("Plugin not configured — skipping handler registration. Check your config.");
     return {};
   }
 
@@ -51,7 +52,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         await memoryClient.warmup();
         (globalThis as any)[GLOBAL_PLUGIN_WARMUP_KEY] = true;
       } catch (error) {
-        log("Plugin warmup failed", { error: String(error) });
+        logError("Plugin warmup failed", { error: String(error) });
       }
     })();
   }
@@ -66,7 +67,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         setConnectedProviders(providerResult.data.connected);
       }
     } catch (error) {
-      log("Failed to initialize opencode provider state", { error: String(error) });
+      logError("Failed to initialize opencode provider state", { error: String(error) });
     }
   })();
 
@@ -98,7 +99,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         }
       })
       .catch((error) => {
-        log("Web server failed to start", { error: String(error) });
+        logError("Web server failed to start", { error: String(error) });
 
         if (ctx.client?.tui) {
           ctx.client.tui
@@ -122,7 +123,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       }
       await memoryClient.close();
     } catch (error) {
-      log("Shutdown error", { error: String(error) });
+      logError("Shutdown error", { error: String(error) });
     }
   };
 
@@ -212,7 +213,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           output.parts.unshift(contextPart);
         }
       } catch (error) {
-        log("chat.message: ERROR", { error: String(error) });
+        logError("chat.message: ERROR", { error: String(error) });
         if (ctx.client?.tui && CONFIG.showErrorToasts) {
           await ctx.client.tui
             .showToast({
@@ -483,7 +484,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
 
             await performUserProfileLearning(ctx, directory);
           } catch (error) {
-            log("Idle processing error", { error: String(error) });
+            logError("Idle processing error", { error: String(error) });
           } finally {
             idleTimeout = null;
             captureInProgress = false;
@@ -531,12 +532,12 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               .catch(() => {});
           }
 
-          log("Compaction memory injected", {
+          logInfo("Compaction memory injected", {
             sessionID,
             count: memoriesResult.results.length,
           });
         } catch (error) {
-          log("Compaction handler error", { error: String(error) });
+          logError("Compaction handler error", { error: String(error) });
         }
       }
     },

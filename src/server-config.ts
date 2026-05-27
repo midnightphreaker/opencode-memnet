@@ -51,6 +51,7 @@ export interface ServerConfig {
   webServerAllowedOrigin: string;
   disableWebuiAuth: boolean;
   disableClientAuth: boolean;
+  logLevel: "debug" | "info" | "warn" | "error";
 }
 
 function getEmbeddingDimensions(model: string): number {
@@ -137,6 +138,9 @@ export function initServerConfig(): ServerConfig {
     webServerAllowedOrigin: env.WEB_SERVER_ALLOWED_ORIGIN || "*",
     disableWebuiAuth: env.DISABLE_WEBUI_AUTH === "true",
     disableClientAuth: env.DISABLE_CLIENT_AUTH === "true",
+    logLevel:
+      (env.LOG_LEVEL as "debug" | "info" | "warn" | "error") ||
+      (env.DEBUG === "true" || env.DEBUG === "1" ? "debug" : "info"),
   };
   return _config;
 }

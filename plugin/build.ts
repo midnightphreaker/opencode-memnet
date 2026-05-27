@@ -3,8 +3,9 @@ import { build } from "bun";
 const result = await build({
   entrypoints: ["src/plugin.ts"],
   outdir: "dist",
-  target: "bun",
+  target: "node",
   format: "esm",
+  banner: "#!/usr/bin/env node",
   naming: "opencode-memnet.js",
   external: ["@opencode-ai/plugin", "@opencode-ai/sdk"],
   sourcemap: "none",

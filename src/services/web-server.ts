@@ -29,6 +29,9 @@ import {
   handleDeduplicate,
   handleMigrationRun,
   handleListUserProfiles,
+  handleClientConnect,
+  handleSetClientNickname,
+  handleGetClientStats,
 } from "./api-handlers.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -137,11 +140,12 @@ export class WebServer {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method;
+    const clientId = req.headers.get("X-Client-ID");
 
     // Log every API request at debug level (verbose)
     if (path.startsWith("/api/")) {
       const qs = url.search ? `?${url.searchParams.toString()}` : "";
-      logDebug(`← ${method} ${path}${qs}`, { method, path, query: Object.fromEntries(url.searchParams) });
+      logDebug(`← ${method} ${path}${qs}`, { method, path, query: Object.fromEntries(url.searchParams), client: clientId || "unknown" });
     }
 
     // CORS preflight (no auth required)
@@ -149,7 +153,7 @@ export class WebServer {
       const headers = new Headers();
       headers.set("Access-Control-Allow-Origin", this.allowedOrigin);
       headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-      headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+      headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Client-ID");
       headers.set("Access-Control-Max-Age", "86400");
       if (this.allowedOrigin !== "*") headers.set("Vary", "Origin");
       return new Response(null, { status: 204, headers });
@@ -396,6 +400,28 @@ export class WebServer {
         return this.jsonResponse(result);
       }
 
+      // ── Client Identity ──
+      if (path === "/api/client/connect" && method === "POST") {
+        const body = await this.parseBody(req);
+        const result = await handleClientConnect(body);
+        return this.jsonResponse(result);
+      }
+
+      if (path === "/api/client/nickname" && method === "PUT") {
+        const body = await this.parseBody(req);
+        const result = await handleSetClientNickname(body);
+        return this.jsonResponse(result);
+      }
+
+      if (path === "/api/client/stats" && method === "GET") {
+        const clientIdParam = url.searchParams.get("clientId");
+        if (!clientIdParam) {
+          return this.jsonResponse({ success: false, error: "clientId query parameter required" });
+        }
+        const result = await handleGetClientStats({ clientId: clientIdParam });
+        return this.jsonResponse(result);
+      }
+
       // Generic static file serving (svg, html, png, etc.)
       const staticExts: Record<string, string> = {
         ".svg": "image/svg+xml",
@@ -463,7 +489,7 @@ export class WebServer {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": this.allowedOrigin,
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-ID",
     };
 
     if (this.allowedOrigin !== "*") {

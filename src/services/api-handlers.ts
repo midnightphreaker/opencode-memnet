@@ -1,11 +1,13 @@
 import { embeddingService } from "./embedding.js";
-import { log } from "./logger.js";
+import { log, logInfo, logDebug, logError } from "./logger.js";
+import { getServerConfig } from "../server-config.js";
 import { CONFIG } from "../config.js";
 import type { MemoryType } from "../types/index.js";
 import {
   createMemoryRepository,
   createUserPromptRepository,
   createUserProfileRepository,
+  createClientRepository,
 } from "./storage/factory.js";
 import type {
   MemoryRepository,
@@ -15,11 +17,13 @@ import type {
   MemoryRow,
   MemoryRecord,
   MemoryScopeKind,
+  ClientRepository,
 } from "./storage/types.js";
 
 const memoryRepo: MemoryRepository = createMemoryRepository();
 const promptRepo: UserPromptRepository = createUserPromptRepository();
 const profileRepo: UserProfileRepository = createUserProfileRepository();
+let clientRepo: ClientRepository | null = null;
 
 // Repositories are singletons from the factory, but initialize() (which runs
 // DB migrations) must be called before first use.  The LocalMemoryClient does
@@ -32,6 +36,8 @@ async function ensureInit(): Promise<void> {
       await memoryRepo.initialize();
       await promptRepo.initialize();
       await profileRepo.initialize();
+      clientRepo = createClientRepository();
+      await clientRepo.initialize();
     })().catch((err) => {
       _initPromise = null;
       throw err;
@@ -1498,4 +1504,145 @@ export async function handleResetTagMigration(): Promise<ApiResponse> {
     /* file may not exist */
   }
   return { success: true };
+}
+
+// ── Client Identity Handlers ───────────────────────────────
+
+export async function handleClientConnect(data: {
+  clientId: string;
+  metadata?: Record<string, unknown>;
+}): Promise<
+  ApiResponse<{
+    firstTime: boolean;
+    daysSinceLastSeen: number | null;
+    nickname: string | null;
+    welcomeBack: boolean;
+    stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
+  }>
+> {
+  try {
+    if (!data.clientId) {
+      return { success: false, error: "clientId is required" };
+    }
+    await ensureInit();
+
+    const metadata = data.metadata ?? {};
+    const result = await clientRepo!.upsertClient(data.clientId, metadata);
+    const thresholdHours = getServerConfig().clientWelcomeBackThreshold;
+
+    let daysSinceLastSeen: number | null = null;
+    let welcomeBack = false;
+
+    if (result.previousLastSeen && thresholdHours > 0) {
+      const hoursSince = (Date.now() - result.previousLastSeen) / (1000 * 60 * 60);
+      daysSinceLastSeen = Math.round(hoursSince / 24);
+      if (hoursSince >= thresholdHours) {
+        welcomeBack = true;
+      }
+    }
+
+    // Log lifecycle event
+    const displayName = result.row.nickname || data.clientId.slice(0, 8);
+    if (result.firstTime) {
+      logInfo(`🆕 New client connected: ${displayName}`, {
+        clientId: data.clientId,
+        metadata,
+      });
+    } else if (welcomeBack) {
+      logInfo(`👋 Welcome back: ${displayName} (last seen ${daysSinceLastSeen}d ago)`, {
+        clientId: data.clientId,
+        daysSinceLastSeen,
+      });
+    } else {
+      logDebug(`Client connected: ${displayName}`, {
+        clientId: data.clientId,
+        hoursSinceLast: result.previousLastSeen
+          ? Math.round((Date.now() - result.previousLastSeen) / (1000 * 60 * 60))
+          : null,
+      });
+    }
+
+    // Get stats
+    const stats = await clientRepo!.getClientStats(data.clientId);
+
+    return {
+      success: true,
+      data: {
+        firstTime: result.firstTime,
+        daysSinceLastSeen,
+        nickname: result.row.nickname,
+        welcomeBack,
+        stats: {
+          totalMemories: stats.totalMemories,
+          memoriesToday: stats.memoriesToday,
+          totalPrompts: stats.totalPrompts,
+        },
+      },
+    };
+  } catch (error) {
+    logError("handleClientConnect: error", { error: String(error) });
+    return { success: false, error: String(error) };
+  }
+}
+
+export async function handleSetClientNickname(data: {
+  clientId: string;
+  nickname: string;
+}): Promise<ApiResponse<{ nickname: string }>> {
+  try {
+    if (!data.clientId || !data.nickname) {
+      return { success: false, error: "clientId and nickname are required" };
+    }
+    await ensureInit();
+
+    const result = await clientRepo!.setNickname(data.clientId, data.nickname);
+    if (!result) {
+      return { success: false, error: "Client not found — connect first" };
+    }
+
+    logInfo(`✏️ Client renamed: ${data.nickname}`, { clientId: data.clientId });
+
+    return { success: true, data: { nickname: result.nickname! } };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
+}
+
+export async function handleGetClientStats(data: {
+  clientId: string;
+}): Promise<
+  ApiResponse<{
+    nickname: string | null;
+    firstSeen: number;
+    lastSeen: number;
+    totalMemories: number;
+    memoriesToday: number;
+    totalPrompts: number;
+  }>
+> {
+  try {
+    if (!data.clientId) {
+      return { success: false, error: "clientId is required" };
+    }
+    await ensureInit();
+
+    const stats = await clientRepo!.getClientStats(data.clientId);
+    if (!stats.client) {
+      return { success: false, error: "Client not found — connect first" };
+    }
+
+    return {
+      success: true,
+      data: {
+        nickname: stats.client.nickname,
+        firstSeen: stats.client.firstSeen,
+        lastSeen: stats.client.lastSeen,
+        totalMemories: stats.totalMemories,
+        memoriesToday: stats.memoriesToday,
+        totalPrompts: stats.totalPrompts,
+      },
+    };
+  } catch (error) {
+    return { success: false, error: String(error) };
+  }
 }

@@ -38,6 +38,9 @@ services:
       DISABLE_WEBUI_AUTH: ${DISABLE_WEBUI_AUTH:-false}
       DISABLE_CLIENT_AUTH: ${DISABLE_CLIENT_AUTH:-false}
       WEB_SERVER_ALLOWED_ORIGIN: ${WEB_SERVER_ALLOWED_ORIGIN:-*}
+      # ── Logging ──
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      DEBUG: ${DEBUG:-false}
       # ── Database ──
       POSTGRES_URL: ${POSTGRES_URL:?POSTGRES_URL is required — set this to your external database}
       POSTGRES_SSL: ${POSTGRES_SSL:-require}

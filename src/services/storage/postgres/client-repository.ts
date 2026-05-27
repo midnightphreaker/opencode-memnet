@@ -93,7 +93,7 @@ export class PostgresClientRepository implements ClientRepository {
 
     const todayResult = await sql`
       SELECT COUNT(*) as count FROM memories
-      WHERE created_at >= CURRENT_DATE
+      WHERE created_at >= (extract(epoch from current_date)::bigint * 1000)
     `;
     const memoriesToday = parseInt(todayResult[0]?.count ?? "0");
 

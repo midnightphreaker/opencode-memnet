@@ -7,6 +7,9 @@
   "exports": {
     ".": {
       "import": "./dist/opencode-memnet.js"
+    },
+    "./server": {
+      "import": "./dist/opencode-memnet.js"
     }
   },
   "scripts": {

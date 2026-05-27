@@ -324,3 +324,29 @@ export interface AISessionRepository {
   getLastSequence(aiSessionId: string): Promise<number>;
   clearMessages(aiSessionId: string): Promise<void>;
 }
+
+// ── Client tracking types ──
+
+export interface ClientRow {
+  id: string;
+  nickname: string | null;
+  firstSeen: number;  // unix epoch ms
+  lastSeen: number;   // unix epoch ms
+  clientMetadata: Record<string, unknown>;
+  createdAt: number;  // unix epoch ms
+  updatedAt: number;  // unix epoch ms
+}
+
+export interface ClientRepository {
+  initialize(): Promise<void>;
+  close(): Promise<void>;
+  upsertClient(id: string, metadata: Record<string, unknown>): Promise<{ firstTime: boolean; previousLastSeen: number | null; row: ClientRow }>;
+  setNickname(id: string, nickname: string): Promise<ClientRow | null>;
+  getClient(id: string): Promise<ClientRow | null>;
+  getClientStats(id: string): Promise<{
+    client: ClientRow | null;
+    totalMemories: number;
+    memoriesToday: number;
+    totalPrompts: number;
+  }>;
+}

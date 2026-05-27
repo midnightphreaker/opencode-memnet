@@ -11,6 +11,8 @@ import type {
   AISessionRepository,
   AIMessageRow,
   AISessionRow,
+  ClientRepository,
+  ClientRow,
   MemoryRecord,
   MemoryRepository,
   MemoryRow,
@@ -32,6 +34,7 @@ let memoryRepo: MemoryRepository | null = null;
 let promptRepo: UserPromptRepository | null = null;
 let profileRepo: UserProfileRepository | null = null;
 let sessionRepo: AISessionRepository | null = null;
+let clientRepo: ClientRepository | null = null;
 
 export function createMemoryRepository(): MemoryRepository {
   if (memoryRepo) return memoryRepo;
@@ -57,6 +60,12 @@ export function createAISessionRepository(): AISessionRepository {
   return sessionRepo;
 }
 
+export function createClientRepository(): ClientRepository {
+  if (clientRepo) return clientRepo;
+  clientRepo = new PostgresClientRepositoryLazy();
+  return clientRepo;
+}
+
 /**
  * Initialize all repositories. Call once at startup.
  */
@@ -65,22 +74,26 @@ export async function initializeStorage(): Promise<{
   promptRepo: UserPromptRepository;
   profileRepo: UserProfileRepository;
   sessionRepo: AISessionRepository;
+  clientRepo: ClientRepository;
 }> {
   const mem = createMemoryRepository();
   const prompt = createUserPromptRepository();
   const profile = createUserProfileRepository();
   const session = createAISessionRepository();
+  const client = createClientRepository();
 
   await mem.initialize();
   await prompt.initialize();
   await profile.initialize();
   await session.initialize();
+  await client.initialize();
 
   return {
     memoryRepo: mem,
     promptRepo: prompt,
     profileRepo: profile,
     sessionRepo: session,
+    clientRepo: client,
   };
 }
 
@@ -103,6 +116,10 @@ export async function closeStorage(): Promise<void> {
   if (sessionRepo) {
     await sessionRepo.close();
     sessionRepo = null;
+  }
+  if (clientRepo) {
+    await clientRepo.close();
+    clientRepo = null;
   }
 }
 
@@ -424,5 +441,48 @@ class PostgresAISessionRepositoryLazy implements AISessionRepository {
   }
   async clearMessages(aiSessionId: string): Promise<void> {
     await (await this.repo()).clearMessages(aiSessionId);
+  }
+}
+
+class PostgresClientRepositoryLazy implements ClientRepository {
+  private target: Promise<ClientRepository> | null = null;
+
+  private async repo(): Promise<ClientRepository> {
+    if (!this.target) {
+      this.target = import("./postgres/client-repository.js")
+        .then(({ PostgresClientRepository }) => new PostgresClientRepository())
+        .catch((err) => {
+          this.target = null;
+          throw err;
+        });
+    }
+    return this.target;
+  }
+
+  async initialize(): Promise<void> {
+    await (await this.repo()).initialize();
+  }
+  async close(): Promise<void> {
+    await (await this.repo()).close();
+  }
+  async upsertClient(
+    id: string,
+    metadata: Record<string, unknown>
+  ): Promise<{ firstTime: boolean; previousLastSeen: number | null; row: ClientRow }> {
+    return (await this.repo()).upsertClient(id, metadata);
+  }
+  async setNickname(id: string, nickname: string): Promise<ClientRow | null> {
+    return (await this.repo()).setNickname(id, nickname);
+  }
+  async getClient(id: string): Promise<ClientRow | null> {
+    return (await this.repo()).getClient(id);
+  }
+  async getClientStats(id: string): Promise<{
+    client: ClientRow | null;
+    totalMemories: number;
+    memoriesToday: number;
+    totalPrompts: number;
+  }> {
+    return (await this.repo()).getClientStats(id);
   }
 }

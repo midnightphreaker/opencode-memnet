@@ -3,7 +3,6 @@ WORKDIR /app
 COPY package.json bun.lockb* ./
 RUN bun install --frozen-lockfile
 COPY tsconfig.json ./
-COPY shared/ ./shared/
 COPY src/ ./src/
 RUN bunx tsc
 RUN mkdir -p dist/web && cp -r src/web/* dist/web/

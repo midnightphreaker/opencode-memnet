@@ -13,7 +13,7 @@
     "resolveJsonModule": true,
 
     "outDir": "./dist",
-    "rootDir": ".",
+    "rootDir": "./src",
     "declaration": true,
     "declarationMap": true,
 
@@ -27,7 +27,7 @@
     "noUnusedParameters": false,
     "noPropertyAccessFromIndexSignature": false
   },
-  "include": ["src/**/*", "shared/**/*"],
+  "include": ["src/**/*"],
   "exclude": [
     "node_modules",
     "dist",

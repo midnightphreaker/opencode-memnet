@@ -36,7 +36,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tickernelz/opencode-mem.git"
+    "url": "git+https://git.phrk.org/pub/opencode-memnet"
   },
   "publishConfig": {
     "access": "public"

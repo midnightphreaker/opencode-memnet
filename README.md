@@ -2,11 +2,11 @@
   <img src="docs/logo/logo-banner.svg" alt="opencode MEMnet">
 </p>
 
-[![MIT License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/tickernelz/opencode-mem) [![Version](https://img.shields.io/badge/version-3.0.0-green)](package.json)
+[![MIT License](https://img.shields.io/badge/license-MIT-blue)](https://git.phrk.org/pub/opencode-memnet) [![Version](https://img.shields.io/badge/version-3.0.0-green)](package.json)
 
 Persistent memory for AI coding agents. AI assistants forget everything between sessions -- preferences, patterns, past decisions, project context. opencode-memnet gives them a long-term memory layer backed by semantic search, so every conversation picks up where the last one left off.
 
-This project builds upon and would not exist without the original [OpenCode Memory](https://github.com/tickernelz/opencode-mem) by **tickernelz**. Thank you for creating and sharing this excellent work. For the original version with local vector database support and a lighter footprint suitable for single-user local use, visit **[github.com/tickernelz/opencode-mem](https://github.com/tickernelz/opencode-mem)**.
+This project builds upon and would not exist without the original [OpenCode Memory](https://github.com/tickernelz/opencode-mem) by **tickernelz**. Thank you for creating and sharing this excellent work.
 
 ---
 
@@ -22,9 +22,8 @@ This project builds upon and would not exist without the original [OpenCode Memo
   - [Option 3: Manual (Bun)](#option-3-manual-bun)
   - [Production Considerations](#production-considerations)
 - [Client Plugin Installation](#client-plugin-installation)
-  - [Option 1: npm (Recommended)](#option-1-npm-recommended)
-  - [Option 2: curl \| bash (Non-interactive)](#option-2-curl--bash-non-interactive)
-  - [Option 3: Manual Configuration](#option-3-manual-configuration)
+  - [Option 1: Bun (Recommended)](#option-1-bun-recommended)
+  - [Option 2: Manual Configuration](#option-2-manual-configuration)
 - [Configuration Reference](#configuration-reference)
   - [Server Environment Variables](#server-environment-variables)
   - [Secret Management](#secret-management)
@@ -45,24 +44,37 @@ This project builds upon and would not exist without the original [OpenCode Memo
 
 Get a working memory server and client plugin in a few minutes.
 
-**1. Install the server (Docker, bundled database):**
+**1. Clone and start the server (Docker, bundled database):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tickernelz/opencode-mem/main/scripts/install-server.sh \
-  | EMBEDDING_API_URL=https://api.openai.com/v1 \
-    EMBEDDING_MODEL=text-embedding-3-small \
-    EMBEDDING_API_KEY=sk-... \
-    SERVER_API_KEY=my-secret \
-    bash
+git clone https://git.phrk.org/pub/opencode-memnet.git
+cd opencode-memnet
+cp .env.example .env
 ```
 
-**2. Install the client plugin:**
+Edit `.env` — set at minimum:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tickernelz/opencode-mem/main/scripts/install-client.sh \
-  | OPENCODE_MEM_SERVER_URL=http://localhost:4747 \
-    OPENCODE_MEM_API_KEY=my-secret \
-    bash
+SERVER_API_KEY=my-secret
+EMBEDDING_API_URL=https://api.openai.com/v1
+EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_API_KEY=sk-...
+```
+
+```bash
+docker compose up -d
+```
+
+**2. Configure the client plugin:**
+
+```bash
+mkdir -p ~/.config/opencode
+cat > ~/.config/opencode/opencode-memnet.jsonc << 'EOF'
+{
+  "serverUrl": "http://localhost:4747",
+  "apiKey": "my-secret",
+}
+EOF
 ```
 
 **3. Verify it is running:**
@@ -124,8 +136,8 @@ Spins up both the server and a pgvector Postgres container. Good for testing, lo
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/tickernelz/opencode-mem.git
-cd opencode-mem
+git clone https://git.phrk.org/pub/opencode-memnet.git
+cd opencode-memnet
 
 # 2. Create your .env file
 cp .env.example .env
@@ -182,8 +194,8 @@ Uses an existing Postgres instance you manage separately (e.g., AWS RDS, Supabas
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/tickernelz/opencode-mem.git
-cd opencode-mem
+git clone https://git.phrk.org/pub/opencode-memnet.git
+cd opencode-memnet
 
 # 2. Create your .env file
 cp .env.example .env
@@ -216,8 +228,8 @@ For non-Docker installations, or when running directly on the host.
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/tickernelz/opencode-mem.git
-cd opencode-mem
+git clone https://git.phrk.org/pub/opencode-memnet.git
+cd opencode-memnet
 bun install
 
 # 2. Start PostgreSQL with pgvector
@@ -273,7 +285,7 @@ For external databases, use your provider's backup tooling.
 **Upgrade procedure:**
 
 ```bash
-cd opencode-mem
+cd opencode-memnet
 git pull --ff-only
 docker compose up -d --build
 ```
@@ -294,16 +306,14 @@ WEB_SERVER_ALLOWED_ORIGIN=https://mem.example.com
 
 ## Client Plugin Installation
 
-The client plugin is distributed as an npm package and compiles to a single JS file loaded by OpenCode.
+The client plugin is distributed as a Bun package and compiles to a single JS file loaded by OpenCode.
 
-### Option 1: npm (Recommended)
+### Option 1: Bun (Recommended)
 
 Install the plugin globally so it is available in all projects:
 
 ```bash
 bun add -g opencode-memnet-plugin
-# or
-npm install -g opencode-memnet-plugin
 ```
 
 Then create the configuration file (see [Client Configuration File](#client-configuration-file) for all options):
@@ -318,34 +328,7 @@ cat > ~/.config/opencode/opencode-memnet.jsonc << 'EOF'
 EOF
 ```
 
-### Option 2: curl | bash (Non-interactive)
-
-Installs the config file without prompts. All configuration is passed via environment variables.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tickernelz/opencode-mem/main/scripts/install-client.sh \
-  | OPENCODE_MEM_SERVER_URL=http://localhost:4747 \
-    OPENCODE_MEM_API_KEY=my-secret-key \
-    bash
-```
-
-**Environment variables accepted by the install script:**
-
-| Variable                  | Required | Default                 | Description                       |
-| ------------------------- | -------- | ----------------------- | --------------------------------- |
-| `OPENCODE_MEM_SERVER_URL` | No       | `http://localhost:4747` | Server URL                        |
-| `OPENCODE_MEM_API_KEY`    | Yes      | --                      | API key for server authentication |
-
-To install into a specific project directory (creates `.opencode/opencode-memnet.jsonc`):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tickernelz/opencode-mem/main/scripts/install-client.sh \
-  | OPENCODE_MEM_SERVER_URL=http://localhost:4747 \
-    OPENCODE_MEM_API_KEY=my-secret-key \
-    bash -s /path/to/project
-```
-
-### Option 3: Manual Configuration
+### Option 2: Manual Configuration
 
 Create the config file by hand. The recommended format is `.jsonc` (JSON with comments), but plain `.json` also works.
 

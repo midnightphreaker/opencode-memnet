@@ -1,48 +1,30 @@
 # src/services/ai/
 
 ## Responsibility
+AI provider abstraction layer for generating structured outputs (memory summaries, tags, user profiles) via LLM APIs. Supports two paths: direct API calls and opencode SDK-based structured output.
 
-Provides the AI provider abstraction layer: manages LLM interactions via two paths — (1) direct HTTP calls to OpenAI-compatible chat completion endpoints, and (2) structured output generation via the opencode v2 SDK. Handles provider instantiation, configuration, session persistence, tool-call loops, and response validation.
+## Design Patterns
+- **Factory**: `AIProviderFactory.createProvider(type, config)` creates provider instances. Currently supports `openai-chat` only.
+- **Adapter**: `BaseAIProvider` defines the `executeToolCall()` interface; `OpenAIChatCompletionProvider` adapts it to OpenAI Chat Completions API with multi-turn tool calling
+- **Facade**: `opencode-provider.ts` wraps opencode's v2 SDK (`createOpencodeClient`) for structured output via transient sessions
 
-## Design
+## Key Files
 
-**Two AI access strategies coexist:**
-
-1. **Provider pattern** (`providers/`) — An abstract `BaseAIProvider` with `executeToolCall()` for iterative tool-call loops. Currently one concrete implementation: `OpenAIChatCompletionProvider`, which sends chat completion requests with function-calling, loops until the model invokes the expected tool, and persists full message history via `AISessionRepository`.
-
-2. **opencode SDK path** (`opencode-provider.ts`) — Generates structured JSON output by creating transient opencode v2 sessions, prompting with a Zod-derived JSON schema, then deleting the session. Bypasses direct HTTP/auth entirely by delegating to the running opencode server.
-
-**Key abstractions:**
-
-- `AIProviderFactory` — Static factory selecting the right provider by type string.
-- `ProviderConfig` — Normalized config (model, URL, key, temperature, extra params, iteration limits).
-- `buildMemoryProviderConfig()` — Merges runtime config from user settings into a `ProviderConfig`.
-- `ChatCompletionTool` — TypeScript interface for OpenAI-style function-calling tool schemas.
-- `UserProfileValidator` — Validates tool-call responses against the `UserProfileData` contract.
+| File | Purpose |
+|------|---------|
+| `ai-provider-factory.ts` | Creates AI provider instances by type string. Manages AI session repo for cleanup. |
+| `provider-config.ts` | `buildMemoryProviderConfig()` — maps CONFIG fields to `ProviderConfig` for the factory |
+| `opencode-provider.ts` | SDK-based structured output: creates transient opencode session, prompts with JSON schema, parses Zod-validated result, deletes session |
+| `providers/base-provider.ts` | Abstract `BaseAIProvider` with `ProviderConfig` type and `executeToolCall()` method |
+| `providers/openai-chat-completion.ts` | OpenAI Chat Completions implementation with multi-turn conversation, tool call loop, and session persistence |
+| `provider-config.ts` | Config builder mapping runtime config to provider config |
+| `tools/` | Tool definitions for AI provider interactions |
+| `validators/` | Response validation helpers |
 
 ## Flow
-
-**Provider (tool-call) path:**
-
-1. Caller gets a provider via `AIProviderFactory.createProvider(type, config)`.
-2. Calls `executeToolCall(systemPrompt, userPrompt, toolSchema, sessionId)`.
-3. Provider creates/resumes an AI session in storage, replays prior messages, appends new system+user messages.
-4. Iterative loop: POST to `/chat/completions`, parse response, check for target tool invocation.
-5. On correct tool call: parse args, validate (`UserProfileValidator` for profile tools), return data.
-6. On wrong/missing tool call: append corrective message, retry (up to `maxIterations`, default 5).
-7. All messages persisted to `AISessionRepository` for session continuity.
-
-**opencode SDK (structured output) path:**
-
-1. Caller provides a Zod schema, system/user prompts, and provider/model IDs.
-2. `generateStructuredOutput()` converts schema to JSON Schema via Zod v4.
-3. Creates a transient opencode session, sends a `json_schema`-formatted prompt.
-4. Parses `info.structured` through Zod validation, returns typed result.
-5. Deletes the transient session in a `finally` block (best-effort cleanup).
+1. **Opencode path** (preferred): `opencodeProvider` + `opencodeModel` configured → `generateStructuredOutput()` → creates transient session → `session.prompt()` with JSON schema → Zod parse → delete session
+2. **Direct API path** (fallback): `memoryModel` + `memoryApiUrl` configured → `AIProviderFactory.createProvider()` → `provider.executeToolCall()` → multi-turn completion with tool schema → parse tool call args
 
 ## Integration
-
-- **`src/services/storage/`** — `AIProviderFactory` creates an `AISessionRepository` via `createAISessionRepository()`. `OpenAIChatCompletionProvider` uses it to persist sessions and messages across tool-call iterations.
-- **`src/services/user-profile/types.js`** — `UserProfileValidator` validates tool-call results as `UserProfileData`.
-- **`@opencode-ai/sdk`** — `opencode-provider.ts` uses the v2 client for structured output; caller must initialize via `setV2Client()` / `createV2Client()`.
-- **`src/services/logger.js`** — `OpenAIChatCompletionProvider` logs errors and debug info.
+- Consumed by: `src/services/auto-capture.ts`, `src/services/user-memory-learning.ts`, `src/services/tag-migration-service.ts`, `src/services/auto-capture-server.ts`, `src/services/user-profile-learner-server.ts`
+- Depends on: `@opencode-ai/sdk`, `zod`, storage layer (AI session repo)

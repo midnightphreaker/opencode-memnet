@@ -1,54 +1,34 @@
-# Storage Layer (`src/services/storage/`)
+# src/services/storage/
 
 ## Responsibility
+Storage abstraction layer providing repository interfaces and Postgres implementations for memories, user prompts, user profiles, AI sessions, and client tracking.
 
-Postgres-only data persistence and retrieval. Exposes typed repository
-interfaces consumed by the rest of the application; hides all SQL and
-pgvector details behind a thin factory.
+## Design Patterns
+- **Repository Pattern**: Each domain entity (Memory, UserPrompt, UserProfile, AISession, Client) has a typed interface in `types.ts` and a concrete Postgres implementation
+- **Lazy Proxy / Virtual Proxy**: `factory.ts` wraps each Postgres repo in a lazy class that defers the dynamic import until first method call, keeping the postgres client out of the initial bundle
+- **Factory**: `createMemoryRepository()`, `createUserPromptRepository()`, etc. return singleton instances
+- **Strategy**: `mergeProfileData()` from `postgres/profile-utils.ts` handles confidence decay, deduplication, and cap enforcement for profile updates
 
-## Design
+## Key Files
 
-- **Factory pattern** — `factory.ts` exports singleton creators
-  (`createMemoryRepository`, `createUserPromptRepository`, etc.) and
-  lifecycle helpers (`initializeStorage`, `closeStorage`).
-- **Lazy proxies** — Each factory function returns a lightweight proxy
-  class that dynamically imports the real Postgres implementation on
-  first method call, keeping the `pg` client out of the initial bundle.
-- **Repository pattern** — Every domain aggregate has its own interface
-  defined in `types.ts` and a single Postgres implementation in
-  `postgres/`. No backend switching; Postgres is the only backend.
+| File | Purpose |
+|------|---------|
+| `types.ts` | All repository interfaces (`MemoryRepository`, `UserPromptRepository`, `UserProfileRepository`, `AISessionRepository`, `ClientRepository`) plus row/result types |
+| `factory.ts` | Singleton factory with lazy Postgres proxies. `initializeStorage()` creates and inits all repos. `closeStorage()` for graceful shutdown. |
+| `postgres/` | Concrete Postgres implementations (memory-repository, prompt-repository, profile-repository, ai-session-repository, client-repository, profile-utils) |
 
-## Interfaces (`types.ts`)
+## Data Model
+- **Memories**: id, content, vector (Float32Array), tagsVector, containerTag, tags, type, metadata JSON, project/user identity fields, timestamps
+- **User Prompts**: id, sessionId, messageId, projectPath, content, capture state machine (uncaptured→claimed→captured), linked memory ID
+- **User Profiles**: userId, profileData (JSON with preferences/patterns/workflows), version, changelog with snapshots
+- **AI Sessions**: provider, sessionId, conversation tracking, message history, expiration
+- **Clients**: id, nickname, firstSeen/lastSeen, metadata, stats (total memories/prompts)
 
-| Interface               | Purpose                                                                               |
-| ----------------------- | ------------------------------------------------------------------------------------- |
-| `MemoryRepository`      | Vector memory CRUD, similarity search, pinning, cleanup, tag migration, deduplication |
-| `UserPromptRepository`  | Capture/analytics lifecycle for user prompts                                          |
-| `UserProfileRepository` | User profile CRUD with confidence-based merge                                         |
-| `AISessionRepository`   | AI session + message persistence & expiry                                             |
+## Flow
+1. `factory.ts` → `createXxxRepository()` → lazy proxy wraps dynamic import of `postgres/xxx-repository.ts`
+2. First method call triggers `import()` → real Postgres class instantiation → `initialize()` runs migrations
+3. All subsequent calls delegate to the cached real instance
 
-Shared row/result types (`MemoryRow`, `MemoryRecord`, `SearchResult`,
-`TagInfo`, `UserPromptRow`, `UserProfileRow`, `UserProfileChangelogRow`,
-`AISessionRow`, `AIMessageRow`, `MemorySearchOptions`, `MemoryScopeKind`,
-`UserProfileData`, etc.) live alongside their interfaces.
-
-## Subdirectories
-
-- **`postgres/`** — Concrete implementations:
-  - `client.ts` — Shared `pg.Pool` singleton and schema bootstrap.
-  - `vector.ts` — pgvector similarity helpers.
-  - `memory-repository.ts` — `PostgresMemoryRepository`.
-  - `prompt-repository.ts` — `PostgresUserPromptRepository`.
-  - `profile-repository.ts` — `PostgresUserProfileRepository`.
-  - `ai-session-repository.ts` — `PostgresAISessionRepository`.
-  - `migrations.ts` — Schema migrations.
-
-## Integration Points
-
-- **Consumers** import from `factory.ts` only — never from `postgres/`
-  directly.
-- `initializeStorage()` is called once at app startup.
-- `closeStorage()` is called at graceful shutdown.
-- Embedding vectors are produced externally (embedding service) and
-  passed in as `Float32Array` — this layer never calls an embedding
-  model itself.
+## Integration
+- Consumed by: `src/services/client.ts`, `src/services/auto-capture.ts`, `src/services/api-handlers.ts`, `src/services/user-memory-learning.ts`
+- Depends on: `src/config.ts` (connection params), `postgres` package

@@ -1,50 +1,38 @@
 # src/
 
-Source root for the `opencode-memnet` OpenCode plugin — a persistent memory system that captures, stores, and retrieves project and user knowledge across coding sessions.
-
 ## Responsibility
+Server and legacy plugin source code. Contains the standalone HTTP server, two plugin entry points (legacy in-process and remote client), configuration system, and all service modules.
 
-This directory contains the three top-level files that form the plugin's entry surface, plus three subdirectories that house all runtime logic:
+## Entry Points
 
-- **`plugin.ts`** — ESM plugin module export (`PluginModule`). Auto-detects server-client vs. in-process mode: calls `initClientConfig(process.cwd())` then `isClientConfigured()` to check if remote mode is available; if configured, loads `index-remote.ts`; otherwise falls back to `index.ts` with a deprecation warning.
-- **`index.ts`** — Legacy in-process plugin factory function (`OpenCodeMemPlugin`). Orchestrates initialization and registers all handlers (`chat.message`, `tool.memory`, `event`).
-- **`index-remote.ts`** — Thin remote client plugin factory (`OpenCodeMemPlugin`). Delegates all operations to `RemoteMemoryClient` over HTTP — does not initialize storage or embedding locally. Handles: `chat.message` (injects memory context), `tool.memory` (add/search/profile/list/forget via remote API), and `event` (idle auto-capture forwarding with debounce + toast notification, session compaction memory restoration via `searchMemoriesBySessionID`). Uses `initClientConfig` and `CLIENT_CONFIG` for client-side configuration.
-- **`server.ts`** — Standalone headless server entry point. Loads server config from environment variables (`src/server-config.ts`), initializes storage and embedding, warms up the embedding model, starts the HTTP API server (with API key auth via `config.serverApiKey`), launches the background tag migration loop (`runTagMigration()`), and registers graceful shutdown handlers that stop the server, migration loop, and storage in order.
-- **`server-config.ts`** — Environment-variable-based server configuration loader. Exports the `ServerConfig` interface (comprehensive fields for Postgres, embedding, memory provider, auto-capture, user profile, etc.). Uses `resolveSecretValue()` for `env://` and `file://` secret resolution in API keys/URLs, and `getEmbeddingDimensions()` to auto-detect embedding vector dimensions from the model name (with a fallback default of 1024). `validateServerConfig()` enforces required fields including `SERVER_API_KEY`. Exports `initServerConfig()`, `getServerConfig()`, and `validateServerConfig()`.
-- **`config.ts`** — Configuration loader. Reads `~/.config/opencode/opencode-memnet.jsonc` (global) and `.opencode/opencode-memnet.jsonc` (project-local), merges them, validates required fields, and exports the resolved `CONFIG` object.
+| File | Purpose |
+|------|---------|
+| `server.ts` | Standalone server — loads config, initializes Postgres storage, warms up embeddings, starts HTTP server, launches background tag migration |
+| `index.ts` | Legacy in-process plugin (deprecated in v3.0.0). Registers `chat.message`, `tool.memory`, and `event` hooks directly. |
+| `index-remote.ts` | Remote client plugin — delegates all operations to server via `RemoteMemoryClient`. Used by `plugin/` bundle. |
+| `plugin.ts` | Deprecated plugin re-export |
 
-Subdirectories:
+## Configuration
 
-- **`services/`** — Core runtime: memory client, embedding, auto-capture, storage, web server, AI providers, privacy, tagging, context formatting, user profile learning.
-- **`types/`** — Shared TypeScript type definitions.
-- **`web/`** — Web UI (Memory Explorer) served by the built-in HTTP server.
+| File | Purpose |
+|------|---------|
+| `config.ts` | Full server+plugin config from `~/.config/opencode/opencode-memnet.jsonc`. Handles JSONC parsing, secret resolution (`env://`, `file://`), defaults merging. Exports `CONFIG`, `isConfigured()`, `initConfig()`. Also contains `CLIENT_CONFIG` path and `serverConfigToGlobalConfig()` bridge. |
+| `server-config.ts` | Server-specific config loading from environment variables (PORT, HOST, DATABASE_URL, SERVER_API_KEY, etc.). Validates and normalizes. |
 
-## Design
+## Key Design Decisions
+- **Dual config system**: `config.ts` serves both server (full config) and client (subset). `server-config.ts` bridges env vars into the global CONFIG.
+- **Three deployment modes**: (1) Legacy in-process plugin (`index.ts`), (2) Standalone server (`server.ts`), (3) Remote client plugin (`index-remote.ts` → `plugin/`)
+- **AI provider priority**: opencode SDK provider (structured output via transient sessions) takes precedence over direct API provider (tool-call completion)
 
-- **Plugin lifecycle**: `plugin.ts` → dynamic import of `index.ts` → `OpenCodeMemPlugin(ctx)` is called by OpenCode at startup. Returns a handler map (`chat.message`, `tool`, `event`).
-- **Config architecture**: Two-layer config (global + project-local) loaded from JSONC files. Secrets support `env://` and `file://` prefixes via `resolveSecretValue`. Defaults are hardcoded; `buildConfig()` deep-merges file config onto defaults. `initConfig(directory)` is called once at plugin startup and re-validates.
-- **Graceful degradation**: If required config fields (`postgres.url`, `embeddingModel`, `embeddingApiUrl`, `embeddingApiKey`) are missing, `isConfigured()` returns false and all handlers bail out early with no-ops.
-- **Fire-and-forget warmup**: Embedding model warmup (`memoryClient.warmup()`) runs async without blocking the plugin loader to avoid TUI hangs. Uses a global symbol guard to run only once across hot-reloads.
-
-## Flow
-
-1. **OpenCode loads `plugin.ts`** → `resolvePlugin()` calls `initClientConfig(process.cwd())` + `isClientConfigured()` → if client-configured, dynamic imports `index-remote.ts`; otherwise imports `index.ts`. Exports `PluginModule` with `server: OpenCodeMemPlugin`.
-2. **OpenCode calls `OpenCodeMemPlugin(ctx)`** with `{ directory }`.
-3. **Config initialized**: In-process mode calls `initConfig(directory)` (loads global + project-local JSONC). Remote mode calls `initClientConfig(directory)` (loads minimal client config with `serverUrl`/`apiKey`). Server mode uses `initServerConfig()` (environment variables).
-4. **Repositories created**: `createUserPromptRepository()` and `createUserProfileRepository()` (depend on `CONFIG`).
-5. **Tags resolved**: `getTags(directory)` gathers user/project identity (git email, project path, repo URL).
-6. **Async warmup**: `memoryClient.warmup()` fires in background (embedding model load + vector index rebuild).
-7. **Provider init**: `opencode-provider` is initialized with OpenCode's server URL and connected provider list.
-8. **Web server started** (if `CONFIG.webServerEnabled`): HTTP server on configurable port/host with CORS.
-9. **Signal handlers** registered for graceful shutdown (SIGINT/SIGTERM).
-10. **Handler map returned** to OpenCode:
-    - `chat.message` — Injects memory context into user messages; saves prompts for auto-capture.
-    - `tool.memory` — Exposes `add`, `search`, `profile`, `list`, `forget`, `help` subcommands.
-    - `event` — Handles `session.idle` (triggers auto-capture + profile learning) and `session.compacted` (restores session memories).
+## Flow (Server Mode)
+1. `server.ts` → `initServerConfig()` + validate → bridge to global CONFIG
+2. `initializeStorage()` → Postgres migrations → all repos ready
+3. `embeddingService.warmup()` → embedding API reachable
+4. `startWebServer()` → Bun HTTP server on configured port
+5. Background: `runTagMigration()` perpetual loop for auto-tagging
+6. API requests → `web-server.ts` routing → `api-handlers.ts` → storage repos + embedding service
 
 ## Integration
-
-- **Exported entry**: `plugin.ts` is the ESM entry (referenced by `package.json` exports). It re-exports `OpenCodeMemPlugin` and provides the `PluginModule` default export.
-- **Config contract**: `config.ts` exports `CONFIG` (the resolved config object), `initConfig()`, `isConfigured()`, and `getConfigErrors()`. All services import from here.
-- **Service wiring**: `index.ts` imports from `services/` subdirectories (`client`, `context`, `tags`, `privacy`, `auto-capture`, `user-memory-learning`, `storage/factory`, `web-server`, `logger`, `language-detector`, `ai/opencode-provider`) and wires them together at plugin init time.
-- **OpenCode SDK dependencies**: Uses `@opencode-ai/plugin` (types `Plugin`, `PluginInput`, `tool`) and `@opencode-ai/sdk` (type `Part`). Calls `ctx.client.*` APIs for sessions, messages, providers, and TUI toasts.
+- `server.ts` consumed by: Docker, `bun run start:server`, `dist/server.js`
+- `index-remote.ts` consumed by: `plugin/src/index-remote.ts` (bundled into `plugin/dist/`)
+- Depends on: `src/services/`, `src/types/`, `shared/`

@@ -36,27 +36,36 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+const MAX_EXISTING_TAGS_HINT = 25;
+
 async function tagMemory(
   memory: MemoryRecord,
   existingTags: string[],
   provider: any
 ): Promise<string[] | null> {
-  const existingList =
+  // Only include a limited sample of existing tags to avoid the LLM over-tagging
+  // from a large tag vocabulary. Pick up to MAX_EXISTING_TAGS_HINT tags.
+  const tagHint =
     existingTags.length > 0
-      ? `\n\nExisting tags in use (prefer these when applicable):\n- ${existingTags.join("\n- ")}`
+      ? existingTags.slice(0, MAX_EXISTING_TAGS_HINT)
+      : [];
+  const existingList =
+    tagHint.length > 0
+      ? `\n\nSome existing tags you MAY reuse if they fit:\n- ${tagHint.join("\n- ")}`
       : "";
 
   const systemPrompt = `You are a technical tag classifier for software development memories.
-Your ONLY job is to generate 2-4 concise, lowercase technical tags.
+Your ONLY job is to generate exactly 2-4 concise, lowercase technical tags.
 
 RULES:
 1. EVERY memory MUST receive at least 1 tag — "skip" or empty is not allowed
-2. PREFER existing tags from the provided list whenever applicable
-3. Only create an entirely NEW tag if the memory truly does not fit any existing tag
-4. Tags must be lowercase, hyphenated compound words (e.g., "bug-fix", "ci-cd", "react-hooks")
-5. Never use generic tags like "misc", "other", "general"`;
+2. You MUST return between 2 and 4 tags — never more than 4, never less than 2
+3. Only reuse an existing tag from the provided list if it DIRECTLY relates to the memory content
+4. Only create a NEW tag if the memory truly does not fit any existing tag
+5. Tags must be lowercase, hyphenated compound words (e.g., "bug-fix", "ci-cd", "react-hooks")
+6. Never use generic tags like "misc", "other", "general"`;
 
-  const prompt = `Generate 2-4 technical tags for this memory content:${existingList}\n\nMemory content:\n${memory.content}\n\nReturn a JSON object with a "tags" array.`;
+  const prompt = `Generate 2-4 technical tags for this memory content:${existingList}\n\nMemory content:\n${memory.content}\n\nReturn a JSON object with a "tags" array containing 2-4 tags.`;
 
   const toolSchema = {
     type: "function" as const,
@@ -69,7 +78,9 @@ RULES:
           tags: {
             type: "array",
             items: { type: "string" },
-            description: "2-4 technical tags for this memory",
+            minItems: 2,
+            maxItems: 4,
+            description: "Exactly 2-4 technical tags for the memory",
           },
         },
         required: ["tags"],
@@ -86,7 +97,11 @@ RULES:
         `migrate_${memory.id}_${attempt}`
       );
       if (result.success && result.data?.tags && result.data.tags.length > 0) {
-        return result.data.tags.map((t: string) => t.trim().toLowerCase());
+        // Hard-cap at 4 tags regardless of what the LLM returns
+        return result.data.tags
+          .map((t: string) => t.trim().toLowerCase())
+          .filter((t: string) => t.length > 0)
+          .slice(0, 4);
       }
       if (attempt < RETRY_LIMIT) {
         await sleep(1000 * attempt); // exponential-ish backoff: 1s, 2s, 3s

@@ -133,8 +133,10 @@ export async function runTagMigration(): Promise<void> {
       );
 
       const untagged = allRecords.filter((r) => !r.tags || r.tags.trim() === "");
+      _state.status = "running";
       _state.total = untagged.length;
       _state.processed = 0;
+      _state.errors = [];
 
       // Warm up embedding service once per batch
       await embeddingService.warmup();

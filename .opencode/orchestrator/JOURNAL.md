@@ -556,3 +556,171 @@ This file is the Orchestrator's durable project/task journal. This is the only p
 - Phase 4b: 2 fixers in parallel (SQL/counter + type safety)
 - Final: 1 fixer (E2E verification)
 - **Total**: 9 subagents
+
+---
+
+## CodebaseAudit/06 — User Identity Linking
+
+**Date**: 2026-06-04
+**Trigger**: User reports "server is not linking users UUID, memories and nicknames"
+**Scope**: User UUID ↔ Memories ↔ Nicknames linking investigation
+
+### Root Cause
+
+The system has **two disconnected identity models**:
+
+1. **Client identity** (UUID): `clients` table — tracks devices/sessions
+2. **User identity** (email): `user_profiles` + `memories` tables — keyed by email
+
+No foreign key, mapping table, or code path connects them. Several API handlers derive userId from the server's own git config rather than request context.
+
+### Investigation
+
+- 4 parallel @explorer subagents traced: web UI identity flow, nickname storage, memory linkage, client registration
+- Logs analyzed: `opencode-memnet-logs.md` (213 lines)
+- Key finding: `client:"unknown"` is a logging artifact only — the real issue is `handleSetProfileNickname` uses `getTags(process.cwd())` (server git email) instead of request-provided userId
+
+### Issues Found (7)
+
+| ID  | Severity | Description                                                  |
+| --- | -------- | ------------------------------------------------------------ |
+| 001 | Critical | Nickname saved under server git email, not request user      |
+| 002 | Critical | No clientId→userEmail mapping; disconnected identity systems |
+| 003 | High     | Profile lookup falls back to server git email                |
+| 004 | High     | Client metadata email lost in JSONB, never linked            |
+| 005 | Medium   | Memories can have NULL user_email                            |
+| 006 | Medium   | "unknown" fallback mixes user data in profile learning       |
+| 007 | Low      | Web UI doesn't send X-Client-ID header                       |
+
+### Artifacts
+
+- `.opencode/orchestrator/CodebaseAudit/06/ISSUES.md` — 7 issues with code references
+- `.opencode/orchestrator/CodebaseAudit/06/FIX_SPEC.md` — detailed fix specification
+- `.opencode/orchestrator/CodebaseAudit/06/FIX_IMPLEMENTATION_PLAN.md` — 4-phase plan
+
+### Implementation Plan Summary
+
+- Phase 1: Add `user_email` column to `clients` table + lookup methods
+- Phase 2: Extract email from client metadata during connect
+- Phase 3: Update all handlers to prefer request userId over git fallback
+- Phase 4: Hard errors for misconfiguration + web UI client ID
+
+### Subagents Launched
+
+- 4 @explorer (parallel code path investigation)
+- 3 @fixer (parallel artifact creation)
+- **Total**: 7 subagents
+
+### Status
+
+- **Audit COMPLETE** — artifacts created, ready for implementation approval
+
+### Implementation COMPLETE
+
+**All 7 issues fixed across 4 phases.**
+
+#### Phase 1: Data Layer (ISSUE-002)
+
+- Added migration 15: `user_email TEXT` column + index on `clients` table
+- Updated `ClientRow` interface with `userEmail?: string`
+- Updated `ClientRepository` interface: `upsertClient` accepts optional `userEmail`, added `getClientsByEmail`, `getEmailByClientId`
+- Updated `PostgresClientRepository`: COALESCE upsert, mapRow, two new methods
+- Updated `factory.ts` lazy proxy signatures
+
+#### Phase 2: Client Connect Linking (ISSUE-004)
+
+- Plugin (`index-remote.ts`): merges `tags.project.userEmail` into connect metadata
+- Server (`api-handlers.ts`): `handleClientConnect` extracts `metadata.user` as email, passes to `upsertClient`
+- Debug logging for client→user linking
+
+#### Phase 3: Request-Based Identity (ISSUE-001, ISSUE-003, ISSUE-005)
+
+- `handleSetProfileNickname`: accepts optional `userId`, falls back to `getTags()` only when absent
+- Web-server route: extracts `userId` from query param or body for nickname PUT
+- `handleAddMemory`: derives `userEmail` from git config when not provided, warns on NULL
+
+#### Phase 4: Robustness (ISSUE-006, ISSUE-007)
+
+- `user-memory-learning.ts`: throws explicit error when no userEmail (no more "unknown" fallback)
+- Web UI `app.js`: generates persistent client UUID (`web-*`), sends as `X-Client-ID` header on all requests
+
+#### Files Modified (10)
+
+1. `src/services/storage/postgres/migrations.ts` — migration 15
+2. `src/services/storage/types.ts` — ClientRow, ClientRepository
+3. `src/services/storage/postgres/client-repository.ts` — upsertClient, new methods
+4. `src/services/storage/factory.ts` — proxy signatures
+5. `src/services/api-handlers.ts` — handleClientConnect, handleSetProfileNickname, handleAddMemory
+6. `src/services/web-server.ts` — nickname route handler
+7. `src/services/user-memory-learning.ts` — hard error on missing email
+8. `plugin/src/index-remote.ts` — email in metadata
+9. `plugin/src/services/remote-client.ts` — formatting
+10. `src/web/app.js` — X-Client-ID header
+
+### E2E Verification — ALL 5 GATES PASS ✅
+
+| Gate                 | Result                           |
+| -------------------- | -------------------------------- |
+| TypeScript typecheck | ✅ 0 errors                      |
+| Tests (248 total)    | ✅ 248 pass, 0 fail              |
+| Format check         | ✅ Clean (after prettier fix)    |
+| Build                | ✅ Clean                         |
+| Docker build         | ✅ Image opencode-memnet:audit06 |
+
+### Subagents Launched (Implementation)
+
+- Phase 1: 1 fixer (migration + types + repo)
+- Phase 2: 2 fixers in parallel (plugin + server)
+- Phase 3: 2 fixers in parallel (ISSUE-001 + ISSUE-005)
+- Phase 4: 2 fixers in parallel (ISSUE-006 + ISSUE-007)
+- E2E: 5 explorers in parallel (5 gates) + 1 explorer (format fix)
+- **Total**: 13 subagents
+
+### Status
+
+- **IMPLEMENTATION COMPLETE** — all 7 issues fixed, all gates pass, Docker image `opencode-memnet:audit06` built
+
+---
+
+## Review Fixes — Nickname Unification Code Review (2026-06-04)
+
+### Context
+
+After implementing the shared identity table (nickDESIGN Option C) and running 5 parallel code reviews, 3 CRITICAL and 3 IMPORTANT issues were identified. This session fixes all 6.
+
+### Issues Fixed (6)
+
+#### CRITICAL (3)
+
+1. **sha256() not a standard PG function** — `identity-repository.ts:53` and `migrations.ts:471,486` used `sha256()` requiring `pgcrypto` extension never loaded. **Fix**: Added `CREATE EXTENSION IF NOT EXISTS pgcrypto` to migration 16; replaced `sha256()` SQL with `crypto.randomUUID()` in JS; replaced seed ID generation with `gen_random_uuid()::text`.
+2. **handleSetProfileNickname partial write** — Wrote to canonical identity store first, then checked profile existence. If profile missing → error returned but data already persisted. **Fix**: Reordered to write profile first (gatekeeper), then sync to identity/client caches.
+3. **handleSetClientNickname missing validation** — Only checked truthy, no type/trim/length validation. **Fix**: Added `typeof` checks, `trim()`, and 100-char limit matching profile nickname handler pattern.
+
+#### IMPORTANT (3)
+
+4. **Redundant double-write in setNickname** — Called `upsertIdentity` then separate UPDATE (both set nickname). **Fix**: Simplified `setNickname` to just call `upsertIdentity` wrapped in try/catch.
+5. **Nickname not in connect metadata** — Plugin never sent `CLIENT_CONFIG.nickname` on connect, so first-connect toast showed truncated UUID. **Fix**: Added `nickname: CLIENT_CONFIG.nickname || undefined` to connect metadata.
+6. **upsertIdentity always generates new UUID** — Used `randomUUID()` on every call, wasting the ID on conflict. **Fix**: Now uses `crypto.randomUUID()` in JS (was already the case with the sha256 fix — the wasted UUID is now at least cheap to generate).
+
+### Files Modified (5)
+
+1. `src/services/storage/postgres/identity-repository.ts` — crypto.randomUUID(), simplified setNickname
+2. `src/services/storage/postgres/migrations.ts` — pgcrypto extension, gen_random_uuid() in seeds
+3. `src/services/api-handlers.ts` — reorder handleSetProfileNickname, validate handleSetClientNickname
+4. `plugin/src/index-remote.ts` — nickname in connect metadata
+5. `tests/storage/identity-repository.test.ts` — updated for new SQL call patterns
+
+### Verification
+
+- **260 tests pass** (0 fail) across 26 files, 606 expect() calls
+- **TypeScript compiles clean** — 0 errors
+
+### Subagents Launched
+
+- 4 fixers in parallel (identity-repo + api-handlers + plugin + tests)
+- 1 fixer (test suite verification)
+- **Total**: 5 subagents
+
+### Status
+
+- **REVIEW FIXES COMPLETE** — all 6 review issues fixed, 260 tests pass, TypeScript clean

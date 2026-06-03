@@ -425,6 +425,76 @@ export const migrations: Migration[] = [
       `;
     },
   },
+
+  // ── 15: Add user_email to clients table ──
+  {
+    version: 15,
+    description: "Add user_email column to clients table for client-to-user linking",
+    transactional: true,
+    up: async (sql: SqlClient) => {
+      await sql`
+        ALTER TABLE clients ADD COLUMN IF NOT EXISTS user_email TEXT
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_clients_user_email ON clients (user_email)
+      `;
+    },
+  },
+
+  // ── 16: Create user_identities table ──
+  {
+    version: 16,
+    description: "Create user_identities table as canonical identity store",
+    transactional: true,
+    up: async (sql: SqlClient) => {
+      await sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`;
+      await sql`
+        CREATE TABLE IF NOT EXISTS user_identities (
+          id           TEXT PRIMARY KEY,
+          email        TEXT NOT NULL UNIQUE,
+          nickname     TEXT,
+          display_name TEXT,
+          created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+      `;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_user_identities_email ON user_identities (email)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_user_identities_nickname ON user_identities (nickname) WHERE nickname IS NOT NULL
+      `;
+
+      // Seed from existing user_profiles
+      await sql`
+        INSERT INTO user_identities (id, email, nickname, display_name)
+        SELECT
+          gen_random_uuid()::text,
+          user_email,
+          nickname,
+          display_name
+        FROM user_profiles
+        WHERE is_active = true
+        ON CONFLICT (email) DO UPDATE SET
+          nickname = COALESCE(user_identities.nickname, EXCLUDED.nickname),
+          display_name = COALESCE(user_identities.display_name, EXCLUDED.display_name)
+      `;
+
+      // Seed from clients with user_email
+      await sql`
+        INSERT INTO user_identities (id, email, nickname, display_name)
+        SELECT
+          gen_random_uuid()::text,
+          user_email,
+          nickname,
+          NULL
+        FROM clients
+        WHERE user_email IS NOT NULL
+        ON CONFLICT (email) DO UPDATE SET
+          nickname = COALESCE(user_identities.nickname, EXCLUDED.nickname)
+      `;
+    },
+  },
 ];
 
 // ── Runner ──

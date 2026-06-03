@@ -21,7 +21,12 @@ export class RemoteMemoryClient {
     this.apiKey = apiKey;
     this.clientId = clientId;
     this.timeout = timeout ?? DEFAULT_TIMEOUT;
-    logDebug(`RemoteMemoryClient created`, { baseUrl: this.baseUrl, timeout: this.timeout, hasApiKey: !!this.apiKey, clientId: this.clientId });
+    logDebug(`RemoteMemoryClient created`, {
+      baseUrl: this.baseUrl,
+      timeout: this.timeout,
+      hasApiKey: !!this.apiKey,
+      clientId: this.clientId,
+    });
   }
 
   private async request<T>(
@@ -43,12 +48,14 @@ export class RemoteMemoryClient {
     try {
       logDebug(`→ ${method} ${path}`, {
         url: url.toString(),
-        query: query ? Object.fromEntries(Object.entries(query).filter(([_, v]) => v !== undefined)) : undefined,
+        query: query
+          ? Object.fromEntries(Object.entries(query).filter(([_, v]) => v !== undefined))
+          : undefined,
         hasBody: !!body,
         bodyPreview: body ? JSON.stringify(body).slice(0, 200) : undefined,
       });
       const startTime = performance.now();
-      
+
       const response = await fetch(url.toString(), {
         method,
         headers: {
@@ -64,8 +71,8 @@ export class RemoteMemoryClient {
       const json = (await response.json()) as ApiResponse<T>;
 
       if (!response.ok) {
-        logWarn(`✗ ${method} ${path} ${response.status} ${elapsed}ms`, { 
-          status: response.status, 
+        logWarn(`✗ ${method} ${path} ${response.status} ${elapsed}ms`, {
+          status: response.status,
           error: json.error,
           body: json,
         });
@@ -75,14 +82,19 @@ export class RemoteMemoryClient {
         };
       }
 
-      logDebug(`← ${method} ${path} ${response.status} ${elapsed}ms`, { 
+      logDebug(`← ${method} ${path} ${response.status} ${elapsed}ms`, {
         success: json.success,
         dataKeys: json.data ? Object.keys(json.data) : [],
       });
       return json;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logWarn(`RemoteMemoryClient: request failed`, { method, path, url: url.toString(), error: message });
+      logWarn(`RemoteMemoryClient: request failed`, {
+        method,
+        path,
+        url: url.toString(),
+        error: message,
+      });
       return { success: false, error: message };
     } finally {
       clearTimeout(timeoutId);
@@ -272,9 +284,7 @@ export class RemoteMemoryClient {
     return this.request("PUT", "/api/client/nickname", { clientId, nickname });
   }
 
-  async getClientStats(
-    clientId: string
-  ): Promise<
+  async getClientStats(clientId: string): Promise<
     ApiResponse<{
       nickname: string | null;
       firstSeen: number;

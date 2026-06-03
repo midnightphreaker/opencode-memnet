@@ -410,7 +410,8 @@ export class WebServer {
 
       if (path === "/api/user-profile/nickname" && method === "PUT") {
         const body = await this.parseBody(req);
-        const result = await handleSetProfileNickname(body);
+        const userId = url.searchParams.get("userId") || body.userId || undefined;
+        const result = await handleSetProfileNickname({ ...body, userId });
         return this.jsonResponse(result);
       }
 

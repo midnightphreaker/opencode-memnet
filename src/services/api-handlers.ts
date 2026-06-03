@@ -8,6 +8,7 @@ import {
   createUserPromptRepository,
   createUserProfileRepository,
   createClientRepository,
+  createUserIdentityRepository,
   createTagRegistry,
 } from "./storage/factory.js";
 import { stripPrivateContent } from "./privacy.js";
@@ -20,6 +21,7 @@ import type {
   MemoryRecord,
   MemoryScopeKind,
   ClientRepository,
+  UserIdentityRepository,
 } from "./storage/types.js";
 import {
   getApiMigrationProgress,
@@ -37,6 +39,7 @@ const promptRepo: UserPromptRepository = createUserPromptRepository();
 const profileRepo: UserProfileRepository = createUserProfileRepository();
 const tagRegistry = createTagRegistry();
 let clientRepo: ClientRepository | null = null;
+let identityRepo: UserIdentityRepository | null = null;
 
 // Repositories are singletons from the factory, but initialize() (which runs
 // DB migrations) must be called before first use.  The LocalMemoryClient does
@@ -51,6 +54,8 @@ async function ensureInit(): Promise<void> {
       await profileRepo.initialize();
       clientRepo = createClientRepository();
       await clientRepo.initialize();
+      identityRepo = createUserIdentityRepository();
+      await identityRepo.initialize();
     })().catch((err) => {
       clientRepo = null as any;
       _initPromise = null;
@@ -360,6 +365,27 @@ export async function handleAddMemory(data: {
     }
     await ensureInit();
     await embeddingService.warmup();
+
+    // Derive userEmail if not provided — try client lookup, then git config
+    let resolvedUserEmail = data.userEmail;
+    if (!resolvedUserEmail) {
+      // Try to get email from client ID header (set by plugin)
+      // This is handled at the web-server level, but for direct API calls
+      // we fall back to git config
+      try {
+        const { getTags } = await import("./tags.js");
+        const tags = await getTags(process.cwd());
+        resolvedUserEmail = tags.user.userEmail || undefined;
+      } catch {
+        // git config unavailable — continue without email
+      }
+      if (!resolvedUserEmail) {
+        logDebug("handleAddMemory: no userEmail provided and could not derive from git config", {
+          memoryContent: data.content.substring(0, 50),
+        });
+      }
+    }
+
     const filteredContent = stripPrivateContent(data.content);
     const tags = (data.tags || []).map((t) => t.trim().toLowerCase());
     const embeddingInput =
@@ -387,7 +413,7 @@ export async function handleAddMemory(data: {
       metadata: JSON.stringify({ source: "api" }),
       displayName: data.displayName,
       userName: data.userName,
-      userEmail: data.userEmail,
+      userEmail: resolvedUserEmail,
       projectPath: data.projectPath,
       projectName: data.projectName,
       gitRepoUrl: data.gitRepoUrl,
@@ -868,8 +894,27 @@ export async function handleGetUserProfile(userId?: string): Promise<ApiResponse
     let targetUserId = userId;
     if (!targetUserId) {
       const tags = await getTags(process.cwd());
-      targetUserId = tags.user.userEmail || "unknown";
+      targetUserId = tags.user.userEmail || undefined;
     }
+    if (!targetUserId) {
+      return {
+        success: true,
+        data: {
+          exists: false,
+          userId: null,
+          message: "No user ID provided and could not determine from git config.",
+        },
+      };
+    }
+
+    // Get nickname from identity store (canonical)
+    let identityNickname: string | null = null;
+    try {
+      identityNickname = await identityRepo!.getNickname(targetUserId);
+    } catch {
+      /* fallback */
+    }
+
     const profile = await profileRepo.getActiveProfile(targetUserId);
     if (!profile)
       return {
@@ -894,7 +939,7 @@ export async function handleGetUserProfile(userId?: string): Promise<ApiResponse
         createdAt: safeToISOString(profile.createdAt),
         lastAnalyzedAt: safeToISOString(profile.lastAnalyzedAt),
         totalPromptsAnalyzed: profile.totalPromptsAnalyzed,
-        nickname: profile.nickname ?? null,
+        nickname: identityNickname ?? profile.nickname ?? null,
         profileData,
       },
     };
@@ -906,6 +951,7 @@ export async function handleGetUserProfile(userId?: string): Promise<ApiResponse
 
 export async function handleSetProfileNickname(data: {
   nickname: string;
+  userId?: string;
 }): Promise<ApiResponse<{ nickname: string }>> {
   try {
     if (typeof data.nickname !== "string") {
@@ -916,12 +962,46 @@ export async function handleSetProfileNickname(data: {
       return { success: false, error: "nickname must be 100 characters or less" };
     }
     await ensureInit();
-    const { getTags } = await import("./tags.js");
-    const tags = await getTags(process.cwd());
-    const userId = tags.user.userEmail || "unknown";
-    const result = await profileRepo!.setNickname(userId, trimmed);
-    if (!result) {
+    let userId = data.userId;
+    if (!userId) {
+      const { getTags } = await import("./tags.js");
+      const tags = await getTags(process.cwd());
+      userId = tags.user.userEmail;
+    }
+    if (!userId) {
+      return {
+        success: false,
+        error: "No user ID provided and could not determine from git config",
+      };
+    }
+
+    // Write to profile first (gatekeeper — if no profile, reject)
+    const profileResult = await profileRepo!.setNickname(userId, trimmed);
+    if (!profileResult) {
       return { success: false, error: "No active profile found — create a profile first" };
+    }
+
+    // Sync to canonical identity store (best-effort)
+    try {
+      await identityRepo!.upsertIdentity(userId, { nickname: trimmed });
+    } catch (err) {
+      logError("handleSetProfileNickname: failed to sync to identity store", {
+        userId,
+        error: String(err),
+      });
+    }
+
+    // Sync to client cache (best-effort)
+    try {
+      const clients = await clientRepo!.getClientsByEmail(userId);
+      for (const c of clients) {
+        await clientRepo!.setNickname(c.id, trimmed);
+      }
+    } catch (err) {
+      logError("handleSetProfileNickname: failed to sync nickname to client cache", {
+        userId,
+        error: String(err),
+      });
     }
     logInfo("Nickname updated", { userId, nickname: trimmed });
     return { success: true, data: { nickname: trimmed } };
@@ -982,7 +1062,13 @@ export async function handleRefreshProfile(userId?: string): Promise<ApiResponse
     let targetUserId = userId;
     if (!targetUserId) {
       const tags = await getTags(process.cwd());
-      targetUserId = tags.user.userEmail || "unknown";
+      targetUserId = tags.user.userEmail || undefined;
+    }
+    if (!targetUserId) {
+      return {
+        success: false,
+        error: "No user ID provided and could not determine from git config.",
+      };
     }
     const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning();
     return {
@@ -1485,7 +1571,16 @@ export async function handleUserProfileLearn(data: {
     let userId = data.userId;
     if (!userId) {
       const tags = await getTags(process.cwd());
-      userId = tags.user.userEmail || "unknown";
+      userId = tags.user.userEmail || undefined;
+    }
+
+    if (!userId) {
+      return {
+        success: false,
+        error:
+          "Cannot perform profile learning: no user email configured. " +
+          "Set git user.email or provide userId in the request.",
+      };
     }
 
     // Check if enough unanalyzed prompts exist
@@ -1871,7 +1966,11 @@ export async function handleListUserProfiles(): Promise<
     await ensureInit();
     const { getTags } = await import("./tags.js");
     const tags = await getTags(process.cwd());
-    const defaultUserId = tags.user.userEmail || "unknown";
+    const defaultUserId = tags.user.userEmail || undefined;
+
+    if (!defaultUserId) {
+      return { success: false, error: "No user email configured. Set git user.email." };
+    }
 
     const profiles = await profileRepo.getAllActiveProfiles();
     const list = profiles.map((p) => ({
@@ -1925,7 +2024,9 @@ export async function handleClientConnect(data: {
     await ensureInit();
 
     const metadata = data.metadata ?? {};
-    const result = await clientRepo!.upsertClient(data.clientId, metadata);
+    // Extract user email from metadata for client-to-user linking
+    const userEmail = typeof metadata.user === "string" ? metadata.user : undefined;
+    const result = await clientRepo!.upsertClient(data.clientId, metadata, userEmail);
     const thresholdHours = getServerConfig().clientWelcomeBackThreshold;
 
     let daysSinceLastSeen: number | null = null;
@@ -1960,6 +2061,25 @@ export async function handleClientConnect(data: {
       });
     }
 
+    if (userEmail) {
+      logDebug(`Client linked to user`, { clientId: data.clientId, userEmail });
+
+      // Sync to identity store (best-effort)
+      try {
+        const configNickname =
+          typeof metadata.nickname === "string" ? metadata.nickname : undefined;
+        if (configNickname) {
+          await identityRepo!.upsertIdentity(userEmail, { nickname: configNickname });
+        }
+      } catch (err) {
+        logError("handleClientConnect: failed to sync identity", {
+          clientId: data.clientId,
+          userEmail,
+          error: String(err),
+        });
+      }
+    }
+
     // Get stats
     const stats = await clientRepo!.getClientStats(data.clientId);
 
@@ -1988,17 +2108,44 @@ export async function handleSetClientNickname(data: {
   nickname: string;
 }): Promise<ApiResponse<{ nickname: string }>> {
   try {
-    if (!data.clientId || !data.nickname) {
+    if (typeof data.clientId !== "string" || typeof data.nickname !== "string") {
+      return { success: false, error: "clientId and nickname must be strings" };
+    }
+    const trimmedClientId = data.clientId.trim();
+    const trimmedNickname = data.nickname.trim();
+    if (!trimmedClientId || !trimmedNickname) {
       return { success: false, error: "clientId and nickname are required" };
+    }
+    if (trimmedNickname.length > 100) {
+      return { success: false, error: "nickname must be 100 characters or less" };
     }
     await ensureInit();
 
-    const result = await clientRepo!.setNickname(data.clientId, data.nickname);
+    // Write to client table
+    const result = await clientRepo!.setNickname(trimmedClientId, trimmedNickname);
     if (!result) {
       return { success: false, error: "Client not found — connect first" };
     }
 
-    logInfo(`✏️ Client renamed: ${data.nickname}`, { clientId: data.clientId });
+    // Sync to canonical identity store and profile cache (best-effort)
+    try {
+      const email = await clientRepo!.getEmailByClientId(trimmedClientId);
+      if (email) {
+        await identityRepo!.upsertIdentity(email, { nickname: trimmedNickname });
+        try {
+          await profileRepo!.setNickname(email, trimmedNickname);
+        } catch {
+          /* cache sync best-effort */
+        }
+      }
+    } catch (err) {
+      logError("handleSetClientNickname: failed to sync to identity/profile", {
+        clientId: trimmedClientId,
+        error: String(err),
+      });
+    }
+
+    logInfo(`✏️ Client renamed: ${trimmedNickname}`, { clientId: trimmedClientId });
 
     return { success: true, data: { nickname: result.nickname! } };
   } catch (error) {
@@ -2028,10 +2175,22 @@ export async function handleGetClientStats(data: { clientId: string }): Promise<
       return { success: false, error: "Client not found — connect first" };
     }
 
+    // Prefer identity store nickname over client cache
+    let nickname = stats.client.nickname;
+    try {
+      const email = await clientRepo!.getEmailByClientId(data.clientId);
+      if (email) {
+        const identityNickname = await identityRepo!.getNickname(email);
+        if (identityNickname) nickname = identityNickname;
+      }
+    } catch {
+      /* fallback to client nickname */
+    }
+
     return {
       success: true,
       data: {
-        nickname: stats.client.nickname,
+        nickname,
         firstSeen: stats.client.firstSeen,
         lastSeen: stats.client.lastSeen,
         totalMemories: stats.totalMemories,

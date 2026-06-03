@@ -366,6 +366,7 @@ export interface AISessionRepository {
 export interface ClientRow {
   id: string;
   nickname: string | null;
+  userEmail?: string;
   firstSeen: number; // unix epoch ms
   lastSeen: number; // unix epoch ms
   clientMetadata: Record<string, unknown>;
@@ -378,7 +379,8 @@ export interface ClientRepository {
   close(): Promise<void>;
   upsertClient(
     id: string,
-    metadata: Record<string, any>
+    metadata: Record<string, any>,
+    userEmail?: string
   ): Promise<{ firstTime: boolean; previousLastSeen: number | null; row: ClientRow }>;
   setNickname(id: string, nickname: string): Promise<ClientRow | null>;
   getClient(id: string): Promise<ClientRow | null>;
@@ -388,4 +390,42 @@ export interface ClientRepository {
     memoriesToday: number;
     totalPrompts: number;
   }>;
+  /** Look up clients by user email. Returns all clients linked to that email. */
+  getClientsByEmail(email: string): Promise<ClientRow[]>;
+  /** Get the user email associated with a client ID. Returns null if not linked. */
+  getEmailByClientId(clientId: string): Promise<string | null>;
+}
+
+// ── User identity types ──
+
+export interface UserIdentityRow {
+  id: string;
+  email: string;
+  nickname: string | null;
+  displayName: string | null;
+  createdAt: number; // unix epoch ms
+  updatedAt: number; // unix epoch ms
+}
+
+export interface UserIdentityRepository {
+  initialize(): Promise<void>;
+  close(): Promise<void>;
+
+  /** Get identity by email. Returns null if not found. */
+  getByEmail(email: string): Promise<UserIdentityRow | null>;
+
+  /** Get identity by ID. Returns null if not found. */
+  getById(id: string): Promise<UserIdentityRow | null>;
+
+  /** Create or update identity. Returns the upserted row. */
+  upsertIdentity(
+    email: string,
+    data: { nickname?: string; displayName?: string }
+  ): Promise<UserIdentityRow>;
+
+  /** Set nickname for an identity. Returns true if updated. */
+  setNickname(email: string, nickname: string): Promise<boolean>;
+
+  /** Get nickname by email. Returns null if no identity or no nickname. */
+  getNickname(email: string): Promise<string | null>;
 }

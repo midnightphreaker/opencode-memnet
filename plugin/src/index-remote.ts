@@ -34,7 +34,11 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   // Connect to server — registers client and gets connection info
   let connectionInfo: Awaited<ReturnType<typeof client.clientConnect>>["data"] | null = null;
   try {
-    const connectResult = await client.clientConnect(clientId, getClientMetadata());
+    const connectResult = await client.clientConnect(clientId, {
+      ...getClientMetadata(),
+      user: tags.project.userEmail || tags.user.userEmail,
+      nickname: CLIENT_CONFIG.nickname || undefined,
+    });
     if (connectResult.success && connectResult.data) {
       connectionInfo = connectResult.data;
       logInfo("Plugin initialized", {

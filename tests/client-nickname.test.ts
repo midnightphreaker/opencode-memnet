@@ -34,6 +34,8 @@ const mockClientRepoInstance: ClientRepository = {
     memoriesToday: 0,
     totalPrompts: 0,
   }),
+  getClientsByEmail: async () => [],
+  getEmailByClientId: async () => null,
 };
 
 // ── Mock modules ───────────────────────────────────────────────────────
@@ -44,11 +46,35 @@ const stubRepo = {
   close: async () => {},
 };
 
+const mockProfileRepo = {
+  initialize: async () => {},
+  close: async () => {},
+  setNickname: async () => true,
+};
+
+const mockIdentityRepo = {
+  initialize: async () => {},
+  close: async () => {},
+  upsertIdentity: async () => ({
+    id: "uid_mock",
+    email: "test@test.com",
+    nickname: null,
+    displayName: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }),
+  getNickname: async () => null,
+  getByEmail: async () => null,
+  getById: async () => null,
+  setNickname: async () => true,
+};
+
 mock.module("../src/services/storage/factory.js", () => ({
   createMemoryRepository: () => stubRepo,
   createUserPromptRepository: () => stubRepo,
-  createUserProfileRepository: () => stubRepo,
+  createUserProfileRepository: () => mockProfileRepo,
   createClientRepository: () => mockClientRepoInstance,
+  createUserIdentityRepository: () => mockIdentityRepo,
   createTagRegistry: () => ({
     ...stubRepo,
     backfillFromExistingTags: async () => ({ processed: 0, created: 0, linked: 0, aliases: 0 }),

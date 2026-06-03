@@ -36,7 +36,13 @@ export async function performUserProfileLearning(
     }
 
     const tags = await getTags(directory);
-    const userId = tags.user.userEmail || "unknown";
+    const userId = tags.user.userEmail;
+    if (!userId) {
+      throw new Error(
+        "Cannot perform profile learning: no user email configured. " +
+          "Set git user.email or provide userEmailOverride in config."
+      );
+    }
 
     const existingProfile = await profileRepo.getActiveProfile(userId);
 

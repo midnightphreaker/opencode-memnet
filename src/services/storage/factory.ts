@@ -21,6 +21,8 @@ import type {
   MemorySearchOptions,
   SearchResult,
   TagInfo,
+  UserIdentityRepository,
+  UserIdentityRow,
   UserProfileChangelogRow,
   UserProfileData,
   UserProfileRepository,
@@ -36,6 +38,7 @@ let promptRepo: UserPromptRepository | null = null;
 let profileRepo: UserProfileRepository | null = null;
 let sessionRepo: AISessionRepository | null = null;
 let clientRepo: ClientRepository | null = null;
+let identityRepo: UserIdentityRepository | null = null;
 let tagRegistry: PostgresTagRegistry | null = null;
 
 export function createMemoryRepository(): MemoryRepository {
@@ -68,6 +71,12 @@ export function createClientRepository(): ClientRepository {
   return clientRepo;
 }
 
+export function createUserIdentityRepository(): UserIdentityRepository {
+  if (identityRepo) return identityRepo;
+  identityRepo = new PostgresUserIdentityRepositoryLazy();
+  return identityRepo;
+}
+
 export function createTagRegistry(): PostgresTagRegistry {
   if (tagRegistry) return tagRegistry;
   tagRegistry = new PostgresTagRegistry();
@@ -83,18 +92,21 @@ export async function initializeStorage(): Promise<{
   profileRepo: UserProfileRepository;
   sessionRepo: AISessionRepository;
   clientRepo: ClientRepository;
+  identityRepo: UserIdentityRepository;
 }> {
   const mem = createMemoryRepository();
   const prompt = createUserPromptRepository();
   const profile = createUserProfileRepository();
   const session = createAISessionRepository();
   const client = createClientRepository();
+  const identity = createUserIdentityRepository();
 
   await mem.initialize();
   await prompt.initialize();
   await profile.initialize();
   await session.initialize();
   await client.initialize();
+  await identity.initialize();
 
   return {
     memoryRepo: mem,
@@ -102,6 +114,7 @@ export async function initializeStorage(): Promise<{
     profileRepo: profile,
     sessionRepo: session,
     clientRepo: client,
+    identityRepo: identity,
   };
 }
 
@@ -128,6 +141,10 @@ export async function closeStorage(): Promise<void> {
   if (clientRepo) {
     await clientRepo.close();
     clientRepo = null;
+  }
+  if (identityRepo) {
+    await identityRepo.close();
+    identityRepo = null;
   }
 }
 
@@ -499,9 +516,10 @@ class PostgresClientRepositoryLazy implements ClientRepository {
   }
   async upsertClient(
     id: string,
-    metadata: Record<string, unknown>
+    metadata: Record<string, unknown>,
+    userEmail?: string
   ): Promise<{ firstTime: boolean; previousLastSeen: number | null; row: ClientRow }> {
-    return (await this.repo()).upsertClient(id, metadata);
+    return (await this.repo()).upsertClient(id, metadata, userEmail);
   }
   async setNickname(id: string, nickname: string): Promise<ClientRow | null> {
     return (await this.repo()).setNickname(id, nickname);
@@ -516,5 +534,52 @@ class PostgresClientRepositoryLazy implements ClientRepository {
     totalPrompts: number;
   }> {
     return (await this.repo()).getClientStats(id);
+  }
+  async getClientsByEmail(email: string): Promise<ClientRow[]> {
+    return (await this.repo()).getClientsByEmail(email);
+  }
+  async getEmailByClientId(clientId: string): Promise<string | null> {
+    return (await this.repo()).getEmailByClientId(clientId);
+  }
+}
+
+class PostgresUserIdentityRepositoryLazy implements UserIdentityRepository {
+  private target: Promise<UserIdentityRepository> | null = null;
+
+  private async repo(): Promise<UserIdentityRepository> {
+    if (!this.target) {
+      this.target = import("./postgres/identity-repository.js")
+        .then(({ PostgresUserIdentityRepository }) => new PostgresUserIdentityRepository())
+        .catch((err) => {
+          this.target = null;
+          throw err;
+        });
+    }
+    return this.target!;
+  }
+
+  async initialize(): Promise<void> {
+    await (await this.repo()).initialize();
+  }
+  async close(): Promise<void> {
+    await (await this.repo()).close();
+  }
+  async getByEmail(email: string): Promise<UserIdentityRow | null> {
+    return (await this.repo()).getByEmail(email);
+  }
+  async getById(id: string): Promise<UserIdentityRow | null> {
+    return (await this.repo()).getById(id);
+  }
+  async upsertIdentity(
+    email: string,
+    data: { nickname?: string; displayName?: string }
+  ): Promise<UserIdentityRow> {
+    return (await this.repo()).upsertIdentity(email, data);
+  }
+  async setNickname(email: string, nickname: string): Promise<boolean> {
+    return (await this.repo()).setNickname(email, nickname);
+  }
+  async getNickname(email: string): Promise<string | null> {
+    return (await this.repo()).getNickname(email);
   }
 }

@@ -1,5 +1,15 @@
 const API_BASE = "";
 
+function getWebClientId() {
+  const KEY = "opencode-memnet-client-id";
+  let id = localStorage.getItem(KEY);
+  if (!id) {
+    id = "web-" + crypto.randomUUID();
+    localStorage.setItem(KEY, id);
+  }
+  return id;
+}
+
 const state = {
   tags: { project: [] },
   memories: [],
@@ -48,6 +58,7 @@ async function fetchAPI(endpoint, options = {}) {
     if (state.authKey) {
       headers["Authorization"] = `Bearer ${state.authKey}`;
     }
+    headers["X-Client-ID"] = getWebClientId();
     const response = await fetch(API_BASE + endpoint, {
       ...options,
       headers,
@@ -1402,7 +1413,9 @@ async function loadProfilePanelSelector() {
   selectorRow.style.display = "flex";
 
   try {
-    const res = await fetch("/api/user-profiles");
+    const res = await fetch("/api/user-profiles", {
+      headers: { "X-Client-ID": getWebClientId() },
+    });
     const data = await res.json();
 
     if (data.success && data.data.profiles && data.data.profiles.length > 0) {
@@ -1559,6 +1572,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     try {
       const headers = {};
       if (state.authKey) headers["Authorization"] = `Bearer ${state.authKey}`;
+      headers["X-Client-ID"] = getWebClientId();
       const res = await fetch("/api/user-profiles", { headers });
       const data = await res.json();
 
@@ -1692,7 +1706,9 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // Check if auth is disabled by testing an authenticated endpoint without credentials
   try {
-    const testRes = await fetch("/api/tags");
+    const testRes = await fetch("/api/tags", {
+      headers: { "X-Client-ID": getWebClientId() },
+    });
     if (testRes.ok) {
       state.authDisabled = true;
       console.log("Auth disabled — loading data without API key");

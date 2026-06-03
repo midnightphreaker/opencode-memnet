@@ -119,12 +119,14 @@ jobs:
             .
 
       - name: Login to Forgejo container registry
+        env:
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
           set -euo pipefail
 
           echo "$AUTH_TOKEN" \
             | docker login "$REGISTRY" \
-                -u "$FORGEJO_ACTOR" \
+                -u "gitbot" \
                 --password-stdin
 
       - name: Push Docker image
@@ -163,6 +165,8 @@ jobs:
           git push origin "refs/tags/$TAG"
 
       - name: Create Forgejo release
+        env:
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
         run: |
           set -euo pipefail
 

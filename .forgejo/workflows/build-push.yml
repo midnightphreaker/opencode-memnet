@@ -53,7 +53,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          token: ${{ secrets.FORGEJO_TOKEN }}
+          token: ${{ secrets.AUTH_TOKEN }}
 
       - name: Configure git
         run: |
@@ -122,7 +122,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          echo "$FORGEJO_TOKEN" \
+          echo "$AUTH_TOKEN" \
             | docker login "$REGISTRY" \
                 -u "$FORGEJO_ACTOR" \
                 --password-stdin
@@ -185,7 +185,7 @@ jobs:
             }' \
             | curl -fsS \
                 -X POST \
-                -H "Authorization: token ${FORGEJO_TOKEN}" \
+                -H "Authorization: token ${AUTH_TOKEN}" \
                 -H "Content-Type: application/json" \
                 --data @- \
                 "https://${REGISTRY}/api/v1/repos/${OWNER}/${IMAGE}/releases"

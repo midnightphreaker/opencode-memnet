@@ -1,0 +1,181 @@
+name: Build and publish opencode-memnet
+
+on:
+  push:
+    branches:
+      - main
+
+env:
+  REGISTRY: git.phrk.org
+  OWNER: pub
+  IMAGE: opencode-memnet
+  IMAGE_REF: git.phrk.org/pub/opencode-memnet
+  VERSION_FILE: VERSION
+
+jobs:
+  build-push:
+    runs-on: docker
+
+    container:
+      image: node:lts-trixie
+
+    steps:
+      - name: update
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          apt-get update
+          apt-get install -y ca-certificates curl jq
+
+          install -m 0755 -d /etc/apt/keyrings
+          curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc
+          chmod a+r /etc/apt/keyrings/docker.asc
+
+          . /etc/os-release
+          codename="${VERSION_CODENAME}"
+          arch="$(dpkg --print-architecture)"
+
+          cat > /etc/apt/sources.list.d/docker.sources <<EOF
+          Types: deb
+          URIs: https://download.docker.com/linux/debian
+          Suites: ${codename}
+          Components: stable
+          Architectures: ${arch}
+          Signed-By: /etc/apt/keyrings/docker.asc
+          EOF
+
+          apt-get update
+          apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+          docker ps -a
+
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.AUTH_TOKEN }}
+
+      - name: Configure git
+        run: |
+          git config user.name "forgejo-actions"
+          git config user.email "forgejo-actions@git.phrk.org"
+
+      - name: Bump patch version
+        run: |
+          set -eu
+
+          if [ ! -f "$VERSION_FILE" ]; then
+            echo "Missing $VERSION_FILE"
+            echo "Create a VERSION file containing something like: 0.20.1"
+            exit 1
+          fi
+
+          OLD_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+
+          MAJOR="$(echo "$OLD_VERSION" | cut -d. -f1)"
+          MINOR="$(echo "$OLD_VERSION" | cut -d. -f2)"
+          PATCH="$(echo "$OLD_VERSION" | cut -d. -f3)"
+
+          case "$MAJOR:$MINOR:$PATCH" in
+            *[!0-9:]* | "" | *::*)
+              echo "Invalid version in $VERSION_FILE: $OLD_VERSION"
+              echo "Expected semver-like x.y.z, example: 0.20.1"
+              exit 1
+              ;;
+          esac
+
+          NEW_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+
+          echo "$NEW_VERSION" > "$VERSION_FILE"
+
+          echo "OLD_VERSION=$OLD_VERSION" >> "$GITHUB_ENV"
+          echo "NEW_VERSION=$NEW_VERSION" >> "$GITHUB_ENV"
+
+          echo "Bumped version: $OLD_VERSION -> $NEW_VERSION"
+
+      - name: Build Docker image
+        run: |
+          set -eu
+
+          docker build \
+            --label "org.opencontainers.image.source=https://git.phrk.org/pub/opencode-memnet" \
+            --load \
+            -t "$IMAGE_REF:latest" \
+            -t "$IMAGE_REF:$NEW_VERSION" \
+            .
+
+      - name: Login to Forgejo container registry
+        env:
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          echo "$AUTH_TOKEN" \
+            | docker login "$REGISTRY" \
+                -u "gitbot" \
+                --password-stdin
+
+      - name: Push Docker image
+        run: |
+          set -eu
+
+          docker push "$IMAGE_REF:latest"
+          docker push "$IMAGE_REF:$NEW_VERSION"
+
+      - name: Commit version bump
+        run: |
+          set -eu
+
+          git add "$VERSION_FILE"
+
+          if git diff --cached --quiet; then
+            echo "No version change to commit"
+            exit 0
+          fi
+
+          git commit -m "chore: bump opencode-memnet version to $NEW_VERSION [skip ci]"
+          git push origin HEAD:main
+
+      - name: Tag version
+        run: |
+          set -eu
+
+          TAG="v${NEW_VERSION}"
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag already exists: ${TAG}"
+            exit 1
+          fi
+
+          git tag -a "$TAG" -m "opencode-memnet $NEW_VERSION"
+          git push origin "refs/tags/$TAG"
+
+      - name: Create Forgejo release
+        env:
+          AUTH_TOKEN: ${{ secrets.AUTH_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          TAG="v${NEW_VERSION}"
+          RELEASE_NAME="${IMAGE_REF}:${NEW_VERSION}"
+
+          jq -n \
+            --arg tag_name "$TAG" \
+            --arg target_commitish "main" \
+            --arg name "$RELEASE_NAME" \
+            --arg image_ref "$IMAGE_REF" \
+            --arg version "$NEW_VERSION" \
+            '{
+              tag_name: $tag_name,
+              target_commitish: $target_commitish,
+              name: $name,
+              body: ("Docker image:\n\n`" + $image_ref + ":" + $version + "`\n\nLatest tag:\n\n`" + $image_ref + ":latest`"),
+              draft: false,
+              prerelease: false
+            }' \
+            | curl -fsS \
+                -X POST \
+                -H "Authorization: token ${AUTH_TOKEN}" \
+                -H "Content-Type: application/json" \
+                --data @- \
+                "https://${REGISTRY}/api/v1/repos/${OWNER}/${IMAGE}/releases"

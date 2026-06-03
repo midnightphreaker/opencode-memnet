@@ -93,7 +93,7 @@ mock.module(${JSON.stringify(webServerUrl)}, () => ({
   startWebServer: async () => null,
   WebServer: class {},
 }));
-mock.module(${JSON.stringify(loggerUrl)}, () => ({ log: () => {} }));
+mock.module(${JSON.stringify(loggerUrl)}, () => ({ log: () => {}, logInfo: () => {}, logWarn: () => {}, logError: () => {}, logDebug: () => {} }));
 mock.module(${JSON.stringify(languageUrl)}, () => ({ getLanguageName: () => "English" }));
 
 const { OpenCodeMemPlugin } = await import(${JSON.stringify(indexUrl)});

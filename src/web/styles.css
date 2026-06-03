@@ -1104,7 +1104,7 @@ button:disabled {
 }
 
 .toast.success {
-  border-color: #00FF00;
+  border-color: #00ff00;
 }
 
 .toast.info {
@@ -1118,7 +1118,7 @@ button:disabled {
 }
 
 .toast-icon-success {
-  color: #00FF00;
+  color: #00ff00;
 }
 
 .toast-icon-error {
@@ -1628,14 +1628,15 @@ button:disabled {
 }
 
 .job-drawer-toggle {
-  width: 24px;
+  width: auto;
   height: 24px;
   background: transparent;
   border: 1px solid var(--border);
   color: var(--muted-foreground);
-  padding: 0;
+  padding: 0 8px;
   display: inline-flex;
   align-items: center;
+  gap: 6px;
   justify-content: center;
   cursor: pointer;
   transition: all 0.2s;

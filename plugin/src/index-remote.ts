@@ -57,7 +57,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               duration: 4000,
             },
           })
-          .catch(() => {});
+          .catch((e) => {
+            logDebug("toast failed", { error: String(e) });
+          });
       } else if (connectionInfo.welcomeBack && connectionInfo.stats) {
         const days = connectionInfo.daysSinceLastSeen;
         ctx.client?.tui
@@ -69,7 +71,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               duration: 5000,
             },
           })
-          .catch(() => {});
+          .catch((e) => {
+            logDebug("toast failed", { error: String(e) });
+          });
       } else if (connectionInfo.stats) {
         ctx.client?.tui
           .showToast({
@@ -80,7 +84,23 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               duration: 3000,
             },
           })
-          .catch(() => {});
+          .catch((e) => {
+            logDebug("toast failed", { error: String(e) });
+          });
+      }
+      // Sync nickname from config if set
+      const configNickname = CLIENT_CONFIG.nickname;
+      if (configNickname && configNickname !== connectionInfo.nickname) {
+        client
+          .setClientNickname(clientId, configNickname)
+          .then((res) => {
+            if (res.success) {
+              logInfo("Nickname synced from config", { nickname: configNickname });
+            }
+          })
+          .catch((e) => {
+            logDebug("toast failed", { error: String(e) });
+          });
       }
     }
   } catch (err) {
@@ -156,9 +176,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           if (!isClientConfigured()) {
             return JSON.stringify({ success: false, error: "Memory system not configured." });
           }
-          logDebug("memory tool called", { 
-            mode: args.mode || "help", 
-            hasContent: !!args.content, 
+          logDebug("memory tool called", {
+            mode: args.mode || "help",
+            hasContent: !!args.content,
             hasQuery: !!args.query,
             scope: args.scope,
             limit: args.limit,
@@ -234,9 +254,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               }
 
               case "profile": {
-                const profileRes = await client.getUserProfile(
-                  tags.user.userEmail || undefined
-                );
+                const profileRes = await client.getUserProfile(tags.user.userEmail || undefined);
                 return JSON.stringify({ success: true, profile: profileRes.data ?? null });
               }
 
@@ -282,7 +300,10 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         if (!isClientConfigured() || !CLIENT_CONFIG.autoCaptureEnabled) return;
         const sessionID = event.properties?.sessionID;
         if (!sessionID) return;
-        logDebug("session.idle event", { sessionId: sessionID, autoCaptureEnabled: CLIENT_CONFIG.autoCaptureEnabled });
+        logDebug("session.idle event", {
+          sessionId: sessionID,
+          autoCaptureEnabled: CLIENT_CONFIG.autoCaptureEnabled,
+        });
 
         if (idleTimeout) clearTimeout(idleTimeout);
         if (captureInProgress) return;
@@ -329,13 +350,15 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                     duration: 3000,
                   },
                 })
-                .catch(() => {});
+                .catch((e) => {
+                  logDebug("toast failed", { error: String(e) });
+                });
               logDebug("Auto-capture completed", {
-                 sessionId: sessionID,
-                 success: result.success,
-                 captured: result.data?.captured,
-                 memoryId: result.data?.memoryId,
-               });
+                sessionId: sessionID,
+                success: result.success,
+                captured: result.data?.captured,
+                memoryId: result.data?.memoryId,
+              });
             }
           } catch (error) {
             logError("Idle auto-capture error", { error: String(error) });
@@ -349,9 +372,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       if (event.type === "session.compacted") {
         const sessionID = event.properties?.sessionID;
         if (!sessionID) return;
-        logDebug("session.compacted event", { 
-          sessionId: sessionID, 
-          projectTag: tags.project.tag 
+        logDebug("session.compacted event", {
+          sessionId: sessionID,
+          projectTag: tags.project.tag,
         });
         try {
           const memoriesResult = await client.searchMemoriesBySessionID(

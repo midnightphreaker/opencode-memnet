@@ -413,6 +413,18 @@ export const migrations: Migration[] = [
       `;
     },
   },
+
+  // ── 14: Add nickname column to user_profiles ──
+  {
+    version: 14,
+    description: "Add nickname column to user_profiles",
+    transactional: true,
+    up: async (sql: SqlClient) => {
+      await sql`
+        ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS nickname TEXT DEFAULT NULL
+      `;
+    },
+  },
 ];
 
 // ── Runner ──

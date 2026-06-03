@@ -9,7 +9,7 @@
     }
   },
   "scripts": {
-    "build": "bunx tsc && mkdir -p dist/web && cp -r src/web/* dist/web/",
+    "build": "bunx tsc && mkdir -p dist/web && cp -r src/web/. dist/web/ || true",
     "build:plugin": "cd plugin && bun run build",
     "build:all": "bun run build && bun run build:plugin",
     "start:server": "bun run dist/server.js",
@@ -19,6 +19,8 @@
     "typecheck": "tsc --noEmit",
     "typecheck:plugin": "cd plugin && bun run typecheck",
     "typecheck:all": "bun run typecheck && bun run typecheck:plugin",
+    "test": "bun test --isolate",
+    "test:parallel": "bun test --parallel",
     "format": "prettier --write \"src/**/*.{ts,js,css,html}\"",
     "format:check": "prettier --check \"src/**/*.{ts,js,css,html}\"",
     "prepare": "husky"
@@ -54,7 +56,6 @@
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7",
     "prettier": "^3.4.2",
-    "shadcn": "^4.8.1",
     "typescript": "^5.7.3"
   },
   "files": [
@@ -65,5 +66,8 @@
     "*.{ts,tsx,js,jsx,css,html,json,md}": [
       "prettier --write"
     ]
+  },
+  "resolutions": {
+    "zod": "^4.3.6"
   }
 }

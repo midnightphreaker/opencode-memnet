@@ -8,7 +8,7 @@ import { getTags } from "./services/tags.js";
 import { stripPrivateContent, isFullyPrivate } from "./services/privacy.js";
 
 import { isClientConfigured, CLIENT_CONFIG, initClientConfig } from "./config.js";
-import { log } from "./services/logger.js";
+import { log, logDebug } from "./services/logger.js";
 
 export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   const { directory } = ctx;
@@ -241,7 +241,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                     duration: 3000,
                   },
                 })
-                .catch(() => {});
+                .catch((e) => {
+                  logDebug("toast failed", { error: String(e) });
+                });
             }
           } catch (error) {
             log("Idle auto-capture error", { error: String(error) });

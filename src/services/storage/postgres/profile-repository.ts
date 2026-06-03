@@ -49,6 +49,7 @@ function rowToProfileRow(row: any): UserProfileRow {
     lastAnalyzedAt: Number(row.last_analyzed_at),
     totalPromptsAnalyzed: row.total_prompts_analyzed,
     isActive: row.is_active,
+    nickname: row.nickname ?? null,
   };
 }
 
@@ -108,6 +109,14 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
       SELECT * FROM user_profiles WHERE is_active = true
     `;
     return rows.map(rowToProfileRow);
+  }
+
+  async setNickname(userId: string, nickname: string): Promise<boolean> {
+    const sql = getPostgresClient();
+    const result = await sql`
+      UPDATE user_profiles SET nickname = ${nickname} WHERE user_id = ${userId} AND is_active = true
+    `;
+    return (result.count ?? 0) > 0;
   }
 
   async createProfile(

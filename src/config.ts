@@ -95,6 +95,11 @@ interface OpenCodeMemConfig {
     maxAgeDays?: number;
     injectOn?: "first" | "always";
   };
+  disableWebuiAuth?: boolean;
+  disableClientAuth?: boolean;
+  server?: {
+    apiKey?: string;
+  };
 }
 
 const DEFAULTS: Required<
@@ -115,6 +120,9 @@ const DEFAULTS: Required<
     | "userEmailOverride"
     | "userNameOverride"
     | "webServerAllowedOrigin"
+    | "disableWebuiAuth"
+    | "disableClientAuth"
+    | "server"
   >
 > & {
   embeddingApiUrl?: string;
@@ -132,6 +140,9 @@ const DEFAULTS: Required<
   userEmailOverride?: string;
   userNameOverride?: string;
   webServerAllowedOrigin?: string;
+  disableWebuiAuth?: boolean;
+  disableClientAuth?: boolean;
+  server?: { apiKey?: string };
   memory?: {
     defaultScope?: "project" | "all-projects";
   };
@@ -195,6 +206,9 @@ const DEFAULTS: Required<
     maxAgeDays: undefined,
     injectOn: "first",
   },
+  disableWebuiAuth: false,
+  disableClientAuth: false,
+  server: {},
 };
 
 function expandPath(path: string): string {
@@ -208,18 +222,31 @@ function expandPath(path: string): string {
 }
 
 function loadConfigFromPaths(paths: string[]): OpenCodeMemConfig {
+  let foundFile = false;
+  const parseErrors: { path: string; error: unknown }[] = [];
+
   for (const path of paths) {
     if (existsSync(path)) {
+      foundFile = true;
       try {
         const content = readFileSync(path, "utf-8");
         const json = stripJsoncComments(content);
         return JSON.parse(json) as OpenCodeMemConfig;
       } catch (err) {
-        // Log the error instead of silently returning empty config
-        console.warn("[config] Failed to parse config file:", path, String(err));
+        parseErrors.push({ path, error: err });
       }
     }
   }
+
+  // If a file was found but ALL parse attempts failed, throw a descriptive error
+  if (foundFile && parseErrors.length > 0) {
+    const details = parseErrors
+      .map(({ path, error }) => `  • ${path}: ${String(error)}`)
+      .join("\n");
+    throw new Error(`Failed to parse config file(s). Fix the config or remove it:\n${details}`);
+  }
+
+  // No config file found at any path — empty config is valid for first-time setup
   return {};
 }
 
@@ -621,6 +648,11 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
         | "first"
         | "always",
     },
+    disableWebuiAuth: fileConfig.disableWebuiAuth ?? DEFAULTS.disableWebuiAuth,
+    disableClientAuth: fileConfig.disableClientAuth ?? DEFAULTS.disableClientAuth,
+    server: {
+      apiKey: fileConfig.server?.apiKey ?? DEFAULTS.server?.apiKey,
+    },
   };
 }
 
@@ -834,7 +866,16 @@ export function serverConfigToGlobalConfig(serverConfig: {
   autoCleanupRetentionDays: number;
 }): void {
   // Postgres
-  CONFIG.postgres = CONFIG.postgres ?? ({} as any);
+  CONFIG.postgres = CONFIG.postgres ?? {
+    url: undefined,
+    ssl: "require" as const,
+    maxConnections: 10,
+    idleTimeoutSeconds: 30,
+    connectTimeoutSeconds: 10,
+    vectorType: "vector" as const,
+    hnswEfSearch: 128,
+    hnswEfConstruction: 256,
+  };
   CONFIG.postgres.url = serverConfig.postgres.url;
   CONFIG.postgres.ssl = serverConfig.postgres.ssl;
   CONFIG.postgres.maxConnections = serverConfig.postgres.maxConnections;

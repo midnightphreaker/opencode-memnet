@@ -3,7 +3,7 @@ import { initServerConfig, validateServerConfig } from "./server-config.js";
 import { initializeStorage } from "./services/storage/factory.js";
 import { embeddingService } from "./services/embedding.js";
 import { setDbConnected } from "./services/health-handler.js";
-import { startWebServer } from "./services/web-server.js";
+import { startWebServer, getActiveRequestCount } from "./services/web-server.js";
 import { logInfo, logWarn, logError, logDebug, initLogger } from "./services/logger.js";
 
 async function main(): Promise<void> {
@@ -85,8 +85,14 @@ async function main(): Promise<void> {
     });
 
     // Start background tag migration (perpetual loop)
-    const { runTagMigration } = await import("./services/tag-migration-service.js");
-    runTagMigration().catch((err) => logError("Tag migration loop error", { error: String(err) }));
+    if (!config._tagMigrationDisabled) {
+      const { runTagMigration } = await import("./services/tag-migration-service.js");
+      runTagMigration().catch((err) =>
+        logError("Tag migration loop error", { error: String(err) })
+      );
+    } else {
+      logWarn("Tag migration disabled: MEMORY_MODEL/MEMORY_API_URL not configured");
+    }
 
     // 5. Graceful shutdown
     const shutdown = async () => {
@@ -96,6 +102,25 @@ async function main(): Promise<void> {
       } catch (e) {
         logError("Error stopping server", { error: String(e) });
       }
+
+      // Drain: wait for in-flight requests to complete (with timeout)
+      const drainSeconds = parseInt(process.env.DRAIN_TIMEOUT_SECONDS || "10", 10);
+      const drainMs = drainSeconds * 1000;
+      const pollInterval = 500;
+      let elapsed = 0;
+      logInfo(
+        `Draining in-flight requests (max ${drainSeconds}s, current: ${getActiveRequestCount()})...`
+      );
+      while (getActiveRequestCount() > 0 && elapsed < drainMs) {
+        await new Promise((resolve) => setTimeout(resolve, pollInterval));
+        elapsed += pollInterval;
+      }
+      if (getActiveRequestCount() > 0) {
+        logInfo(`Drain timeout reached with ${getActiveRequestCount()} requests still active`);
+      } else {
+        logInfo("All in-flight requests completed");
+      }
+
       try {
         const { stopMigration } = await import("./services/tag-migration-service.js");
         stopMigration();

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/logo/logo-banner.svg" alt="opencode MEMnet">
+  <img src="src/web/logo-banner.svg" alt="opencode MEMnet">
 </p>
 
 [![MIT License](https://img.shields.io/badge/license-MIT-blue)](https://git.phrk.org/pub/opencode-memnet) [![Version](https://img.shields.io/badge/version-3.0.0-green)](package.json)
@@ -28,6 +28,7 @@ This project builds upon and would not exist without the original [OpenCode Memo
   - [Server Environment Variables](#server-environment-variables)
   - [Secret Management](#secret-management)
   - [Client Configuration File](#client-configuration-file)
+- [Client Nickname](#client-nickname)
 - [API Reference](#api-reference)
 - [WebUI](#webui)
 - [User Profiles](#user-profiles)
@@ -486,6 +487,25 @@ Full configuration with defaults:
 | `chatMessage.injectOn`              | `"first"`               | When to inject: `"first"` or `"always"`        |
 | `memory.defaultScope`               | `"project"`             | Default scope: `"project"` or `"all-projects"` |
 | `logLevel`                          | `info`                  | Log level: `debug`, `info`, `warn`, `error`    |
+
+---
+
+## Client Nickname
+
+You can assign a human-readable display name to your OpenCode client instance. The nickname appears in plugin toast messages (e.g., "Welcome back, my-laptop!") and in the WebUI Memory Explorer settings panel.
+
+**Via config file** — add `"nickname"` to your `opencode-memnet.jsonc` or `opencode-memnet.json`:
+
+```jsonc
+{
+  "serverUrl": "http://localhost:4747",
+  "apiKey": "...",
+  "nickname": "my-laptop",
+  // ... other settings
+}
+```
+
+**Via Web UI** — open the Memory Explorer → click Settings (gear icon) → enter a nickname → click Save.
 
 ---
 

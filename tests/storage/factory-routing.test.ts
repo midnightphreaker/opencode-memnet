@@ -30,6 +30,7 @@ describe("Storage factory routing (Postgres-only)", () => {
     expect(typeof repo.listOlderThan).toBe("function");
     expect(typeof repo.getAllWithVectors).toBe("function");
     expect(typeof repo.countUntagged).toBe("function");
+    expect(typeof repo.getUntaggedProjectMemories).toBe("function");
     expect(typeof repo.updateTagsAndVectors).toBe("function");
     expect(typeof repo.close).toBe("function");
   });

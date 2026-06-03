@@ -40,7 +40,9 @@ export class RemoteMemoryClient {
 
     try {
       logDebug(`→ ${method} ${path}`, {
-        query: query ? Object.fromEntries(Object.entries(query).filter(([_, v]) => v !== undefined)) : undefined,
+        query: query
+          ? Object.fromEntries(Object.entries(query).filter(([_, v]) => v !== undefined))
+          : undefined,
         hasBody: !!body,
       });
       const startTime = performance.now();
@@ -59,7 +61,10 @@ export class RemoteMemoryClient {
       const json = (await response.json()) as ApiResponse<T>;
 
       if (!response.ok) {
-        logWarn(`← ${method} ${path} ${response.status} ${elapsed}ms`, { status: response.status, error: json.error });
+        logWarn(`← ${method} ${path} ${response.status} ${elapsed}ms`, {
+          status: response.status,
+          error: json.error,
+        });
         return {
           success: false,
           error: json.error || `HTTP ${response.status}`,

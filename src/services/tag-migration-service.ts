@@ -8,6 +8,21 @@ import { log, logError } from "./logger.js";
 import { embeddingService } from "./embedding.js";
 import type { MemoryRecord } from "./storage/types.js";
 
+// ── Migration state (consolidated single source of truth) ──
+// CONCURRENCY NOTE: These module-level variables assume a single-user / single-process model.
+// In a multi-process or serverless deployment, these guards would be ineffective.
+// For the current architecture (Bun single-threaded server), this is acceptable.
+// If the architecture changes, move this state to the database or an external store.
+
+export interface MigrationProgress {
+  processed: number;
+  total: number;
+  currentBatch: number;
+  totalBatches: number;
+  isComplete: boolean;
+  errors: string[];
+}
+
 interface MigrationState {
   status: "idle" | "running";
   processed: number;
@@ -18,8 +33,59 @@ interface MigrationState {
 let _state: MigrationState = { status: "idle", processed: 0, total: 0, errors: [] };
 let _abortController: AbortController | null = null;
 
+// API-handler-facing migration state (persisted across calls)
+let _migrationProgress: MigrationProgress = {
+  processed: 0,
+  total: 0,
+  currentBatch: 0,
+  totalBatches: 0,
+  isComplete: true,
+  errors: [],
+};
+let _migrationRunning: boolean = false;
+let _cachedMigrationRecords: MemoryRecord[] | null = null;
+
 export function getMigrationProgress(): MigrationState {
   return { ..._state };
+}
+
+// ── Exported getters/setters for api-handlers migration state ──
+
+export function getApiMigrationProgress(): MigrationProgress {
+  return { ..._migrationProgress };
+}
+
+export function setApiMigrationProgress(progress: MigrationProgress): void {
+  _migrationProgress = { ...progress };
+}
+
+export function isMigrationRunning(): boolean {
+  return _migrationRunning;
+}
+
+export function setMigrationRunning(running: boolean): void {
+  _migrationRunning = running;
+}
+
+export function getCachedMigrationRecords(): MemoryRecord[] | null {
+  return _cachedMigrationRecords;
+}
+
+export function setCachedMigrationRecords(records: MemoryRecord[] | null): void {
+  _cachedMigrationRecords = records;
+}
+
+export function resetMigrationState(): void {
+  _migrationProgress = {
+    processed: 0,
+    total: 0,
+    currentBatch: 0,
+    totalBatches: 0,
+    isComplete: true,
+    errors: [],
+  };
+  _migrationRunning = false;
+  _cachedMigrationRecords = null;
 }
 
 export function stopMigration(): void {
@@ -31,6 +97,7 @@ export function stopMigration(): void {
 }
 
 const RETRY_LIMIT = 3;
+const MIGRATION_MAX_FAILURES = 10;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -157,13 +224,9 @@ export async function runTagMigration(): Promise<void> {
       }
 
       const existingTags = await memoryRepo.getDistinctTagValues({ scope: "project" });
-      const allRecords = (await memoryRepo.getAllWithVectors()).filter((r) =>
-        r.containerTag.includes("_project_")
-      );
 
-      const untagged = allRecords.filter((r) => !r.tags || r.tags.trim() === "");
       _state.status = "running";
-      _state.total = untagged.length;
+      _state.total = untaggedCount; // initial estimate from countUntagged()
       _state.processed = 0;
       _state.errors = [];
 
@@ -179,20 +242,55 @@ export async function runTagMigration(): Promise<void> {
       });
       const provider = AIProviderFactory.createProvider(CONFIG.memoryProvider, providerConfig);
 
-      for (const mem of untagged) {
-        if (signal.aborted) return;
+      // ── Phase 1: Tag generation (only for memories with NULL tags) ──
+      const BATCH_SIZE = 100;
+      let totalProcessed = 0;
+      let consecutiveFailures = 0;
 
-        const tags = await tagMemory(mem, existingTags, provider);
+      while (!signal.aborted) {
+        const batch = await memoryRepo.getUntaggedProjectMemories(BATCH_SIZE, 0);
+        if (batch.length === 0) break;
 
-        if (tags && tags.length > 0) {
-          try {
-            const vector = await embeddingService.embedWithTimeout(mem.content, {
-              kind: "content",
-            });
+        for (const mem of batch) {
+          if (signal.aborted) break;
+
+          const tags = await tagMemory(mem, existingTags, provider);
+
+          if (tags && tags.length > 0) {
+            // Reset failure counter on success
+            consecutiveFailures = 0;
+
+            // Write tags immediately (separate from vector update)
             const tagsStr = tags.join(",");
-            const tagsVector = await embeddingService.embedWithTimeout(tagsStr, { kind: "tags" });
+            try {
+              await memoryRepo.updateTagsOnly(mem.id, tagsStr, Date.now());
+            } catch (e) {
+              const msg = `Failed to save tags for ${mem.id}: ${String(e)}`;
+              _state.errors.push(msg);
+              logError("tag-migration: tag-only update failed", {
+                memoryId: mem.id,
+                error: String(e),
+              });
+              continue; // skip vector generation if tags couldn't be saved
+            }
 
-            await memoryRepo.updateTagsAndVectors(mem.id, tagsStr, vector, tagsVector, Date.now());
+            // Now attempt vector generation — failures here won't cause re-tagging
+            try {
+              const vector = await embeddingService.embedWithTimeout(mem.content, {
+                kind: "content",
+              });
+              const tagsVector = await embeddingService.embedWithTimeout(tagsStr, { kind: "tags" });
+
+              await memoryRepo.updateVectorsOnly(mem.id, vector, tagsVector, Date.now());
+            } catch (e) {
+              const msg = `Failed to update vectors for ${mem.id}: ${String(e)}`;
+              _state.errors.push(msg);
+              logError("tag-migration: vector update failed (tags already saved)", {
+                memoryId: mem.id,
+                error: String(e),
+                hint: "Tags were saved. Vector will be retried in Phase 2.",
+              });
+            }
 
             // Dual-write: also store in canonical tag registry
             try {
@@ -200,22 +298,79 @@ export async function runTagMigration(): Promise<void> {
               const registry = createTagRegistry();
               await registry.linkMemoryTags(mem.id, tags);
             } catch (err) {
-              logError("tag-migration: failed to link tags in registry", { error: String(err) });
+              logError("tag-migration: failed to link tags in registry", {
+                memoryId: mem.id,
+                tags,
+                error: String(err),
+                hint: "Memory tags saved to memories table but not to canonical tag registry. Data inconsistency may exist.",
+              });
             }
-          } catch (e) {
-            _state.errors.push(`Failed to update vectors for ${mem.id}: ${String(e)}`);
+          } else {
+            // Tag generation failed after retries
+            consecutiveFailures++;
+            _state.errors.push(`Failed to generate tags for memory ${mem.id}`);
+
+            if (consecutiveFailures >= MIGRATION_MAX_FAILURES) {
+              logError("tag-migration: pausing — too many consecutive tag generation failures", {
+                consecutiveFailures,
+                maxFailures: MIGRATION_MAX_FAILURES,
+                lastMemoryId: mem.id,
+                hint: "Migration loop paused. Check AI provider availability and config.",
+              });
+              _state.errors.push(
+                `Migration paused after ${consecutiveFailures} consecutive tag generation failures.`
+              );
+              break; // break out of batch loop
+            }
           }
-        } else {
-          _state.errors.push(`Failed to generate tags for memory ${mem.id}`);
+
+          totalProcessed++;
+          _state.processed = totalProcessed;
         }
 
-        _state.processed++;
+        // If we hit the failure threshold, break out of the outer batch loop too
+        if (consecutiveFailures >= MIGRATION_MAX_FAILURES) break;
+      }
+
+      // ── Phase 2: Vector generation (for memories with tags but missing vectors) ──
+      if (consecutiveFailures < MIGRATION_MAX_FAILURES) {
+        let vectorProcessed = 0;
+        while (!signal.aborted) {
+          const vectorBatch = await memoryRepo.getMemoriesWithoutVectors(BATCH_SIZE, 0);
+          if (vectorBatch.length === 0) break;
+
+          for (const mem of vectorBatch) {
+            if (signal.aborted) break;
+
+            try {
+              const vector = await embeddingService.embedWithTimeout(mem.content, {
+                kind: "content",
+              });
+              const tagsStr = mem.tags || "";
+              const tagsVector = tagsStr
+                ? await embeddingService.embedWithTimeout(tagsStr, { kind: "tags" })
+                : undefined;
+
+              await memoryRepo.updateVectorsOnly(mem.id, vector, tagsVector, Date.now());
+              vectorProcessed++;
+            } catch (e) {
+              logError("tag-migration: Phase 2 vector generation failed", {
+                memoryId: mem.id,
+                error: String(e),
+              });
+              // Don't break — try next memory
+            }
+          }
+        }
+        if (vectorProcessed > 0) {
+          log("tag-migration: Phase 2 complete", { vectorProcessed });
+        }
       }
 
       // Check if we're done
       const remaining = await memoryRepo.countUntagged();
       if (remaining === 0) {
-        _state = { status: "idle", processed: _state.total, total: _state.total, errors: [] };
+        _state = { status: "idle", processed: totalProcessed, total: totalProcessed, errors: [] };
         await sleep(5000);
         continue;
       }

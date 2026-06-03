@@ -6,7 +6,7 @@
     <title>OpenCode Memory Explorer</title>
     <link rel="stylesheet" href="/styles.css" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-    <script src="https://unpkg.com/lucide@latest" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/lucide@0.511.0" crossorigin="anonymous"></script>
     <script
       src="https://cdn.jsdelivr.net/npm/marked@17.0.1/lib/marked.umd.min.js"
       crossorigin="anonymous"
@@ -16,7 +16,7 @@
       crossorigin="anonymous"
     ></script>
     <script
-      src="https://cdn.jsdelivr.net/npm/jsonrepair@latest/lib/umd/jsonrepair.min.js"
+      src="https://cdn.jsdelivr.net/npm/jsonrepair@3.12.1/lib/umd/jsonrepair.min.js"
       crossorigin="anonymous"
     ></script>
     <script src="/i18n.js"></script>
@@ -300,6 +300,15 @@
             <option value="" data-i18n="settings-profile-loading">Enter API key first...</option>
           </select>
         </div>
+        <div class="settings-field">
+          <label for="settings-nickname" data-i18n="nickname-label">Nickname</label>
+          <input
+            type="text"
+            id="settings-nickname"
+            data-i18n-placeholder="nickname-placeholder"
+            placeholder="e.g. my-laptop"
+          />
+        </div>
         <div class="settings-actions">
           <button id="settings-save" class="btn-primary" data-i18n="settings-save">Save</button>
           <button id="settings-close" class="btn-cancel" data-i18n="btn-cancel">Cancel</button>
@@ -320,10 +329,12 @@
           </button>
         </div>
         <div class="sheet-body">
-          <div id="profile-selector-row" class="profile-selector-row" style="display: none;">
+          <div id="profile-selector-row" class="profile-selector-row" style="display: none">
             <label for="profile-panel-select" data-i18n="profile-select-label">View profile:</label>
             <select id="profile-panel-select">
-              <option value="" disabled selected data-i18n="settings-profile-loading">Select a profile...</option>
+              <option value="" disabled selected data-i18n="settings-profile-loading">
+                Select a profile...
+              </option>
             </select>
           </div>
           <div style="margin-bottom: 12px; text-align: right">
@@ -341,8 +352,9 @@
     <div id="job-status-bar" class="job-status-bar">
       <span id="job-status-indicator" class="job-status-indicator"></span>
       <span id="job-status-text" class="job-status-text" data-i18n="job-status-idle">Idle</span>
-      <button id="job-drawer-toggle" class="job-drawer-toggle" title="Job Details">
+      <button id="job-drawer-toggle" class="job-drawer-toggle" title="Maintenance Jobs">
         <i data-lucide="chevron-up" class="icon"></i>
+        <span>Maintenance Jobs</span>
       </button>
     </div>
 

@@ -310,6 +310,13 @@ export class PostgresMemoryRepository implements MemoryRepository {
     return rows.length > 0;
   }
 
+  async deleteMany(ids: string[]): Promise<number> {
+    const sql = getPostgresClient();
+    if (!ids.length) return 0;
+    const result = await sql`DELETE FROM memories WHERE id IN ${sql(ids)}`;
+    return result.count;
+  }
+
   async update(record: MemoryRecord): Promise<void> {
     const sql = getPostgresClient();
     const dims = CONFIG.embeddingDimensions;
@@ -401,6 +408,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
     scopeHash: string;
     containerTag: string;
     includeAllContainers?: boolean;
+    containerTagFilter?: string;
     limit: number;
     userEmail?: string;
   }): Promise<MemoryRow[]> {
@@ -408,6 +416,24 @@ export class PostgresMemoryRepository implements MemoryRepository {
     const scopeHashFilter = args.scopeHash || "";
     const containerTagFilter = args.includeAllContainers ? "" : args.containerTag;
     const userEmailFilter = args.userEmail ?? "";
+
+    // Build dynamic LIKE condition for containerTagFilter
+    const tagLikeValue = args.containerTagFilter ? `%${args.containerTagFilter}%` : "";
+    const hasTagLike = !!args.containerTagFilter;
+
+    if (hasTagLike) {
+      const rows = await sql`
+        SELECT * FROM memories
+        WHERE scope = ${args.scope}
+          AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
+          AND (${containerTagFilter}::text = '' OR container_tag = ${containerTagFilter})
+          AND (${userEmailFilter}::text = '' OR user_email = ${userEmailFilter})
+          AND container_tag LIKE ${tagLikeValue}
+        ORDER BY created_at DESC
+        LIMIT ${args.limit}
+      `;
+      return rows.map(rowToMemoryRow);
+    }
 
     const rows = await sql`
       SELECT * FROM memories
@@ -485,7 +511,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
     `;
     const result: Record<string, number> = {};
     for (const row of rows) {
-      const key = row.type ?? "(untagged)";
+      const key = row.type ?? "(unclassified)";
       result[key] = Number(row.count);
     }
     return result;
@@ -572,6 +598,20 @@ export class PostgresMemoryRepository implements MemoryRepository {
     return Number(rows[0]?.count ?? 0);
   }
 
+  async getUntaggedProjectMemories(
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<MemoryRecord[]> {
+    const sql = getPostgresClient();
+    const rows = await sql`
+      SELECT * FROM memories
+      WHERE scope = 'project' AND (tags IS NULL OR tags = '')
+      ORDER BY created_at ASC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+    return rows.map((row) => rowToMemoryRecord(row));
+  }
+
   async updateTagsAndVectors(
     id: string,
     tags: string,
@@ -600,5 +640,59 @@ export class PostgresMemoryRepository implements MemoryRepository {
         updated_at = ${updatedAt}
       WHERE id = ${id}
     `;
+  }
+
+  async updateTagsOnly(id: string, tags: string, updatedAt: number): Promise<void> {
+    const sql = getPostgresClient();
+    await sql`
+      UPDATE memories SET
+        tags = ${tags},
+        updated_at = ${updatedAt}
+      WHERE id = ${id}
+    `;
+  }
+
+  async updateVectorsOnly(
+    id: string,
+    vector: Float32Array,
+    tagsVector: Float32Array | undefined,
+    updatedAt: number
+  ): Promise<void> {
+    const sql = getPostgresClient();
+    const dims = CONFIG.embeddingDimensions;
+    const vectorType = CONFIG.postgres!.vectorType ?? "vector";
+    const vectorCast = getVectorCast(vectorType, dims);
+
+    assertVectorDimensions(vector, dims);
+    if (tagsVector) {
+      assertVectorDimensions(tagsVector, dims);
+    }
+    const vectorLit = "'" + vectorToPgLiteral(vector) + "'::" + vectorCast;
+    const tagsVectorLit = tagsVector
+      ? "'" + vectorToPgLiteral(tagsVector) + "'::" + vectorCast
+      : null;
+    await sql`
+      UPDATE memories SET
+        vector = ${sql.unsafe(vectorLit)},
+        tags_vector = ${tagsVectorLit ? sql.unsafe(tagsVectorLit) : null},
+        updated_at = ${updatedAt}
+      WHERE id = ${id}
+    `;
+  }
+
+  async getMemoriesWithoutVectors(
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<MemoryRecord[]> {
+    const sql = getPostgresClient();
+    const rows = await sql`
+      SELECT *
+      FROM memories
+      WHERE tags IS NOT NULL AND tags != ''
+        AND (vector IS NULL OR tags_vector IS NULL)
+      ORDER BY created_at ASC
+      LIMIT ${limit} OFFSET ${offset}
+    `;
+    return rows.map((row) => rowToMemoryRecord(row));
   }
 }

@@ -40,14 +40,14 @@ const __dirname = dirname(__filename);
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
 
-const disableWebuiAuth = (CONFIG as any).disableWebuiAuth ?? false;
-const disableClientAuth = (CONFIG as any).disableClientAuth ?? false;
+const disableWebuiAuth = CONFIG.disableWebuiAuth ?? false;
+const disableClientAuth = CONFIG.disableClientAuth ?? false;
 
 function deriveJobScope(): "all_profiles" | "current_profile" {
   return disableWebuiAuth ? "all_profiles" : "current_profile";
 }
 
-async function parseBody(req: Request): Promise<any> {
+async function parseBody(req: Request): Promise<unknown> {
   const contentLength = parseInt(req.headers.get("content-length") || "0", 10);
   if (contentLength > MAX_BODY_SIZE) {
     throw Object.assign(new Error("Request body too large"), { status: 413 });
@@ -56,7 +56,14 @@ async function parseBody(req: Request): Promise<any> {
   if (body.length > MAX_BODY_SIZE) {
     throw Object.assign(new Error("Request body too large"), { status: 413 });
   }
-  return JSON.parse(body);
+  try {
+    return JSON.parse(body);
+  } catch (e) {
+    if (e instanceof SyntaxError) {
+      throw Object.assign(new Error("Invalid JSON in request body"), { status: 400 });
+    }
+    throw e;
+  }
 }
 
 const allowedOrigin = CONFIG.webServerAllowedOrigin ?? "*";
@@ -74,7 +81,7 @@ interface WorkerResponse {
   running?: boolean;
 }
 
-let server: any = null;
+let server: ReturnType<typeof Bun.serve> | null = null;
 
 async function handleRequest(req: Request): Promise<Response> {
   const url = new URL(req.url);
@@ -97,7 +104,7 @@ async function handleRequest(req: Request): Promise<Response> {
 
     // Auth: /api/* routes require authentication unless disabled
     if (path.startsWith("/api/") && path !== "/api/health") {
-      if (!disableWebuiAuth && !disableClientAuth && (CONFIG as any).server?.apiKey) {
+      if (!disableWebuiAuth && !disableClientAuth && CONFIG.server?.apiKey) {
         const authHeader = req.headers.get("Authorization");
         if (!authHeader) {
           return jsonResponse({ success: false, error: "Missing Authorization header" }, 401);
@@ -106,7 +113,7 @@ async function handleRequest(req: Request): Promise<Response> {
         if (parts.length !== 2 || parts[0] !== "Bearer") {
           return jsonResponse({ success: false, error: "Invalid Authorization format" }, 401);
         }
-        if (parts[1] !== (CONFIG as any).server!.apiKey) {
+        if (parts[1] !== CONFIG.server!.apiKey) {
           return jsonResponse({ success: false, error: "Invalid API key" }, 401);
         }
       }
@@ -148,7 +155,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (path === "/api/memories" && method === "POST") {
-      const body = (await parseBody(req)) as any;
+      const body = (await parseBody(req)) as Parameters<typeof handleAddMemory>[0];
       const result = await handleAddMemory(body);
       return jsonResponse(result);
     }
@@ -170,13 +177,13 @@ async function handleRequest(req: Request): Promise<Response> {
       if (!id) {
         return jsonResponse({ success: false, error: "Invalid ID" });
       }
-      const body = (await parseBody(req)) as any;
+      const body = (await parseBody(req)) as Parameters<typeof handleUpdateMemory>[1];
       const result = await handleUpdateMemory(id, body);
       return jsonResponse(result);
     }
 
     if (path === "/api/memories/bulk-delete" && method === "POST") {
-      const body = (await parseBody(req)) as any;
+      const body = (await parseBody(req)) as { ids?: string[]; cascade?: boolean };
       const cascade = body.cascade !== false;
       const result = await handleBulkDelete(body.ids || [], cascade);
       return jsonResponse(result);
@@ -231,7 +238,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (path === "/api/migration/tags/run-batch" && method === "POST") {
-      const body = (await parseBody(req)) as any;
+      const body = (await parseBody(req)) as { batchSize?: number };
       const batchSize = body?.batchSize || 5;
       const result = await handleRunTagMigrationBatch(batchSize);
       return jsonResponse(result);
@@ -254,7 +261,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (path === "/api/prompts/bulk-delete" && method === "POST") {
-      const body = (await parseBody(req)) as any;
+      const body = (await parseBody(req)) as { ids?: string[]; cascade?: boolean };
       const cascade = body.cascade !== false;
       const result = await handleBulkDeletePrompts(body.ids || [], cascade);
       return jsonResponse(result);
@@ -286,8 +293,8 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (path === "/api/user-profile/refresh" && method === "POST") {
-      const body = (await parseBody(req).catch(() => ({}))) as any;
-      const userId = body.userId || undefined;
+      const body = (await parseBody(req)) as Record<string, unknown>;
+      const userId = (body.userId as string) || undefined;
       const result = await handleRefreshProfile(userId);
       return jsonResponse(result);
     }
@@ -373,7 +380,7 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (path === "/api/migration/run" && method === "POST") {
-      const body = await parseBody(req);
+      const body = (await parseBody(req)) as { strategy: string };
       const result = handleMigrationRun(body);
       return jsonResponse(result);
     }
@@ -384,13 +391,16 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     return new Response("Not Found", { status: 404 });
-  } catch (error) {
+  } catch (error: unknown) {
+    const status =
+      (error instanceof Error && "status" in error ? (error as { status: number }).status : null) ||
+      500;
     return jsonResponse(
       {
         success: false,
         error: error instanceof Error ? error.message : "Internal error",
       },
-      500
+      status
     );
   }
 }
@@ -423,7 +433,7 @@ function serveStaticFile(filename: string, contentType: string): Response {
   }
 }
 
-function jsonResponse(data: any, status: number = 200): Response {
+function jsonResponse(data: unknown, status: number = 200): Response {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     "Access-Control-Allow-Origin": allowedOrigin,

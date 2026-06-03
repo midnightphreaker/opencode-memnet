@@ -10,6 +10,7 @@ import {
   createClientRepository,
   createTagRegistry,
 } from "./storage/factory.js";
+import { stripPrivateContent } from "./privacy.js";
 import type {
   MemoryRepository,
   UserPromptRepository,
@@ -20,6 +21,16 @@ import type {
   MemoryScopeKind,
   ClientRepository,
 } from "./storage/types.js";
+import {
+  getApiMigrationProgress,
+  setApiMigrationProgress,
+  isMigrationRunning as isTagMigrationRunning,
+  setMigrationRunning,
+  getCachedMigrationRecords,
+  setCachedMigrationRecords,
+  resetMigrationState,
+} from "./tag-migration-service.js";
+import type { MigrationProgress } from "./tag-migration-service.js";
 
 const memoryRepo: MemoryRepository = createMemoryRepository();
 const promptRepo: UserPromptRepository = createUserPromptRepository();
@@ -41,6 +52,7 @@ async function ensureInit(): Promise<void> {
       clientRepo = createClientRepository();
       await clientRepo.initialize();
     })().catch((err) => {
+      clientRepo = null as any;
       _initPromise = null;
       throw err;
     });
@@ -163,7 +175,7 @@ export async function handleListTags(): Promise<ApiResponse<{ project: TagInfo[]
     return { success: true, data: { project: Array.from(deduped.values()) } };
   } catch (error) {
     log("handleListTags: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -190,21 +202,23 @@ export async function handleListMemories(
       });
     } else {
       // #10: Cap at 1000 rows when no tag filter to prevent unbounded load / OOM.
+      // SQL-side filter via containerTagFilter avoids fetching non-project rows.
       memoryRows = await memoryRepo.list({
         scope: "project",
         scopeHash: "",
         containerTag: "",
         includeAllContainers: true,
+        containerTagFilter: "_project_",
         limit: 1000,
         userEmail,
       });
-      memoryRows = memoryRows.filter((m) => m.containerTag.includes("_project_"));
+      // No client-side filter needed — SQL does it
     }
 
     const memoriesWithType = memoryRows.map((r) => ({
       type: "memory" as const,
       id: r.id,
-      content: r.content,
+      content: stripPrivateContent(r.content),
       containerTag: r.containerTag,
       memoryType: r.type,
       tags: r.tags,
@@ -286,7 +300,7 @@ export async function handleListMemories(
         return {
           type: "memory",
           id: item.id,
-          content: item.content,
+          content: stripPrivateContent(item.content),
           containerTag: item.containerTag,
           memoryType: item.memoryType,
           tags: item.tags,
@@ -307,7 +321,7 @@ export async function handleListMemories(
           type: "prompt",
           id: item.id,
           sessionId: item.sessionId,
-          content: item.content,
+          content: stripPrivateContent(item.content),
           createdAt: safeToISOString(item.createdAt),
           projectPath: item.projectPath,
           linkedMemoryId: item.linkedMemoryId,
@@ -318,7 +332,7 @@ export async function handleListMemories(
     return { success: true, data: { items, total, page, pageSize, totalPages } };
   } catch (error) {
     log("handleListMemories: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -338,11 +352,18 @@ export async function handleAddMemory(data: {
     if (!data.content || !data.containerTag) {
       return { success: false, error: "content and containerTag are required" };
     }
+    if (data.content.length > MAX_CONTENT_LENGTH) {
+      return { success: false, error: `Content too long (max ${MAX_CONTENT_LENGTH} characters)` };
+    }
+    if (data.containerTag.length > MAX_TAG_LENGTH) {
+      return { success: false, error: `Container tag too long (max ${MAX_TAG_LENGTH} characters)` };
+    }
     await ensureInit();
     await embeddingService.warmup();
+    const filteredContent = stripPrivateContent(data.content);
     const tags = (data.tags || []).map((t) => t.trim().toLowerCase());
     const embeddingInput =
-      tags.length > 0 ? `${data.content}\nTags: ${tags.join(", ")}` : data.content;
+      tags.length > 0 ? `${filteredContent}\nTags: ${tags.join(", ")}` : filteredContent;
 
     const vector = await embeddingService.embedWithTimeout(embeddingInput, { kind: "content" });
     let tagsVector: Float32Array | undefined = undefined;
@@ -355,7 +376,7 @@ export async function handleAddMemory(data: {
 
     const record: MemoryRecord = {
       id,
-      content: data.content,
+      content: filteredContent,
       vector,
       tagsVector,
       containerTag: data.containerTag,
@@ -385,14 +406,24 @@ export async function handleAddMemory(data: {
             .filter(Boolean)
         );
       } catch (err) {
-        logError("api-handlers: failed to link memory tags in registry", { error: String(err) });
+        logError("api-handlers: failed to link memory tags in registry", {
+          memoryId: record.id,
+          tags: record.tags
+            ? record.tags
+                .split(",")
+                .map((t: string) => t.trim())
+                .filter(Boolean)
+            : [],
+          error: String(err),
+          hint: "Memory tags saved to memories table but not to canonical tag registry. Data inconsistency may exist.",
+        });
       }
     }
 
     return { success: true, data: { id } };
   } catch (error) {
     log("handleAddMemory: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -427,25 +458,34 @@ export async function handleDeleteMemory(
     };
   } catch (error) {
     log("handleDeleteMemory: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
 export async function handleBulkDelete(
   ids: string[],
   cascade: boolean = false
-): Promise<ApiResponse<{ deleted: number }>> {
+): Promise<ApiResponse<{ deleted: number; total: number; failedIds?: string[] }>> {
   try {
     if (!ids || ids.length === 0) return { success: false, error: "ids array is required" };
-    let deleted = 0;
-    for (const id of ids) {
-      const result = await handleDeleteMemory(id, cascade);
-      if (result.success) deleted++;
+    await ensureInit();
+    if (cascade) {
+      // When cascade is requested, fall back to sequential deletes to handle
+      // linked prompt cleanup for each memory individually.
+      let deleted = 0;
+      const failedIds: string[] = [];
+      for (const id of ids) {
+        const result = await handleDeleteMemory(id, cascade);
+        if (result.success) deleted++;
+        else failedIds.push(id);
+      }
+      return { success: true, data: { deleted, total: ids.length, failedIds } };
     }
-    return { success: true, data: { deleted } };
+    const deleted = await memoryRepo.deleteMany(ids);
+    return { success: true, data: { deleted, total: ids.length } };
   } catch (error) {
     log("handleBulkDelete: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -460,7 +500,7 @@ export async function handleUpdateMemory(
     const existingMemory = await memoryRepo.getById(id);
     if (!existingMemory) return { success: false, error: "Memory not found" };
 
-    const newContent = data.content || existingMemory.content;
+    const newContent = stripPrivateContent(data.content || existingMemory.content);
     // Storage may return tags as comma-separated string despite typed as string[]
     const rawTags = existingMemory.tags as unknown;
     const existingTags: string[] =
@@ -516,14 +556,19 @@ export async function handleUpdateMemory(
           await tagRegistry.linkMemoryTags(id, tagList);
         }
       } catch (err) {
-        logError("api-handlers: failed to update memory tags in registry", { error: String(err) });
+        logError("api-handlers: failed to update memory tags in registry", {
+          memoryId: id,
+          tags: data.tags ?? [],
+          error: String(err),
+          hint: "Memory tags saved to memories table but not to canonical tag registry. Data inconsistency may exist.",
+        });
       }
     }
 
     return { success: true };
   } catch (error) {
     log("handleUpdateMemory: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -614,7 +659,7 @@ export async function handleSearch(
       type: "prompt",
       id: p.id,
       sessionId: p.sessionId,
-      content: p.content,
+      content: stripPrivateContent(p.content),
       createdAt: safeToISOString(p.createdAt),
       projectPath: p.projectPath,
       linkedMemoryId: p.linkedMemoryId,
@@ -624,7 +669,8 @@ export async function handleSearch(
     const formattedMemories: FormattedMemory[] = memoryResults.map((r: any) => ({
       type: "memory",
       id: r.id,
-      content: r.memory,
+      // Note: SearchResult uses field "memory" (not "content") — see types.ts SearchResult interface
+      content: stripPrivateContent(r.memory),
       memoryType: r.metadata?.type,
       tags: r.tags,
       createdAt: safeToISOString(r.createdAt),
@@ -671,7 +717,7 @@ export async function handleSearch(
           type: "prompt",
           id: p.id,
           sessionId: p.sessionId,
-          content: p.content,
+          content: stripPrivateContent(p.content),
           createdAt: safeToISOString(p.createdAt),
           projectPath: p.projectPath,
           linkedMemoryId: p.linkedMemoryId,
@@ -688,7 +734,7 @@ export async function handleSearch(
           paginatedResults.push({
             type: "memory",
             id: m.id,
-            content: m.content,
+            content: stripPrivateContent(m.content),
             memoryType: m.type,
             tags: m.tags,
             createdAt: safeToISOString(m.createdAt),
@@ -714,7 +760,7 @@ export async function handleSearch(
     return { success: true, data: { items: paginatedResults, total, page, pageSize, totalPages } };
   } catch (error) {
     log("handleSearch: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -743,7 +789,7 @@ export async function handleStats(): Promise<
     };
   } catch (error) {
     log("handleStats: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -757,7 +803,7 @@ export async function handlePinMemory(id: string): Promise<ApiResponse<void>> {
     return { success: true };
   } catch (error) {
     log("handlePinMemory: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -771,7 +817,7 @@ export async function handleUnpinMemory(id: string): Promise<ApiResponse<void>> 
     return { success: true };
   } catch (error) {
     log("handleUnpinMemory: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -793,7 +839,7 @@ export async function handleDeletePrompt(
     return { success: true, data: { deletedMemory } };
   } catch (error) {
     log("handleDeletePrompt: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -811,7 +857,7 @@ export async function handleBulkDeletePrompts(
     return { success: true, data: { deleted } };
   } catch (error) {
     log("handleBulkDeletePrompts: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -848,12 +894,40 @@ export async function handleGetUserProfile(userId?: string): Promise<ApiResponse
         createdAt: safeToISOString(profile.createdAt),
         lastAnalyzedAt: safeToISOString(profile.lastAnalyzedAt),
         totalPromptsAnalyzed: profile.totalPromptsAnalyzed,
+        nickname: profile.nickname ?? null,
         profileData,
       },
     };
   } catch (error) {
     log("handleGetUserProfile: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
+  }
+}
+
+export async function handleSetProfileNickname(data: {
+  nickname: string;
+}): Promise<ApiResponse<{ nickname: string }>> {
+  try {
+    if (typeof data.nickname !== "string") {
+      return { success: false, error: "nickname must be a string" };
+    }
+    const trimmed = data.nickname.trim();
+    if (trimmed.length > 100) {
+      return { success: false, error: "nickname must be 100 characters or less" };
+    }
+    await ensureInit();
+    const { getTags } = await import("./tags.js");
+    const tags = await getTags(process.cwd());
+    const userId = tags.user.userEmail || "unknown";
+    const result = await profileRepo!.setNickname(userId, trimmed);
+    if (!result) {
+      return { success: false, error: "No active profile found — create a profile first" };
+    }
+    logInfo("Nickname updated", { userId, nickname: trimmed });
+    return { success: true, data: { nickname: trimmed } };
+  } catch (error) {
+    logError("handleSetProfileNickname: error", { error: String(error) });
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -876,7 +950,7 @@ export async function handleGetProfileChangelog(
     return { success: true, data: formattedChangelogs };
   } catch (error) {
     log("handleGetProfileChangelog: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -897,7 +971,7 @@ export async function handleGetProfileSnapshot(changelogId: string): Promise<Api
     };
   } catch (error) {
     log("handleGetProfileSnapshot: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -914,14 +988,14 @@ export async function handleRefreshProfile(userId?: string): Promise<ApiResponse
     return {
       success: true,
       data: {
-        message: "Profile refresh queued",
+        message: "Profile refresh is not yet implemented",
         unanalyzedPrompts: unanalyzedCount,
-        note: "Profile will be updated when threshold is reached",
+        note: "This endpoint is a placeholder. Profile learning happens automatically.",
       },
     };
   } catch (error) {
     log("handleRefreshProfile: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -932,6 +1006,7 @@ export async function handleDetectTagMigration(): Promise<
     await ensureInit();
 
     // Restore migration completion state from persisted marker
+    const migrationProgress = getApiMigrationProgress();
     if (migrationProgress.total === 0) {
       try {
         const fs = await import("node:fs/promises");
@@ -941,14 +1016,14 @@ export async function handleDetectTagMigration(): Promise<
           await fs.readFile(path.join(dataDir, ".migration", "tag-migration.json"), "utf-8")
         );
         if (marker.completed) {
-          migrationProgress = {
+          setApiMigrationProgress({
             processed: marker.processed ?? 0,
             total: marker.processed ?? 0,
             currentBatch: 0,
             totalBatches: 0,
             isComplete: true,
             errors: [],
-          };
+          });
         }
       } catch {
         /* file doesn't exist yet — first run or fresh state */
@@ -956,55 +1031,32 @@ export async function handleDetectTagMigration(): Promise<
     }
 
     const untaggedCount = await memoryRepo.countUntagged();
+    const currentProgress = getApiMigrationProgress();
     if (untaggedCount === 0) {
       // Auto-reset stale migration state when no untagged memories remain
-      migrationProgress = {
+      setApiMigrationProgress({
         processed: 0,
         total: 0,
         currentBatch: 0,
         totalBatches: 0,
         isComplete: true,
         errors: [],
-      };
-      _migrationRunning = false;
-      cachedMigrationRecords = null;
+      });
+      setMigrationRunning(false);
+      setCachedMigrationRecords(null);
     }
     // Suppress nag when migration already ran and completed — AI failures
     // on remaining untagged memories won't be fixed by re-running.
-    if (migrationProgress.isComplete && migrationProgress.total > 0) {
+    if (currentProgress.isComplete && currentProgress.total > 0) {
       return { success: true, data: { needsMigration: false, count: untaggedCount } };
     }
 
     return { success: true, data: { needsMigration: untaggedCount > 0, count: untaggedCount } };
   } catch (error) {
-    return { success: false, error: String(error) };
+    logError("handleDetectTagMigration: error", { error: String(error) });
+    return { success: false, error: "Internal server error" };
   }
 }
-
-interface MigrationProgress {
-  processed: number;
-  total: number;
-  currentBatch: number;
-  totalBatches: number;
-  isComplete: boolean;
-  errors: string[];
-}
-
-// NOTE: This module-level state assumes a single-user / single-process model.
-// Concurrent requests from different sessions may race on the isComplete flag.
-// The guard below is a best-effort check — not a hard lock — which is acceptable
-// for the intended single-user usage pattern.
-let migrationProgress: MigrationProgress = {
-  processed: 0,
-  total: 0,
-  currentBatch: 0,
-  totalBatches: 0,
-  isComplete: true,
-  errors: [],
-};
-
-// ── Migration running guard: prevents concurrent batch calls (sequential calls are expected) ──
-let _migrationRunning = false;
 
 // ── Cleanup guard (best-effort lock; same single-user/single-process model as migrationProgress) ──
 let _cleanupInProgress = false;
@@ -1012,9 +1064,18 @@ let _cleanupInProgress = false;
 // ── Deduplicate guard (prevents concurrent dedup operations) ──
 let _dedupInProgress = false;
 
-// Cached record list for the current migration run – avoids reloading
-// every memory (including vectors) on each batch call.
-let cachedMigrationRecords: MemoryRecord[] | null = null;
+// ── Field-level input length limits ──
+const MAX_CONTENT_LENGTH = 100 * 1024; // 100KB
+const MAX_TAG_LENGTH = 200;
+const MAX_EMAIL_LENGTH = 320;
+
+// ── Auto-capture retry tracking (ISSUE-005) ──
+const autoCaptureAttempts = new Map<string, number>();
+const MAX_AUTO_CAPTURE_RETRIES = 3;
+
+// ── Profile learning retry tracking (ISSUE-019) ──
+const profileLearningAttempts = new Map<string, number>();
+const MAX_PROFILE_RETRIES = 3;
 
 export async function handleGetTagMigrationProgress(): Promise<
   ApiResponse<{ status: string; processed: number; total: number; errors: string[] }>
@@ -1036,7 +1097,9 @@ export async function handleRunTagMigrationBatch(
     };
   }
   // Fire and forget — the service loop handles retries
-  runTagMigration().catch(() => {});
+  runTagMigration().catch((e) => {
+    logError("handleRunTagMigrationBatch: tag migration failed to start", { error: String(e) });
+  });
   return { success: true, data: { processed: 0, total: 0, hasMore: true } };
 }
 
@@ -1054,6 +1117,7 @@ export async function handleContextInject(data: {
     context: string;
     memories: Array<{ id: string; summary: string; createdAt: string; similarity: number }>;
     profileInjected: boolean;
+    profileStatus?: string;
   }>
 > {
   try {
@@ -1101,6 +1165,7 @@ export async function handleContextInject(data: {
 
     const parts: string[] = ["[MEMORY]"];
     let profileInjected = false;
+    let profileStatus: string | undefined;
 
     if (CONFIG.injectProfile && data.userId) {
       const profile = await profileRepo.getActiveProfile(data.userId);
@@ -1135,7 +1200,12 @@ export async function handleContextInject(data: {
           }
           profileInjected = true;
         } catch {
-          // skip corrupt profile
+          // Corrupt profile data — report diagnostic instead of silently skipping
+          profileInjected = false;
+          profileStatus = "corrupt";
+          log("handleContextInject: corrupt profile data detected", {
+            userId: data.userId,
+          });
         }
       }
     }
@@ -1155,11 +1225,12 @@ export async function handleContextInject(data: {
         context,
         memories: memories.map(({ _metadata, ...rest }) => rest),
         profileInjected,
+        ...(profileStatus ? { profileStatus } : {}),
       },
     };
   } catch (error) {
     log("handleContextInject: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -1253,24 +1324,71 @@ export async function handleAutoCapture(data: {
     }
     const context = sections.join("\n");
 
+    // ── ISSUE-005: Retry counting to prevent infinite auto-capture loops ──
+    const attemptKey = data.promptMessageId;
+    const attempts = autoCaptureAttempts.get(attemptKey) ?? 0;
+    if (attempts >= MAX_AUTO_CAPTURE_RETRIES) {
+      log("handleAutoCapture: max retries exceeded, skipping prompt", {
+        promptMessageId: attemptKey,
+        attempts,
+      });
+      autoCaptureAttempts.delete(attemptKey);
+      return { success: true, data: { captured: true } };
+    }
+
     // Generate summary via AI
     const { generateSummary } = await import("./auto-capture-server.js");
-    const summaryResult = await generateSummary(context, data.sessionID, data.userPrompt);
+    let summaryResult: any;
+    try {
+      summaryResult = await generateSummary(context, data.sessionID, data.userPrompt);
+    } catch (genError) {
+      autoCaptureAttempts.set(attemptKey, attempts + 1);
+      if (attempts + 1 >= MAX_AUTO_CAPTURE_RETRIES) {
+        logError("handleAutoCapture: generateSummary failed after max retries", {
+          promptMessageId: attemptKey,
+          attempts: attempts + 1,
+          error: String(genError),
+        });
+        autoCaptureAttempts.delete(attemptKey);
+        return { success: true, data: { captured: true } };
+      }
+      log("handleAutoCapture: generateSummary failed, will retry", {
+        promptMessageId: attemptKey,
+        attempts: attempts + 1,
+        error: String(genError),
+      });
+      return { success: false, error: "Summary generation failed" };
+    }
 
     if (!summaryResult || summaryResult.type === "skip") {
+      autoCaptureAttempts.set(attemptKey, attempts + 1);
+      if (attempts + 1 >= MAX_AUTO_CAPTURE_RETRIES) {
+        log("handleAutoCapture: max retries reached after skip result", {
+          promptMessageId: attemptKey,
+          attempts: attempts + 1,
+        });
+        autoCaptureAttempts.delete(attemptKey);
+        return { success: true, data: { captured: true } };
+      }
       return { success: true, data: { captured: false } };
     }
 
+    // Clear retry tracker on success
+    autoCaptureAttempts.delete(attemptKey);
+
+    const tags = summaryResult.tags ?? [];
+
+    // Apply privacy filtering before storage
+    const filteredSummary = stripPrivateContent(summaryResult.summary);
+
     // Embed and store
     const embeddingInput =
-      summaryResult.tags.length > 0
-        ? `${summaryResult.summary}\nTags: ${summaryResult.tags.join(", ")}`
-        : summaryResult.summary;
+      tags.length > 0 ? `${filteredSummary}\nTags: ${tags.join(", ")}` : filteredSummary;
 
     const vector = await embeddingService.embedWithTimeout(embeddingInput, { kind: "content" });
     let tagsVector: Float32Array | undefined;
-    if (summaryResult.tags.length > 0) {
-      tagsVector = await embeddingService.embedWithTimeout(summaryResult.tags.join(", "), {
+    if (tags.length > 0) {
+      tagsVector = await embeddingService.embedWithTimeout(tags.join(", "), {
         kind: "tags",
       });
     }
@@ -1278,13 +1396,13 @@ export async function handleAutoCapture(data: {
     const id = `mem_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
     const now = Date.now();
 
-    await memoryRepo.insert({
+    const insertRecord: MemoryRecord = {
       id,
-      content: summaryResult.summary,
+      content: filteredSummary,
       vector,
       tagsVector,
       containerTag: data.projectTag,
-      tags: summaryResult.tags.length > 0 ? summaryResult.tags.join(",") : undefined,
+      tags: tags.length > 0 ? tags.join(",") : undefined,
       type: summaryResult.type as any,
       createdAt: now,
       updatedAt: now,
@@ -1300,7 +1418,39 @@ export async function handleAutoCapture(data: {
       projectPath: data.projectMetadata.projectPath,
       projectName: data.projectMetadata.projectName,
       gitRepoUrl: data.projectMetadata.gitRepoUrl,
-    });
+    };
+
+    // ── ISSUE-006: Retry logic for DB insert with exponential backoff ──
+    let insertSuccess = false;
+    const RETRY_DELAYS = [100, 200, 400];
+    for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt++) {
+      try {
+        await memoryRepo.insert(insertRecord);
+        insertSuccess = true;
+        break;
+      } catch (insertError) {
+        if (attempt < RETRY_DELAYS.length) {
+          log("handleAutoCapture: insert failed, retrying", {
+            attempt: attempt + 1,
+            delay: RETRY_DELAYS[attempt],
+            error: String(insertError),
+          });
+          await new Promise((resolve) => setTimeout(resolve, RETRY_DELAYS[attempt]));
+        } else {
+          // All retries exhausted — log summary content as recovery measure
+          logError("handleAutoCapture: DB insert failed after all retries, summary lost", {
+            memoryId: id,
+            summaryText: filteredSummary,
+            containerTag: data.projectTag,
+            error: String(insertError),
+          });
+        }
+      }
+    }
+
+    if (!insertSuccess) {
+      return { success: false, error: "Failed to persist auto-capture memory" };
+    }
 
     // Dual-write: also store in canonical tag registry
     if (summaryResult.tags.length > 0) {
@@ -1308,7 +1458,10 @@ export async function handleAutoCapture(data: {
         await tagRegistry.linkMemoryTags(id, summaryResult.tags);
       } catch (err) {
         logError("api-handlers: failed to link auto-capture tags in registry", {
+          memoryId: id,
+          tags: summaryResult.tags,
           error: String(err),
+          hint: "Memory tags saved to memories table but not to canonical tag registry. Data inconsistency may exist.",
         });
       }
     }
@@ -1366,11 +1519,47 @@ export async function handleUserProfileLearn(data: {
       await import("./user-profile-learner-server.js");
 
     const promptTexts = prompts.map((p) => p.content);
-    const updatedProfileData = await analyzeUserProfile(promptTexts, existingProfileJson);
+
+    // ── ISSUE-019: Retry counting for profile learning ──
+    const profileAttemptKey = userId;
+    const profileAttempts = profileLearningAttempts.get(profileAttemptKey) ?? 0;
+
+    let updatedProfileData: any;
+    try {
+      updatedProfileData = await analyzeUserProfile(promptTexts, existingProfileJson);
+    } catch (analyzeError) {
+      const newAttempts = profileAttempts + 1;
+      profileLearningAttempts.set(profileAttemptKey, newAttempts);
+
+      if (newAttempts >= MAX_PROFILE_RETRIES) {
+        logError(
+          "handleUserProfileLearn: analyzeUserProfile failed after max retries, marking prompts as captured",
+          {
+            userId,
+            attempts: newAttempts,
+            error: String(analyzeError),
+          }
+        );
+        await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+        profileLearningAttempts.delete(profileAttemptKey);
+        return { success: true, data: { updated: false } };
+      }
+
+      log("handleUserProfileLearn: analyzeUserProfile failed, will retry on next cycle", {
+        userId,
+        attempts: newAttempts,
+        error: String(analyzeError),
+      });
+      return { success: false, error: "Profile analysis failed" };
+    }
+
+    // Clear retry tracker on success
+    profileLearningAttempts.delete(profileAttemptKey);
 
     if (!updatedProfileData) {
       // AI returned nothing useful — mark prompts as analyzed so they don't loop
       await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+      profileLearningAttempts.delete(profileAttemptKey);
       return { success: true, data: { updated: false } };
     }
 
@@ -1416,7 +1605,7 @@ export async function handleUserProfileLearn(data: {
     return { success: true, data: { updated: true } };
   } catch (error) {
     log("handleUserProfileLearn: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -1486,7 +1675,7 @@ export async function handleCleanup(skipGuard = false): Promise<
     };
   } catch (error) {
     log("handleCleanup: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   } finally {
     if (!skipGuard) _cleanupInProgress = false;
   }
@@ -1498,6 +1687,7 @@ export async function handleDeduplicate(skipGuard = false): Promise<
     groupsChecked: number;
     duplicatesFound: number;
     duplicatesRemoved: number;
+    failedDeletes: string[];
   }>
 > {
   if (!skipGuard && _dedupInProgress) {
@@ -1521,6 +1711,7 @@ export async function handleDeduplicate(skipGuard = false): Promise<
           groupsChecked: 0,
           duplicatesFound: 0,
           duplicatesRemoved: 0,
+          failedDeletes: [],
         },
       };
     }
@@ -1551,6 +1742,7 @@ export async function handleDeduplicate(skipGuard = false): Promise<
     let totalChecked = 0;
     let duplicatesFound = 0;
     let duplicatesRemoved = 0;
+    const failedDeletes: string[] = [];
 
     for (const [, group] of groups) {
       if (group.length < 2) continue;
@@ -1606,8 +1798,10 @@ export async function handleDeduplicate(skipGuard = false): Promise<
             await memoryRepo.delete(group[indices[k]!]!.id);
             duplicatesRemoved++;
           } catch (e) {
+            const failedId = group[indices[k]!]!.id;
+            failedDeletes.push(failedId);
             log("handleDeduplicate: failed to delete duplicate", {
-              id: group[indices[k]!]!.id,
+              id: failedId,
               error: String(e),
             });
           }
@@ -1620,6 +1814,7 @@ export async function handleDeduplicate(skipGuard = false): Promise<
       groupsChecked: groups.size,
       duplicatesFound,
       duplicatesRemoved,
+      failedDeletes: failedDeletes.length,
     });
 
     return {
@@ -1629,11 +1824,12 @@ export async function handleDeduplicate(skipGuard = false): Promise<
         groupsChecked: groups.size,
         duplicatesFound,
         duplicatesRemoved,
+        failedDeletes,
       },
     };
   } catch (error) {
     logError("handleDeduplicate: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   } finally {
     if (!skipGuard) _dedupInProgress = false;
   }
@@ -1690,21 +1886,12 @@ export async function handleListUserProfiles(): Promise<
     };
   } catch (error) {
     log("handleListUserProfiles: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
 export async function handleResetTagMigration(): Promise<ApiResponse> {
-  migrationProgress = {
-    processed: 0,
-    total: 0,
-    currentBatch: 0,
-    totalBatches: 0,
-    isComplete: true,
-    errors: [],
-  };
-  _migrationRunning = false;
-  cachedMigrationRecords = null;
+  resetMigrationState();
   // Also delete the persisted marker file
   try {
     const fs = await import("node:fs/promises");
@@ -1792,7 +1979,7 @@ export async function handleClientConnect(data: {
     };
   } catch (error) {
     logError("handleClientConnect: error", { error: String(error) });
-    return { success: false, error: String(error) };
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -1815,7 +2002,8 @@ export async function handleSetClientNickname(data: {
 
     return { success: true, data: { nickname: result.nickname! } };
   } catch (error) {
-    return { success: false, error: String(error) };
+    logError("handleSetClientNickname: error", { error: String(error) });
+    return { success: false, error: "Internal server error" };
   }
 }
 
@@ -1852,6 +2040,7 @@ export async function handleGetClientStats(data: { clientId: string }): Promise<
       },
     };
   } catch (error) {
-    return { success: false, error: String(error) };
+    logError("handleGetClientStats: error", { error: String(error) });
+    return { success: false, error: "Internal server error" };
   }
 }

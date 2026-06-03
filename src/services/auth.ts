@@ -1,4 +1,5 @@
 // src/services/auth.ts
+import crypto from "node:crypto";
 
 export class AuthMiddleware {
   private readonly apiKey: string;
@@ -42,7 +43,13 @@ export class AuthMiddleware {
     if (parts.length !== 2 || parts[0] !== "Bearer") {
       return this.unauthorized("Invalid Authorization format. Use: Bearer <key>");
     }
-    if (!this.apiKey || parts[1] !== this.apiKey) {
+    if (!this.apiKey) {
+      return this.unauthorized("Invalid API key");
+    }
+    // Constant-time comparison to prevent timing side-channel attacks
+    const keyBuf = Buffer.from(parts[1]!);
+    const expectedBuf = Buffer.from(this.apiKey);
+    if (keyBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(keyBuf, expectedBuf)) {
       return this.unauthorized("Invalid API key");
     }
     return null;

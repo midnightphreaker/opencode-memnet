@@ -1,4 +1,3 @@
-version: "3.8"
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -6,7 +5,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-opencode}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-opencode}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
       POSTGRES_DB: ${POSTGRES_DB:-opencode_mem}
     ports:
       - "10.9.9.20:5433:5432"
@@ -20,7 +19,7 @@ services:
 
   server:
     build: .
-    image: git.phrk.org/pub/opencode-memnet:${OPENCODE-MEMNET_IMAGE_TAG:-latest}
+    image: git.phrk.org/pub/opencode-memnet:latest
     container_name: DO-NOT-TOUCH-OCM-server
     restart: unless-stopped
     ports:
@@ -35,7 +34,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       DEBUG: ${DEBUG:-false}
       CLIENT_WELCOME_BACK_THRESHOLD: ${CLIENT_WELCOME_BACK_THRESHOLD:-7d}
-      POSTGRES_URL: ${POSTGRES_URL:-postgresql://${POSTGRES_USER:-opencode}:${POSTGRES_PASSWORD:-opencode}@db:5432/${POSTGRES_DB:-opencode_mem}}
+      POSTGRES_URL: ${POSTGRES_URL:-postgresql://${POSTGRES_USER:-opencode}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-opencode_mem}}
       POSTGRES_SSL: ${POSTGRES_SSL:-false}
       POSTGRES_MAX_CONNECTIONS: ${POSTGRES_MAX_CONNECTIONS:-10}
       POSTGRES_IDLE_TIMEOUT_SECONDS: ${POSTGRES_IDLE_TIMEOUT_SECONDS:-30}

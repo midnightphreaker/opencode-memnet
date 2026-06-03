@@ -32,6 +32,7 @@ import {
   handleClientConnect,
   handleSetClientNickname,
   handleGetClientStats,
+  handleSetProfileNickname,
 } from "./api-handlers.js";
 import {
   enqueueJob,
@@ -47,6 +48,13 @@ interface WebServerConfig {
   host: string;
   enabled: boolean;
   allowedOrigin?: string;
+}
+
+// ── In-flight request counter for graceful shutdown ──
+let activeRequests = 0;
+
+export function getActiveRequestCount(): number {
+  return activeRequests;
 }
 
 export class WebServer {
@@ -140,12 +148,28 @@ export class WebServer {
     if (text.length > WebServer.MAX_BODY_SIZE) {
       throw Object.assign(new Error("Request body too large"), { status: 413 });
     }
-    return JSON.parse(text) as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch (e) {
+      if (e instanceof SyntaxError) {
+        throw Object.assign(new Error("Invalid JSON in request body"), { status: 400 });
+      }
+      throw e;
+    }
   }
 
   // --- HTTP request handling (inlined from web-server-worker.ts) ---
 
   private async handleRequest(req: Request): Promise<Response> {
+    activeRequests++;
+    try {
+      return await this._handleRequest(req);
+    } finally {
+      activeRequests--;
+    }
+  }
+
+  private async _handleRequest(req: Request): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
     const method = req.method;
@@ -173,7 +197,7 @@ export class WebServer {
       return new Response(null, { status: 204, headers });
     }
 
-    // Auth: all /api/* routes (except health) require API key unless auth is disabled
+    // Auth: all /api/* routes (except public health) require API key unless auth is disabled
     if (path.startsWith("/api/") && path !== "/api/health") {
       if (!this.disableWebuiAuth && !this.disableClientAuth && this.auth) {
         const authError = this.auth.authenticate(req);
@@ -205,8 +229,13 @@ export class WebServer {
       }
 
       if (path === "/api/health" && method === "GET") {
-        const { handleHealth } = await import("./health-handler.js");
-        return this.jsonResponse(handleHealth());
+        const { handleHealthPublic } = await import("./health-handler.js");
+        return this.jsonResponse(handleHealthPublic());
+      }
+
+      if (path === "/api/health/details" && method === "GET") {
+        const { handleHealthDetailed } = await import("./health-handler.js");
+        return this.jsonResponse(handleHealthDetailed());
       }
 
       if (path === "/api/tags" && method === "GET") {
@@ -265,6 +294,16 @@ export class WebServer {
         const page = parseInt(url.searchParams.get("page") || "1") || 1;
         const pageSize = parseInt(url.searchParams.get("pageSize") || "20") || 20;
         const userEmail = url.searchParams.get("userEmail") || undefined;
+
+        if (query && query.length > 1000) {
+          return new Response(
+            JSON.stringify({ success: false, error: "Query too long (max 1000 characters)" }),
+            {
+              status: 400,
+              headers: { "Content-Type": "application/json" },
+            }
+          );
+        }
 
         if (!query) {
           return this.jsonResponse({ success: false, error: "query parameter required" });
@@ -363,9 +402,15 @@ export class WebServer {
       }
 
       if (path === "/api/user-profile/refresh" && method === "POST") {
-        const body = await this.parseBody(req).catch(() => ({}));
+        const body = await this.parseBody(req);
         const userId = body.userId || undefined;
         const result = await handleRefreshProfile(userId);
+        return this.jsonResponse(result);
+      }
+
+      if (path === "/api/user-profile/nickname" && method === "PUT") {
+        const body = await this.parseBody(req);
+        const result = await handleSetProfileNickname(body);
         return this.jsonResponse(result);
       }
 
@@ -521,15 +566,18 @@ export class WebServer {
       }
 
       return new Response("Not Found", { status: 404 });
-    } catch (error) {
+    } catch (error: any) {
       const elapsed = Math.round(performance.now() - startTime);
-      logError(`✗ ${method} ${path} ${elapsed}ms error`, { error: String(error), elapsed });
+      const status = error?.status || 500;
+      if (status >= 500) {
+        logError(`✗ ${method} ${path} ${elapsed}ms error`, { error: String(error), elapsed });
+      }
       return this.jsonResponse(
         {
           success: false,
-          error: "Internal server error",
+          error: status >= 500 ? "Internal server error" : error?.message || "Bad request",
         },
-        500
+        status
       );
     }
   }

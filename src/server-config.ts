@@ -10,10 +10,14 @@ export function parseDurationString(input: string): number {
   if (!match) return 0;
   const n = parseInt(match[1]!);
   switch (match[2]) {
-    case "h": return n;
-    case "d": return n * 24;
-    case "w": return n * 24 * 7;
-    default: return 0;
+    case "h":
+      return n;
+    case "d":
+      return n * 24;
+    case "w":
+      return n * 24 * 7;
+    default:
+      return 0;
   }
 }
 
@@ -69,6 +73,8 @@ export interface ServerConfig {
   disableClientAuth: boolean;
   logLevel: "debug" | "info" | "warn" | "error";
   clientWelcomeBackThreshold: number;
+  /** @internal When true, tag migration is skipped because LLM config is missing */
+  _tagMigrationDisabled?: boolean;
 }
 
 function getEmbeddingDimensions(model: string): number {
@@ -170,7 +176,13 @@ export function getServerConfig(): ServerConfig {
 
 export function validateServerConfig(config: ServerConfig): string[] {
   const errors: string[] = [];
-  if (!config.postgres.url) errors.push("POSTGRES_URL is required");
+  if (!config.postgres.url?.trim()) errors.push("POSTGRES_URL is required");
+  else if (
+    !config.postgres.url.startsWith("postgresql://") &&
+    !config.postgres.url.startsWith("postgres://")
+  ) {
+    errors.push("POSTGRES_URL must start with postgresql:// or postgres://");
+  }
   if (!config.embeddingApiUrl) errors.push("EMBEDDING_API_URL is required");
   if (!config.embeddingModel) errors.push("EMBEDDING_MODEL is required");
   if (!config.embeddingApiKey) errors.push("EMBEDDING_API_KEY is required (or OPENAI_API_KEY)");
@@ -181,5 +193,16 @@ export function validateServerConfig(config: ServerConfig): string[] {
       );
     }
   }
+
+  // Validate LLM provider config for tag migration
+  if (!config.memoryModel || !config.memoryApiUrl) {
+    console.warn(
+      "[opencode-memnet] [WARN] MEMORY_MODEL and/or MEMORY_API_URL are not configured. LLM tagging will be disabled."
+    );
+    config._tagMigrationDisabled = true;
+  } else {
+    config._tagMigrationDisabled = false;
+  }
+
   return errors;
 }

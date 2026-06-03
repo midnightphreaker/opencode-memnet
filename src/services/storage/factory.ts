@@ -161,6 +161,9 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
   async delete(memoryId: string): Promise<boolean> {
     return (await this.repo()).delete(memoryId);
   }
+  async deleteMany(ids: string[]): Promise<number> {
+    return (await this.repo()).deleteMany(ids);
+  }
   async update(record: MemoryRecord): Promise<void> {
     await (await this.repo()).update(record);
   }
@@ -207,6 +210,9 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
   async countUntagged(): Promise<number> {
     return (await this.repo()).countUntagged();
   }
+  async getUntaggedProjectMemories(limit?: number, offset?: number): Promise<MemoryRecord[]> {
+    return (await this.repo()).getUntaggedProjectMemories(limit, offset);
+  }
   async updateTagsAndVectors(
     id: string,
     tags: string,
@@ -215,6 +221,20 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
     updatedAt: number
   ): Promise<void> {
     await (await this.repo()).updateTagsAndVectors(id, tags, vector, tagsVector, updatedAt);
+  }
+  async updateTagsOnly(id: string, tags: string, updatedAt: number): Promise<void> {
+    await (await this.repo()).updateTagsOnly(id, tags, updatedAt);
+  }
+  async updateVectorsOnly(
+    id: string,
+    vector: Float32Array,
+    tagsVector: Float32Array | undefined,
+    updatedAt: number
+  ): Promise<void> {
+    await (await this.repo()).updateVectorsOnly(id, vector, tagsVector, updatedAt);
+  }
+  async getMemoriesWithoutVectors(limit?: number, offset?: number): Promise<MemoryRecord[]> {
+    return (await this.repo()).getMemoriesWithoutVectors(limit, offset);
   }
 }
 
@@ -388,6 +408,10 @@ class PostgresUserProfileRepositoryLazy implements UserProfileRepository {
       maxPatterns: CONFIG.userProfileMaxPatterns,
       maxWorkflows: CONFIG.userProfileMaxWorkflows,
     });
+  }
+
+  async setNickname(userId: string, nickname: string): Promise<boolean> {
+    return (await this.repo()).setNickname(userId, nickname);
   }
 }
 

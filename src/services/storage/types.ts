@@ -40,6 +40,7 @@ export interface MemoryRow {
 
 export interface SearchResult {
   id: string;
+  /** Memory text content. Named "memory" for search results but semantically identical to MemoryRow.content */
   memory: string;
   similarity: number;
   tags?: string[];
@@ -93,6 +94,7 @@ export interface MemoryRepository {
 
   insert(record: MemoryRecord): Promise<void>;
   delete(memoryId: string): Promise<boolean>;
+  deleteMany(ids: string[]): Promise<number>;
   update(record: MemoryRecord): Promise<void>;
   getById(memoryId: string): Promise<MemoryRow | null>;
 
@@ -103,6 +105,7 @@ export interface MemoryRepository {
     scopeHash: string;
     containerTag: string;
     includeAllContainers?: boolean;
+    containerTagFilter?: string;
     limit: number;
     userEmail?: string;
   }): Promise<MemoryRow[]>;
@@ -151,6 +154,13 @@ export interface MemoryRepository {
   countUntagged(): Promise<number>;
 
   /**
+   * Returns untagged project-scoped memories with pagination, including
+   * their raw vectors. Used by tag-migration to process memories that
+   * need LLM-generated tags.
+   */
+  getUntaggedProjectMemories(limit?: number, offset?: number): Promise<MemoryRecord[]>;
+
+  /**
    * Update the tags column, re-embed and overwrite vector/tags_vector blobs,
    * set updated_at, and refresh the vector backend index.
    * Used by tag-migration batch processing.
@@ -162,6 +172,30 @@ export interface MemoryRepository {
     tagsVector: Float32Array | undefined,
     updatedAt: number
   ): Promise<void>;
+
+  /**
+   * Update only the tags column (no vectors). Used when tags succeed
+   * but embedding/vector generation fails, so the memory is marked as
+   * tagged and won't be picked up again for tag generation.
+   */
+  updateTagsOnly(id: string, tags: string, updatedAt: number): Promise<void>;
+
+  /**
+   * Update only the vector/tags_vector columns (tags must already be set).
+   * Used as a separate pass after tags are written.
+   */
+  updateVectorsOnly(
+    id: string,
+    vector: Float32Array,
+    tagsVector: Float32Array | undefined,
+    updatedAt: number
+  ): Promise<void>;
+
+  /**
+   * Get memories that have tags but missing vector/tagsVector columns.
+   * Used for the separate vector-generation pass.
+   */
+  getMemoriesWithoutVectors(limit?: number, offset?: number): Promise<MemoryRecord[]>;
 }
 
 // ── User prompt repository interface ──
@@ -228,6 +262,7 @@ export interface UserProfileRow {
   lastAnalyzedAt: number;
   totalPromptsAnalyzed: number;
   isActive: boolean;
+  nickname?: string | null;
 }
 
 export interface UserProfileChangelogRow {
@@ -271,6 +306,7 @@ export interface UserProfileRepository {
    * confidence boosting, deduplication, and cap enforcement.
    */
   mergeProfileData(existing: UserProfileData, updates: Partial<UserProfileData>): UserProfileData;
+  setNickname(userId: string, nickname: string): Promise<boolean>;
 }
 
 // ── AI session repository interface ──
@@ -330,17 +366,20 @@ export interface AISessionRepository {
 export interface ClientRow {
   id: string;
   nickname: string | null;
-  firstSeen: number;  // unix epoch ms
-  lastSeen: number;   // unix epoch ms
+  firstSeen: number; // unix epoch ms
+  lastSeen: number; // unix epoch ms
   clientMetadata: Record<string, unknown>;
-  createdAt: number;  // unix epoch ms
-  updatedAt: number;  // unix epoch ms
+  createdAt: number; // unix epoch ms
+  updatedAt: number; // unix epoch ms
 }
 
 export interface ClientRepository {
   initialize(): Promise<void>;
   close(): Promise<void>;
-  upsertClient(id: string, metadata: Record<string, any>): Promise<{ firstTime: boolean; previousLastSeen: number | null; row: ClientRow }>;
+  upsertClient(
+    id: string,
+    metadata: Record<string, any>
+  ): Promise<{ firstTime: boolean; previousLastSeen: number | null; row: ClientRow }>;
   setNickname(id: string, nickname: string): Promise<ClientRow | null>;
   getClient(id: string): Promise<ClientRow | null>;
   getClientStats(id: string): Promise<{

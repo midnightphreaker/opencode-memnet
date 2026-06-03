@@ -1,6 +1,6 @@
 import type { PluginInput } from "@opencode-ai/plugin";
 import { getTags } from "./tags.js";
-import { log } from "./logger.js";
+import { log, logDebug } from "./logger.js";
 import { CONFIG } from "../config.js";
 import { createUserPromptRepository, createUserProfileRepository } from "./storage/factory.js";
 import type {
@@ -92,7 +92,9 @@ export async function performUserProfileLearning(
             duration: 3000,
           },
         })
-        .catch(() => {});
+        .catch((e) => {
+          logDebug("toast failed", { error: String(e) });
+        });
     }
   } finally {
     isLearningRunning = false;

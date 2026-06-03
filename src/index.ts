@@ -95,7 +95,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                 duration: 5000,
               },
             })
-            .catch(() => {});
+            .catch((e) => {
+              logDebug("toast failed", { error: String(e) });
+            });
         }
       })
       .catch((error) => {
@@ -111,7 +113,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                 duration: 5000,
               },
             })
-            .catch(() => {});
+            .catch((e) => {
+              logDebug("toast failed", { error: String(e) });
+            });
         }
       });
   }
@@ -224,7 +228,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                 duration: 5000,
               },
             })
-            .catch(() => {});
+            .catch((e) => {
+              logDebug("toast failed", { error: String(e) });
+            });
         }
       }
     },
@@ -529,7 +535,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                   duration: 3000,
                 },
               })
-              .catch(() => {});
+              .catch((e) => {
+                logDebug("toast failed", { error: String(e) });
+              });
           }
 
           logInfo("Compaction memory injected", {

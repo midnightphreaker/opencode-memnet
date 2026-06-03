@@ -53,7 +53,7 @@ if [ -d "${INSTALL_DIR}/.git" ]; then
   git -C "${INSTALL_DIR}" pull --ff-only
 else
   echo "[opencode-memnet] Cloning repository..."
-  git clone --depth 1 https://github.com/tickernelz/opencode-mem.git "${INSTALL_DIR}"
+  git clone --depth 1 https://git.phrk.org/pub/opencode-memnet.git "${INSTALL_DIR}"
 fi
 
 # Create .env file

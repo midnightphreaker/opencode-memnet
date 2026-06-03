@@ -34,6 +34,7 @@ export interface ClientConfig {
     defaultScope: "project" | "all-projects";
   };
   logLevel?: "debug" | "info" | "warn" | "error";
+  nickname?: string;
 }
 
 const CLIENT_DEFAULTS: ClientConfig = {
@@ -78,6 +79,7 @@ function buildClientConfig(fileConfig: Partial<ClientConfig>): ClientConfig {
       defaultScope: fileConfig.memory?.defaultScope ?? CLIENT_DEFAULTS.memory.defaultScope,
     },
     logLevel: fileConfig.logLevel ?? CLIENT_DEFAULTS.logLevel,
+    nickname: fileConfig.nickname,
   };
 }
 

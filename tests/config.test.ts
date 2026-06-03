@@ -68,8 +68,8 @@ describe("config", () => {
     });
 
     it("should expose memory scope config", () => {
-      const defaultScope = CONFIG.memory.defaultScope ?? "project";
-      expect(["project", "all-projects"]).toContain(defaultScope);
+      expect(CONFIG.memory).toBeDefined();
+      expect(typeof CONFIG.memory.defaultScope).toBe("string");
     });
 
     it("should have user profile settings as numbers", () => {

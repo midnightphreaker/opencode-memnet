@@ -18,7 +18,12 @@ const state = {
   activeProfileId: localStorage.getItem("opencode-memnet-active-profile") || "",
   panelViewUserId: "",
   authDisabled: false,
-  lastJobStatus: { activity: { active: false, text: "Idle", queuedCount: 0 }, current: null, queued: [], history: [] },
+  lastJobStatus: {
+    activity: { active: false, text: "Idle", queuedCount: 0 },
+    current: null,
+    queued: [],
+    history: [],
+  },
   jobPollTimer: null,
   jobPollInterval: 5000,
 };
@@ -586,9 +591,7 @@ function editMemory(id) {
   editType.value = memory.memoryType || "";
 
   // Pre-populate tags
-  const tagsValue = Array.isArray(memory.tags)
-    ? memory.tags.join(", ")
-    : (memory.tags || "");
+  const tagsValue = Array.isArray(memory.tags) ? memory.tags.join(", ") : memory.tags || "";
   document.getElementById("edit-tags").value = tagsValue;
 
   // Pre-populate and populate project tag dropdown
@@ -806,8 +809,8 @@ function truncateText(text, maxLength) {
 function isJobTypeActive(type) {
   return (
     (state.lastJobStatus.current?.type === type &&
-     state.lastJobStatus.current?.status === "running") ||
-    state.lastJobStatus.queued.some(j => j.type === type)
+      state.lastJobStatus.current?.status === "running") ||
+    state.lastJobStatus.queued.some((j) => j.type === type)
   );
 }
 
@@ -844,10 +847,7 @@ async function runCleanup() {
 async function runDeduplication() {
   if (isJobTypeActive("deduplicate_memories")) return;
 
-  const confirmed = await openConfirmModal(
-    "modal-confirm-dedup-title",
-    "modal-confirm-dedup-desc"
-  );
+  const confirmed = await openConfirmModal("modal-confirm-dedup-title", "modal-confirm-dedup-desc");
   if (!confirmed) return;
 
   const result = await fetchAPI("/api/deduplicate", { method: "POST" });
@@ -870,11 +870,12 @@ function updateStatusBar(data) {
   indicator.classList.toggle("active", active);
 
   if (!data.activity.active) {
-    const recentFailed = data.history?.find(j => j.status === "failed");
+    const recentFailed = data.history?.find((j) => j.status === "failed");
     if (recentFailed) {
-      textEl.textContent = recentFailed.type === "cleanup_memories"
-        ? t("job-status-cleanup-failed")
-        : t("job-status-dedup-failed");
+      textEl.textContent =
+        recentFailed.type === "cleanup_memories"
+          ? t("job-status-cleanup-failed")
+          : t("job-status-dedup-failed");
     } else {
       textEl.textContent = t("job-status-idle");
     }
@@ -902,7 +903,7 @@ function updateButtonStates(data) {
 function handleJobTransitions(prev, curr) {
   if (prev.current && prev.current.status === "running") {
     const prevJobId = prev.current.id;
-    const completedJob = curr.history.find(j => j.id === prevJobId);
+    const completedJob = curr.history.find((j) => j.id === prevJobId);
 
     if (completedJob) {
       if (completedJob.status === "completed") {
@@ -944,7 +945,6 @@ async function pollJobStatus() {
     updateButtonStates(data);
 
     adjustPollInterval(data.activity.active);
-
   } catch (e) {
     console.warn("Job poll error:", e);
   }
@@ -995,9 +995,7 @@ function renderCurrentJob(job) {
     return;
   }
   const label = jobTypeLabel(job.type);
-  const progress = job.totalItems
-    ? `${job.processedItems || 0}/${job.totalItems}`
-    : "";
+  const progress = job.totalItems ? `${job.processedItems || 0}/${job.totalItems}` : "";
   container.innerHTML = `
     <div class="drawer-job-card running">
       <div class="drawer-job-header">
@@ -1018,13 +1016,17 @@ function renderQueuedJobs(jobs) {
     container.innerHTML = `<div class="drawer-empty">${escapeHtml(t("drawer-no-queued"))}</div>`;
     return;
   }
-  container.innerHTML = jobs.map(j => `
+  container.innerHTML = jobs
+    .map(
+      (j) => `
     <div class="drawer-job-card">
       <div class="drawer-job-header">
         <span class="badge badge-job-type">${escapeHtml(jobTypeLabel(j.type))}</span>
       </div>
       <div class="drawer-job-time">${formatDate(j.createdAt)}</div>
-    </div>`).join("");
+    </div>`
+    )
+    .join("");
 }
 
 function renderHistoryJobs(jobs) {
@@ -1033,11 +1035,12 @@ function renderHistoryJobs(jobs) {
     container.innerHTML = `<div class="drawer-empty">${escapeHtml(t("drawer-no-history"))}</div>`;
     return;
   }
-  container.innerHTML = jobs.map(j => {
-    const isFailed = j.status === "failed";
-    const statusText = isFailed ? t("drawer-job-failed") : t("drawer-job-completed");
-    const statusClass = isFailed ? "failed" : "completed";
-    return `
+  container.innerHTML = jobs
+    .map((j) => {
+      const isFailed = j.status === "failed";
+      const statusText = isFailed ? t("drawer-job-failed") : t("drawer-job-completed");
+      const statusClass = isFailed ? "failed" : "completed";
+      return `
       <div class="drawer-job-card ${statusClass}">
         <div class="drawer-job-header">
           <span class="badge badge-job-type">${escapeHtml(jobTypeLabel(j.type))}</span>
@@ -1047,7 +1050,8 @@ function renderHistoryJobs(jobs) {
         ${isFailed && j.error ? `<div class="drawer-job-error">${escapeHtml(truncateText(j.error, 120))}</div>` : ""}
         <div class="drawer-job-time">${formatDate(j.completedAt || j.createdAt)}</div>
       </div>`;
-  }).join("");
+    })
+    .join("");
 }
 
 function startAutoRefresh() {
@@ -1518,8 +1522,12 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("cleanup-btn").addEventListener("click", runCleanup);
   document.getElementById("deduplicate-btn").addEventListener("click", runDeduplication);
 
-  document.getElementById("confirm-modal-cancel").addEventListener("click", () => closeConfirmModal(false));
-  document.getElementById("confirm-modal-confirm").addEventListener("click", () => closeConfirmModal(true));
+  document
+    .getElementById("confirm-modal-cancel")
+    .addEventListener("click", () => closeConfirmModal(false));
+  document
+    .getElementById("confirm-modal-confirm")
+    .addEventListener("click", () => closeConfirmModal(true));
   document.getElementById("confirm-modal").addEventListener("click", (e) => {
     if (e.target.id === "confirm-modal") closeConfirmModal(false);
   });
@@ -1585,7 +1593,37 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   }
 
-  document.getElementById("settings-toggle").addEventListener("click", () => {
+  async function loadNickname() {
+    try {
+      const result = await fetchAPI("/api/user-profile");
+      if (result.success && result.data && result.data.exists) {
+        document.getElementById("settings-nickname").value = result.data.nickname || "";
+      }
+    } catch (e) {
+      console.warn("Failed to load nickname:", e);
+    }
+  }
+
+  async function saveNickname() {
+    const nickname = document.getElementById("settings-nickname").value.trim();
+    try {
+      const result = await fetchAPI("/api/user-profile/nickname", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nickname }),
+      });
+      if (result.success) {
+        showToast(t("nickname-updated"), "success");
+      } else {
+        showToast(result.error || t("nickname-update-failed"), "error");
+      }
+    } catch (e) {
+      showToast(t("nickname-update-failed"), "error");
+      console.warn("Failed to save nickname:", e);
+    }
+  }
+
+  document.getElementById("settings-toggle").addEventListener("click", async () => {
     const panel = document.getElementById("settings-panel");
     panel.classList.toggle("hidden");
     if (!panel.classList.contains("hidden")) {
@@ -1593,11 +1631,12 @@ document.addEventListener("DOMContentLoaded", async () => {
         document.getElementById("settings-apikey").value = state.authKey;
         document.getElementById("settings-apikey").focus();
       }
-      if (state.authKey || state.authDisabled) populateProfileDropdown();
+      if (state.authKey || state.authDisabled) await populateProfileDropdown();
       if (state.activeProfileId && state.memories.length === 0) {
         loadMemories();
         loadStats();
       }
+      await loadNickname();
     }
   });
   document.getElementById("settings-close").addEventListener("click", () => {
@@ -1632,6 +1671,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Try to load profiles and set the default
     await populateProfileDropdown();
 
+    await saveNickname();
+
     document.getElementById("settings-panel").classList.add("hidden");
     loadTags();
     loadMemories();
@@ -1660,8 +1701,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       document.getElementById("settings-profile").disabled = false;
       // Auto-load profiles since we have access
       populateProfileDropdown();
-      // Hide settings cog — all panel settings (API key, profile) are auth-related
-      document.getElementById("settings-toggle").style.display = "none";
+      // Hide auth-related fields (API key, profile), keep nickname accessible
+      document.getElementById("settings-apikey").closest(".settings-field").style.display = "none";
+      document.getElementById("settings-profile").closest(".settings-field").style.display = "none";
+      // When auth is disabled, update title and hide localStorage note
+      document.querySelector('#settings-panel h3[data-i18n="settings-title"]').textContent =
+        "Settings";
+      document.querySelector(".settings-note").style.display = "none";
     }
   } catch (e) {
     console.warn("Auth check failed:", e);

@@ -30,6 +30,11 @@ export interface ClientConfig {
     maxAgeDays?: number;
     injectOn: "first" | "always";
   };
+  customMessage: {
+    enabled: boolean;
+    frequency: "first" | "always";
+    text: string;
+  };
   memory: {
     defaultScope: "project" | "all-projects";
   };
@@ -49,6 +54,11 @@ const CLIENT_DEFAULTS: ClientConfig = {
     excludeCurrentSession: true,
     maxAgeDays: undefined,
     injectOn: "first",
+  },
+  customMessage: {
+    enabled: false,
+    frequency: "first",
+    text: "",
   },
   memory: {
     defaultScope: "project",
@@ -74,6 +84,12 @@ function buildClientConfig(fileConfig: Partial<ClientConfig>): ClientConfig {
       injectOn: (fileConfig.chatMessage?.injectOn ?? CLIENT_DEFAULTS.chatMessage.injectOn) as
         | "first"
         | "always",
+    },
+    customMessage: {
+      enabled: fileConfig.customMessage?.enabled ?? CLIENT_DEFAULTS.customMessage.enabled,
+      frequency: (fileConfig.customMessage?.frequency ??
+        CLIENT_DEFAULTS.customMessage.frequency) as "first" | "always",
+      text: fileConfig.customMessage?.text ?? CLIENT_DEFAULTS.customMessage.text,
     },
     memory: {
       defaultScope: fileConfig.memory?.defaultScope ?? CLIENT_DEFAULTS.memory.defaultScope,
@@ -114,6 +130,9 @@ export function initClientConfig(directory: string): void {
   }
   if (globalConfig.memory && projectConfig.memory) {
     merged.memory = { ...globalConfig.memory, ...projectConfig.memory };
+  }
+  if (globalConfig.customMessage && projectConfig.customMessage) {
+    merged.customMessage = { ...globalConfig.customMessage, ...projectConfig.customMessage };
   }
   CLIENT_CONFIG = buildClientConfig(merged);
   // Initialize logger with config level (env var fallback handled inside initLogger)

@@ -463,6 +463,13 @@ Full configuration with defaults:
     "injectOn": "first", // "first" = first message only, "always" = every message
   },
 
+  // Custom message injection
+  "customMessage": {
+    "enabled": false,
+    "frequency": "first", // "first" = once per session, "always" = every user message
+    "text": "",
+  },
+
   // Default memory scope
   "memory": {
     "defaultScope": "project", // "project" or "all-projects"
@@ -485,6 +492,9 @@ Full configuration with defaults:
 | `chatMessage.excludeCurrentSession` | `true`                  | Exclude current session from context           |
 | `chatMessage.maxAgeDays`            | --                      | Max age in days for context memories           |
 | `chatMessage.injectOn`              | `"first"`               | When to inject: `"first"` or `"always"`        |
+| `customMessage.enabled`             | `false`                 | Inject a configured custom message             |
+| `customMessage.frequency`           | `"first"`               | When to inject: `"first"` or `"always"`        |
+| `customMessage.text`                | `""`                    | Custom text sent to the model                  |
 | `memory.defaultScope`               | `"project"`             | Default scope: `"project"` or `"all-projects"` |
 | `logLevel`                          | `info`                  | Log level: `debug`, `info`, `warn`, `error`    |
 

@@ -112,16 +112,22 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   }
   let idleTimeout: Timer | null = null;
   let captureInProgress = false;
+  const customMessageInjectedSessions = new Set<string>();
 
   return {
     "chat.message": async (input, output) => {
-      if (!isClientConfigured() || !CLIENT_CONFIG.chatMessage.enabled) return;
+      if (!isClientConfigured()) return;
+      const customMessageText = CLIENT_CONFIG.customMessage?.text ?? "";
+      const hasCustomMessage =
+        CLIENT_CONFIG.customMessage?.enabled === true && customMessageText.trim().length > 0;
+      if (!CLIENT_CONFIG.chatMessage.enabled && !hasCustomMessage) return;
       logDebug("chat.message hook fired", {
         sessionId: input.sessionID,
         partsCount: output.parts.length,
         partTypes: output.parts.map((p: any) => p.type),
         enabled: CLIENT_CONFIG.chatMessage.enabled,
         maxMemories: CLIENT_CONFIG.chatMessage.maxMemories,
+        customMessageEnabled: hasCustomMessage,
       });
 
       try {
@@ -131,6 +137,30 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         if (textParts.length === 0) return;
         const userMessage = textParts.map((p) => p.text).join("\n");
         if (!userMessage.trim()) return;
+
+        if (
+          hasCustomMessage &&
+          (CLIENT_CONFIG.customMessage?.frequency === "always" ||
+            !customMessageInjectedSessions.has(input.sessionID))
+        ) {
+          const customPart: Part = {
+            id: `prt-custom-message-${Date.now()}`,
+            sessionID: input.sessionID,
+            messageID: output.message.id,
+            type: "text",
+            text: customMessageText,
+            synthetic: true,
+          } as any;
+          output.parts.push(customPart);
+          customMessageInjectedSessions.add(input.sessionID);
+          logDebug("Custom message injected", {
+            sessionId: input.sessionID,
+            frequency: CLIENT_CONFIG.customMessage?.frequency,
+            messageLength: customMessageText.length,
+          });
+        }
+
+        if (!CLIENT_CONFIG.chatMessage.enabled) return;
 
         const ctxResult = await client.getContext({
           sessionID: input.sessionID,

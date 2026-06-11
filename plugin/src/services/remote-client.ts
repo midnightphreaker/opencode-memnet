@@ -3,11 +3,17 @@ import { CLIENT_CONFIG } from "../../../shared/client-config.js";
 import { log, logDebug, logWarn } from "../../../shared/logger.js";
 
 const DEFAULT_TIMEOUT = 30_000;
+const DEFAULT_AUTO_CAPTURE_TIMEOUT = 180_000;
 
 interface ApiResponse<T = any> {
   success: boolean;
   data?: T;
   error?: string;
+}
+
+interface RequestOptions {
+  timeoutMs?: number;
+  logTimeoutAsDebug?: boolean;
 }
 
 export class RemoteMemoryClient {
@@ -33,7 +39,8 @@ export class RemoteMemoryClient {
     method: string,
     path: string,
     body?: unknown,
-    query?: Record<string, string | undefined>
+    query?: Record<string, string | undefined>,
+    options: RequestOptions = {}
   ): Promise<ApiResponse<T>> {
     const url = new URL(`${this.baseUrl}${path}`);
     if (query) {
@@ -42,8 +49,9 @@ export class RemoteMemoryClient {
       }
     }
 
+    const timeoutMs = options.timeoutMs ?? this.timeout;
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), this.timeout);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       logDebug(`→ ${method} ${path}`, {
@@ -89,13 +97,22 @@ export class RemoteMemoryClient {
       return json;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      logWarn(`RemoteMemoryClient: request failed`, {
+      const isAbort =
+        error instanceof Error &&
+        (error.name === "AbortError" ||
+          message.toLowerCase().includes("aborted") ||
+          message.toLowerCase().includes("abort"));
+      const logFn = isAbort && options.logTimeoutAsDebug ? logDebug : logWarn;
+      logFn(`RemoteMemoryClient: request failed`, {
         method,
         path,
         url: url.toString(),
-        error: message,
+        error: isAbort ? `Request timed out after ${timeoutMs}ms` : message,
       });
-      return { success: false, error: message };
+      return {
+        success: false,
+        error: isAbort ? `Request timed out after ${timeoutMs}ms` : message,
+      };
     } finally {
       clearTimeout(timeoutId);
     }
@@ -124,7 +141,10 @@ export class RemoteMemoryClient {
     userPrompt: string;
     promptMessageId: string;
   }): Promise<ApiResponse<{ captured: boolean; memoryId?: string }>> {
-    return this.request("POST", "/api/auto-capture", params);
+    return this.request("POST", "/api/auto-capture", params, undefined, {
+      timeoutMs: DEFAULT_AUTO_CAPTURE_TIMEOUT,
+      logTimeoutAsDebug: true,
+    });
   }
 
   // ─── Memory Search ──────────────────────────────────────
@@ -142,7 +162,7 @@ export class RemoteMemoryClient {
   }> {
     const res = await this.request("GET", "/api/search", undefined, {
       q: query,
-      tag: containerTag,
+      tag: scope === "all-projects" ? undefined : containerTag,
       pageSize: "20",
     });
     if (!res.success) return { success: false, error: res.error, results: [], total: 0, timing: 0 };
@@ -190,7 +210,7 @@ export class RemoteMemoryClient {
     scope: string = "project"
   ): Promise<{ success: boolean; error?: string; memories: any[]; pagination: any }> {
     const res = await this.request("GET", "/api/memories", undefined, {
-      tag: containerTag,
+      tag: scope === "all-projects" ? undefined : containerTag,
       pageSize: String(limit),
     });
     if (!res.success) return { success: false, error: res.error, memories: [], pagination: {} };

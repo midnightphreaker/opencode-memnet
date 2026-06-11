@@ -11,21 +11,13 @@ afterEach(() => {
   }
 });
 
-const indexUrl = new URL("../src/index.js", import.meta.url).href;
-const clientUrl = new URL("../src/services/client.js", import.meta.url).href;
-const configUrl = new URL("../src/config.js", import.meta.url).href;
-const tagsUrl = new URL("../src/services/tags.js", import.meta.url).href;
-const contextUrl = new URL("../src/services/context.js", import.meta.url).href;
-const privacyUrl = new URL("../src/services/privacy.js", import.meta.url).href;
-const autoCaptureUrl = new URL("../src/services/auto-capture.js", import.meta.url).href;
-const learningUrl = new URL("../src/services/user-memory-learning.js", import.meta.url).href;
-const promptManagerUrl = new URL(
-  "../src/services/user-prompt/user-prompt-manager.js",
-  import.meta.url
-).href;
-const webServerUrl = new URL("../src/services/web-server.js", import.meta.url).href;
-const loggerUrl = new URL("../src/services/logger.js", import.meta.url).href;
-const languageUrl = new URL("../src/services/language-detector.js", import.meta.url).href;
+const indexUrl = new URL("../plugin/src/index-remote.js", import.meta.url).href;
+const remoteClientUrl = new URL("../plugin/src/services/remote-client.js", import.meta.url).href;
+const clientIdentityUrl = new URL("../plugin/src/client-identity.js", import.meta.url).href;
+const clientConfigUrl = new URL("../shared/client-config.js", import.meta.url).href;
+const tagsUrl = new URL("../shared/tags.js", import.meta.url).href;
+const privacyUrl = new URL("../shared/privacy.js", import.meta.url).href;
+const loggerUrl = new URL("../shared/logger.js", import.meta.url).href;
 
 type ScenarioInput = {
   defaultScope?: "project" | "all-projects";
@@ -43,11 +35,26 @@ import { mock } from "bun:test";
 const searchCalls = [];
 let lastListScope;
 const defaultScope = ${JSON.stringify(input.defaultScope)};
+const clientConfig = {
+  serverUrl: "http://localhost:4747",
+  apiKey: "test-key",
+  autoCaptureEnabled: false,
+  showAutoCaptureToasts: false,
+  showErrorToasts: false,
+  chatMessage: {
+    enabled: false,
+    maxMemories: 3,
+    excludeCurrentSession: true,
+    injectOn: "first",
+  },
+  memory: {
+    defaultScope: defaultScope ?? "project",
+  },
+};
 
-mock.module(${JSON.stringify(clientUrl)}, () => ({
-  memoryClient: {
-    warmup: async () => {},
-    isReady: async () => true,
+mock.module(${JSON.stringify(remoteClientUrl)}, () => ({
+  getRemoteClient: () => ({
+    clientConnect: async () => ({ success: true, data: null }),
     searchMemories: async (...args) => {
       searchCalls.push(args);
       return { success: true, results: [], total: 0, timing: 0 };
@@ -61,40 +68,44 @@ mock.module(${JSON.stringify(clientUrl)}, () => ({
         scope,
       };
     },
-    addMemory: async () => ({ success: true, id: "m1" }),
+    addMemory: async () => ({ success: true, data: { id: "m1" } }),
     deleteMemory: async () => ({ success: true }),
+    getUserProfile: async () => ({ success: true, data: null }),
+    autoCapture: async () => ({ success: true, data: { captured: false } }),
     searchMemoriesBySessionID: async () => ({ success: true, results: [], total: 0, timing: 0 }),
-    close() {},
-  },
+  }),
 }));
 
-mock.module(${JSON.stringify(configUrl)}, () => ({
-  CONFIG: {
-    autoCaptureLanguage: "auto",
-    memory: { defaultScope },
-  },
-  initConfig: () => {},
-  isConfigured: () => true,
+mock.module(${JSON.stringify(clientIdentityUrl)}, () => ({
+  getClientId: () => "client-test-id",
+  getClientMetadata: () => ({ platform: "test" }),
+}));
+
+mock.module(${JSON.stringify(clientConfigUrl)}, () => ({
+  CLIENT_CONFIG: clientConfig,
+  initClientConfig: () => {},
+  isClientConfigured: () => true,
 }));
 
 mock.module(${JSON.stringify(tagsUrl)}, () => ({
-  getTags: () => ({ project: { tag: "project-tag" }, user: { userEmail: "u@example.com" } }),
+  getTags: () => ({
+    project: { tag: "project-tag", userEmail: "u@example.com" },
+    user: { userEmail: "u@example.com" },
+  }),
 }));
 
-mock.module(${JSON.stringify(contextUrl)}, () => ({ formatContextForPrompt: () => "" }));
 mock.module(${JSON.stringify(privacyUrl)}, () => ({
   stripPrivateContent: (value) => value,
   isFullyPrivate: () => false,
 }));
-mock.module(${JSON.stringify(autoCaptureUrl)}, () => ({ performAutoCapture: async () => {} }));
-mock.module(${JSON.stringify(learningUrl)}, () => ({ performUserProfileLearning: async () => {} }));
-mock.module(${JSON.stringify(promptManagerUrl)}, () => ({ userPromptManager: { savePrompt() {} } }));
-mock.module(${JSON.stringify(webServerUrl)}, () => ({
-  startWebServer: async () => null,
-  WebServer: class {},
+
+mock.module(${JSON.stringify(loggerUrl)}, () => ({
+  log: () => {},
+  logInfo: () => {},
+  logWarn: () => {},
+  logError: () => {},
+  logDebug: () => {},
 }));
-mock.module(${JSON.stringify(loggerUrl)}, () => ({ log: () => {}, logInfo: () => {}, logWarn: () => {}, logError: () => {}, logDebug: () => {} }));
-mock.module(${JSON.stringify(languageUrl)}, () => ({ getLanguageName: () => "English" }));
 
 const { OpenCodeMemPlugin } = await import(${JSON.stringify(indexUrl)});
 const plugin = await OpenCodeMemPlugin({ directory: "/workspace", client: {} });

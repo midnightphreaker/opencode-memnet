@@ -4,21 +4,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 type ScenarioInput = {
-  config: Record<string, unknown>;
   args: Record<string, unknown>;
-  sessionID?: string;
-  mockGitConfigUnavailable?: boolean;
-  readAfterWrite?: boolean;
+  userEmail?: string;
+  profileData?: unknown;
 };
 
 const tempDirs: string[] = [];
-const indexUrl = new URL("../src/index.js", import.meta.url).href;
-const clientUrl = new URL("../src/services/client.js", import.meta.url).href;
-const profileRepoUrl = new URL(
-  "../src/services/storage/postgres/profile-repository.js",
-  import.meta.url
-).href;
-const tagsUrl = new URL("../src/services/tags.js", import.meta.url).href;
+const indexUrl = new URL("../plugin/src/index-remote.js", import.meta.url).href;
+const remoteClientUrl = new URL("../plugin/src/services/remote-client.js", import.meta.url).href;
+const clientIdentityUrl = new URL("../plugin/src/client-identity.js", import.meta.url).href;
+const clientConfigUrl = new URL("../shared/client-config.js", import.meta.url).href;
+const tagsUrl = new URL("../shared/tags.js", import.meta.url).href;
+const privacyUrl = new URL("../shared/privacy.js", import.meta.url).href;
+const loggerUrl = new URL("../shared/logger.js", import.meta.url).href;
 
 function runScenario(input: ScenarioInput) {
   const dir = mkdtempSync(join(tmpdir(), "opencode-memnet-profile-runtime-"));
@@ -27,149 +25,86 @@ function runScenario(input: ScenarioInput) {
 
   const script = `
 import { mock } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 
-const tmpDir = ${JSON.stringify(dir)};
-const WARMUP_KEY = Symbol.for("opencode-memnet.plugin.warmedup");
-mkdirSync(join(tmpDir, ".opencode"), { recursive: true });
-writeFileSync(
-  join(tmpDir, ".opencode", "opencode-memnet.json"),
-  JSON.stringify(${JSON.stringify(input.config)}),
-  "utf-8"
-);
-
-const profiles = new Map();
-const changelogs = [];
-function cleanProfileData(profileData) {
-  return {
-    preferences: Array.isArray(profileData?.preferences) ? profileData.preferences : [],
-    patterns: Array.isArray(profileData?.patterns) ? profileData.patterns : [],
-    workflows: Array.isArray(profileData?.workflows) ? profileData.workflows : [],
-  };
-}
-
-mock.module(${JSON.stringify(profileRepoUrl)}, () => ({
-  PostgresUserProfileRepository: class {
-    async initialize() {}
-    async close() {}
-    async getActiveProfile(userId) {
-      return profiles.get(userId) ?? null;
-    }
-    async getProfileById() { return null; }
-    async getAllActiveProfiles() { return []; }
-    async createProfile(userId, displayName, userName, userEmail, profileData, promptsAnalyzed) {
-      const id = \`profile_\${profiles.size + 1}\`;
-      profiles.set(userId, {
-        id,
-        userId,
-        displayName,
-        userName,
-        userEmail,
-        profileData: JSON.stringify(cleanProfileData(profileData)),
-        version: 1,
-        createdAt: Date.now(),
-        lastAnalyzedAt: Date.now(),
-        totalPromptsAnalyzed: promptsAnalyzed ?? 0,
-        isActive: true,
-      });
-      changelogs.push({ profileId: id, version: 1 });
-      return id;
-    }
-    async updateProfile(profileId, profileData, additionalPromptsAnalyzed, changeSummary) {
-      for (const profile of profiles.values()) {
-        if (profile.id === profileId) {
-          profile.profileData = JSON.stringify(cleanProfileData(profileData));
-          profile.version += 1;
-        }
-      }
-    }
-    async deleteProfile() {}
-    async applyConfidenceDecay() {}
-    async getProfileChangelogs() { return []; }
-    mergeProfileData(existingData, newData) {
-      const preferences = [...(existingData.preferences ?? [])];
-      for (const pref of newData.preferences ?? []) {
-        const existing = preferences.find((item) => item.description === pref.description);
-        if (existing) {
-          existing.confidence = Math.max(existing.confidence ?? 0, pref.confidence ?? 0);
-          existing.lastUpdated = pref.lastUpdated;
-        } else {
-          preferences.push(pref);
-        }
-      }
-      return {
-        preferences,
-        patterns: existingData.patterns ?? [],
-        workflows: existingData.workflows ?? [],
-      };
-    }
+let profileUserId = "not-called";
+const userEmail = ${JSON.stringify(input.userEmail)};
+const profileData = ${JSON.stringify(input.profileData ?? null)};
+const clientConfig = {
+  serverUrl: "http://localhost:4747",
+  apiKey: "test-key",
+  autoCaptureEnabled: false,
+  showAutoCaptureToasts: false,
+  showErrorToasts: false,
+  chatMessage: {
+    enabled: false,
+    maxMemories: 3,
+    excludeCurrentSession: true,
+    injectOn: "first",
   },
+  memory: {
+    defaultScope: "project",
+  },
+};
+
+mock.module(${JSON.stringify(remoteClientUrl)}, () => ({
+  getRemoteClient: () => ({
+    clientConnect: async () => ({ success: true, data: null }),
+    getUserProfile: async (userId) => {
+      profileUserId = userId;
+      return { success: true, data: profileData };
+    },
+    searchMemories: async () => ({ success: true, results: [], total: 0, timing: 0 }),
+    listMemories: async () => ({ success: true, memories: [], pagination: {} }),
+    addMemory: async () => ({ success: true, data: { id: "m1" } }),
+    deleteMemory: async () => ({ success: true }),
+    autoCapture: async () => ({ success: true, data: { captured: false } }),
+    searchMemoriesBySessionID: async () => ({ success: true, results: [], total: 0, timing: 0 }),
+  }),
 }));
 
-${
-  input.mockGitConfigUnavailable
-    ? `mock.module(${JSON.stringify(tagsUrl)}, () => ({
+mock.module(${JSON.stringify(clientIdentityUrl)}, () => ({
+  getClientId: () => "client-test-id",
+  getClientMetadata: () => ({ platform: "test" }),
+}));
+
+mock.module(${JSON.stringify(clientConfigUrl)}, () => ({
+  CLIENT_CONFIG: clientConfig,
+  initClientConfig: () => {},
+  isClientConfigured: () => true,
+}));
+
+mock.module(${JSON.stringify(tagsUrl)}, () => ({
   getTags: () => ({
-    user: {
-      tag: "opencode_user_unknown",
-      displayName: "anonymous",
-      userName: "anonymous",
-      userEmail: undefined,
-    },
+    user: { userEmail },
     project: {
-      tag: "opencode_project_test",
-      displayName: tmpDir,
-      projectPath: tmpDir,
-      projectName: "test-project",
+      tag: "project-tag",
+      userEmail,
+      projectPath: "/workspace",
+      projectName: "workspace",
     },
   }),
-}));`
-    : ""
-}
-
-const { memoryClient } = await import(${JSON.stringify(clientUrl)});
-mock.module(${JSON.stringify(clientUrl)}, async () => ({
-  memoryClient: {
-    ...memoryClient,
-    isReady: async () => true,
-    warmup: async () => {},
-  },
 }));
 
-globalThis[WARMUP_KEY] = true;
-const { OpenCodeMemPlugin } = await import(${JSON.stringify(indexUrl)});
-const plugin = await OpenCodeMemPlugin({
-  directory: tmpDir,
-  worktree: tmpDir,
-  project: { id: "test-project" },
-  serverUrl: new URL("http://localhost:4096"),
-  client: {
-    path: { get: async () => ({ data: { state: join(tmpDir, "state") } }) },
-    provider: { list: async () => ({ data: { connected: [] } }) },
-    tui: null,
-  },
-  $: () => {
-    throw new Error("not used in tests");
-  },
-});
+mock.module(${JSON.stringify(privacyUrl)}, () => ({
+  stripPrivateContent: (value) => value,
+  isFullyPrivate: () => false,
+}));
 
-const writeResult = JSON.parse(
-  await plugin.tool.memory.execute(${JSON.stringify(input.args)}, {
-    sessionID: ${JSON.stringify(input.sessionID ?? "s1")},
-  })
+mock.module(${JSON.stringify(loggerUrl)}, () => ({
+  log: () => {},
+  logInfo: () => {},
+  logWarn: () => {},
+  logError: () => {},
+  logDebug: () => {},
+}));
+
+const { OpenCodeMemPlugin } = await import(${JSON.stringify(indexUrl)});
+const plugin = await OpenCodeMemPlugin({ directory: "/workspace", client: {} });
+const result = JSON.parse(
+  await plugin.tool.memory.execute(${JSON.stringify(input.args)}, { sessionID: "s1" })
 );
 
-let readResult = null;
-if (${JSON.stringify(Boolean(input.readAfterWrite))}) {
-  readResult = JSON.parse(
-    await plugin.tool.memory.execute({ mode: "profile" }, {
-      sessionID: ${JSON.stringify(input.sessionID ?? "s1")},
-    })
-  );
-}
-
-console.log(JSON.stringify({ writeResult, readResult }));
+console.log(JSON.stringify({ result, profileUserId }));
 `;
 
   writeFileSync(scriptPath, script, "utf-8");
@@ -180,16 +115,12 @@ console.log(JSON.stringify({ writeResult, readResult }));
   });
   const stdout = Buffer.from(result.stdout).toString("utf8").trim();
   const stderr = Buffer.from(result.stderr).toString("utf8").trim();
-  const jsonLine = stdout
-    .split("\n")
-    .reverse()
-    .find((line) => line.trim().startsWith("{"));
 
   return {
     exitCode: result.exitCode,
     stdout,
     stderr,
-    parsed: jsonLine ? JSON.parse(jsonLine) : null,
+    parsed: stdout ? JSON.parse(stdout) : null,
   };
 }
 
@@ -200,96 +131,45 @@ afterEach(() => {
   }
 });
 
-function profileConfig(overrides: Record<string, unknown> = {}) {
-  return {
-    storagePath: "./data",
-    userEmailOverride: "test@example.com",
-    userNameOverride: "Test User",
-    webServerEnabled: false,
-    autoCaptureEnabled: false,
-    postgres: { url: "postgres://test:test@localhost:5432/test" },
-    embeddingApiUrl: "https://api.openai.com/v1",
-    embeddingModel: "text-embedding-3-small",
-    embeddingApiKey: "sk-test",
-    ...overrides,
-  };
-}
-
 describe("memory tool profile runtime behavior", () => {
-  it("rejects query in profile mode", () => {
+  it("reads the profile for the resolved user email", () => {
+    const profile = {
+      preferences: [{ description: "Default Jira board is DOPS", confidence: 0.9 }],
+      patterns: [],
+      workflows: [],
+    };
     const result = runScenario({
-      config: profileConfig(),
-      args: { mode: "profile", query: "jira" },
-      sessionID: "s1",
+      userEmail: "test@example.com",
+      profileData: profile,
+      args: { mode: "profile" },
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.parsed.writeResult.success).toBe(false);
-    expect(result.parsed.writeResult.error).toContain("query is not valid for profile mode");
+    expect(result.stderr).toBe("");
+    expect(result.parsed.profileUserId).toBe("test@example.com");
+    expect(result.parsed.result).toEqual({ success: true, profile });
   });
 
-  it("writes a preference when content is provided and returns it on read", () => {
+  it("returns null profile when the server has no profile", () => {
     const result = runScenario({
-      config: profileConfig(),
-      args: { mode: "profile", content: "Default Jira board is DOPS" },
-      sessionID: "s2",
-      readAfterWrite: true,
+      userEmail: "test@example.com",
+      profileData: null,
+      args: { mode: "profile" },
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.parsed.writeResult.success).toBe(true);
-    expect(result.parsed.readResult.success).toBe(true);
-    expect(
-      result.parsed.readResult.profile.preferences.some(
-        (p: any) => p.description === "Default Jira board is DOPS"
-      )
-    ).toBe(true);
+    expect(result.stderr).toBe("");
+    expect(result.parsed.result).toEqual({ success: true, profile: null });
   });
 
-  it("blocks blank content", () => {
+  it("passes undefined user id when no user email is resolved", () => {
     const result = runScenario({
-      config: profileConfig(),
-      args: { mode: "profile", content: "   " },
-      sessionID: "s3",
+      args: { mode: "profile" },
     });
 
     expect(result.exitCode).toBe(0);
-    expect(result.parsed.writeResult.success).toBe(false);
-    expect(result.parsed.writeResult.error).toBe("content must not be blank");
-  });
-
-  it("blocks fully private content including adjacent redacted blocks", () => {
-    const result = runScenario({
-      config: profileConfig(),
-      args: {
-        mode: "profile",
-        content: "<private>a</private><private>b</private>",
-      },
-      sessionID: "s4",
-    });
-
-    expect(result.exitCode).toBe(0);
-    expect(result.parsed.writeResult.success).toBe(false);
-    expect(result.parsed.writeResult.error).toBe("Private content blocked");
-  });
-
-  it("errors when no user email can be resolved", () => {
-    const result = runScenario({
-      config: profileConfig({
-        userEmailOverride: undefined,
-        userNameOverride: undefined,
-      }),
-      args: { mode: "profile", content: "Default Jira board is DOPS" },
-      sessionID: "s5",
-      mockGitConfigUnavailable: true,
-    });
-
-    if (result.exitCode !== 0) {
-      throw new Error(result.stderr || result.stdout);
-    }
-    expect(result.parsed.writeResult.success).toBe(false);
-    expect(result.parsed.writeResult.error).toContain(
-      "Cannot save profile preference because no user email could be resolved"
-    );
+    expect(result.stderr).toBe("");
+    expect(result.parsed.profileUserId).toBeUndefined();
+    expect(result.parsed.result).toEqual({ success: true, profile: null });
   });
 });

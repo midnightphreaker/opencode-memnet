@@ -154,6 +154,16 @@ function metadataScore(t: TagInfo): number {
   );
 }
 
+function matchesRequestedScope(
+  item: { profileId?: string | null; repoId?: string | null },
+  profileId: string,
+  repoId?: string
+): boolean {
+  if (item.profileId !== profileId) return false;
+  if (repoId && item.repoId !== repoId) return false;
+  return true;
+}
+
 export async function handleListTags(
   profileId?: string
 ): Promise<ApiResponse<{ project: TagInfo[] }>> {
@@ -769,6 +779,7 @@ export async function handleSearch(
     if (missingPromptIds.size > 0) {
       const extraPrompts = await promptRepo.getPromptsByIds(Array.from(missingPromptIds));
       for (const p of extraPrompts) {
+        if (!matchesRequestedScope(p, profileId, repoId)) continue;
         paginatedResults.push({
           type: "prompt",
           id: p.id,
@@ -788,7 +799,11 @@ export async function handleSearch(
     if (missingMemoryIds.size > 0) {
       for (const mid of missingMemoryIds) {
         const m = await memoryRepo.getById(mid);
-        if (m && !paginatedResults.some((existing) => existing.id === m.id)) {
+        if (
+          m &&
+          matchesRequestedScope(m, profileId, repoId) &&
+          !paginatedResults.some((existing) => existing.id === m.id)
+        ) {
           paginatedResults.push({
             type: "memory",
             id: m.id,

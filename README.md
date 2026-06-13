@@ -518,6 +518,32 @@ Runtime identity is explicit:
   run in a git repository and send repo URL, git user name, and git user email.
 - Local project paths are stored only as display/debug metadata, not identity.
 
+### Profile Key File
+
+SERVER_API_KEY remains the admin/all-profiles key. `PROFILE_KEYS_FILE` points to a JSONC file of profile-scoped keys:
+
+```jsonc
+{
+  "profiles": [
+    {
+      "profileId": "phrkr",
+      "displayName": "Phrkr",
+      "apiKey": "env://OPENCODE_MEMNET_PROFILE_KEY_PHRKR",
+    },
+  ],
+}
+```
+
+Profile keys are restricted to their configured profileId. A profile-key request
+may omit `profileId`; the server injects it. If a profile-key request supplies
+another `profileId`, the server returns `403`.
+
+Use `SERVER_API_KEY` for admin WebUI sessions that need to list or switch
+profiles. Use a profile key for one profile's plugin or WebUI session. Profile
+key `apiKey` values support plain values, `env://NAME`, and
+`file:///path/to/key` through the same secret indirection used by other server
+secrets.
+
 ---
 
 ## API Reference

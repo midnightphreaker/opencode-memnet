@@ -1904,7 +1904,7 @@ git commit -m "feat: use profile principal in plugin"
 - Modify: `.env.example`
 - Test: `tests/docs-strict-identity.test.ts`
 
-- [ ] **Step 1: Extend docs test**
+- [x] **Step 1: Extend docs test**
 
 Append to `tests/docs-strict-identity.test.ts`:
 
@@ -1923,7 +1923,7 @@ it("documents profile key file schema and enforcement", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1933,7 +1933,7 @@ bun test tests/docs-strict-identity.test.ts
 
 Expected: FAIL until README and `.env.example` contain the schema and enforcement text.
 
-- [ ] **Step 3: Update README**
+- [x] **Step 3: Update README**
 
 Add this subsection under strict identity documentation:
 
@@ -1959,7 +1959,7 @@ Profile keys are restricted to their configured profileId. A profile-key request
 Use `SERVER_API_KEY` for admin WebUI sessions that need to list or switch profiles. Use a profile key for one profile's plugin or WebUI session. Profile key `apiKey` values support plain values, `env://NAME`, and `file:///path/to/key` through the same secret indirection used by other server secrets.
 ````
 
-- [ ] **Step 4: Update `.env.example`**
+- [x] **Step 4: Update `.env.example`**
 
 Replace the existing `PROFILE_KEYS_FILE` comment block with:
 
@@ -1986,7 +1986,7 @@ Replace the existing `PROFILE_KEYS_FILE` comment block with:
 PROFILE_KEYS_FILE=
 ```
 
-- [ ] **Step 5: Run docs tests**
+- [x] **Step 5: Run docs tests**
 
 Run:
 
@@ -1997,7 +1997,7 @@ bun run format:check
 
 Expected: docs tests pass and formatting check passes.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add README.md .env.example tests/docs-strict-identity.test.ts

@@ -15,7 +15,9 @@ function rowToUserPromptRow(row: any): UserPromptRow {
     id: row.id,
     sessionId: row.session_id,
     messageId: row.message_id,
-    projectPath: row.project_path,
+    profileId: row.profile_id,
+    repoId: row.repo_id,
+    localProjectPath: row.local_project_path ?? null,
     content: row.content,
     createdAt: Number(row.created_at),
     captured: Number(row.captured),
@@ -33,23 +35,25 @@ export class PostgresUserPromptRepository implements UserPromptRepository {
     await closePostgresClient();
   }
 
-  async savePrompt(
-    sessionId: string,
-    messageId: string,
-    projectPath: string,
-    content: string
-  ): Promise<string> {
+  async savePrompt(args: {
+    sessionId: string;
+    messageId: string;
+    profileId: string;
+    repoId: string;
+    localProjectPath?: string;
+    content: string;
+  }): Promise<string> {
     const sql = getPostgresClient();
     const id = `prompt_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const now = Date.now();
 
     await sql`
       INSERT INTO user_prompts (
-        id, session_id, message_id, project_path,
+        id, session_id, message_id, profile_id, repo_id, local_project_path,
         content, created_at, captured, user_learning_captured
       ) VALUES (
-        ${id}, ${sessionId}, ${messageId}, ${projectPath},
-        ${content}, ${now}, 0, false
+        ${id}, ${args.sessionId}, ${args.messageId}, ${args.profileId}, ${args.repoId},
+        ${args.localProjectPath ?? null}, ${args.content}, ${now}, 0, false
       )
       ON CONFLICT (id) DO NOTHING
     `;
@@ -122,21 +126,27 @@ export class PostgresUserPromptRepository implements UserPromptRepository {
     `;
   }
 
-  async countUnanalyzedForUserLearning(): Promise<number> {
+  async countUnanalyzedForUserLearning(profileId: string): Promise<number> {
     const sql = getPostgresClient();
     const rows = await sql`
-      SELECT COUNT(*) as count FROM user_prompts WHERE user_learning_captured = false
+      SELECT COUNT(*) as count FROM user_prompts
+      WHERE user_learning_captured = false
+        AND profile_id = ${profileId}
     `;
     return Number(rows[0]?.count ?? 0);
   }
 
-  async getPromptsForUserLearning(limit: number): Promise<UserPromptRow[]> {
+  async getPromptsForUserLearning(args: {
+    profileId: string;
+    limit: number;
+  }): Promise<UserPromptRow[]> {
     const sql = getPostgresClient();
     const rows = await sql`
       SELECT * FROM user_prompts
       WHERE user_learning_captured = false
+        AND profile_id = ${args.profileId}
       ORDER BY created_at ASC
-      LIMIT ${limit}
+      LIMIT ${args.limit}
     `;
     return rows.map(rowToUserPromptRow);
   }
@@ -200,54 +210,39 @@ export class PostgresUserPromptRepository implements UserPromptRepository {
     return rowToUserPromptRow(rows[0]);
   }
 
-  async getCapturedPrompts(projectPath?: string): Promise<UserPromptRow[]> {
+  async getCapturedPrompts(args: { profileId: string; repoId?: string }): Promise<UserPromptRow[]> {
     const sql = getPostgresClient();
-
-    let rows;
-    if (projectPath) {
-      rows = await sql`
-        SELECT * FROM user_prompts
-        WHERE captured = 1 AND project_path = ${projectPath}
-        ORDER BY created_at DESC
-      `;
-    } else {
-      rows = await sql`
-        SELECT * FROM user_prompts
-        WHERE captured = 1
-        ORDER BY created_at DESC
-      `;
-    }
+    const repoFilter = args.repoId ?? "";
+    const rows = await sql`
+      SELECT * FROM user_prompts
+      WHERE captured = 1
+        AND profile_id = ${args.profileId}
+        AND (${repoFilter}::text = '' OR repo_id = ${repoFilter})
+      ORDER BY created_at DESC
+    `;
 
     return rows.map(rowToUserPromptRow);
   }
 
-  async searchPrompts(
-    query: string,
-    projectPath?: string,
-    limit: number = 20
-  ): Promise<UserPromptRow[]> {
+  async searchPrompts(args: {
+    query: string;
+    profileId: string;
+    repoId?: string;
+    limit?: number;
+  }): Promise<UserPromptRow[]> {
     const sql = getPostgresClient();
-    const escaped = query.replace(/[%_]/g, "\\$&");
+    const escaped = args.query.replace(/[%_]/g, "\\$&");
     const likePattern = `%${escaped}%`;
-
-    let rows;
-    if (projectPath) {
-      rows = await sql`
-        SELECT * FROM user_prompts
-        WHERE content LIKE ${likePattern} ESCAPE '\\'
-          AND captured = 1
-          AND project_path = ${projectPath}
-        ORDER BY created_at DESC
-        LIMIT ${limit}
-      `;
-    } else {
-      rows = await sql`
-        SELECT * FROM user_prompts
-        WHERE content LIKE ${likePattern} ESCAPE '\\' AND captured = 1
-        ORDER BY created_at DESC
-        LIMIT ${limit}
-      `;
-    }
+    const repoFilter = args.repoId ?? "";
+    const rows = await sql`
+      SELECT * FROM user_prompts
+      WHERE content LIKE ${likePattern} ESCAPE '\\'
+        AND captured = 1
+        AND profile_id = ${args.profileId}
+        AND (${repoFilter}::text = '' OR repo_id = ${repoFilter})
+      ORDER BY created_at DESC
+      LIMIT ${args.limit ?? 20}
+    `;
 
     return rows.map(rowToUserPromptRow);
   }

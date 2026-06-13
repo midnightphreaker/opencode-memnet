@@ -8,7 +8,6 @@ import {
   createUserPromptRepository,
   createUserProfileRepository,
   createClientRepository,
-  createUserIdentityRepository,
   createTagRegistry,
 } from "./storage/factory.js";
 import { stripPrivateContent } from "./privacy.js";
@@ -21,7 +20,6 @@ import type {
   MemoryRecord,
   MemoryScopeKind,
   ClientRepository,
-  UserIdentityRepository,
 } from "./storage/types.js";
 import {
   getApiMigrationProgress,
@@ -33,13 +31,13 @@ import {
   resetMigrationState,
 } from "./tag-migration-service.js";
 import type { MigrationProgress } from "./tag-migration-service.js";
+import type { JobScope } from "./memory-maintenance-job-service.js";
 
 const memoryRepo: MemoryRepository = createMemoryRepository();
 const promptRepo: UserPromptRepository = createUserPromptRepository();
 const profileRepo: UserProfileRepository = createUserProfileRepository();
 const tagRegistry = createTagRegistry();
 let clientRepo: ClientRepository | null = null;
-let identityRepo: UserIdentityRepository | null = null;
 
 // Repositories are singletons from the factory, but initialize() (which runs
 // DB migrations) must be called before first use.  The LocalMemoryClient does
@@ -54,8 +52,6 @@ async function ensureInit(): Promise<void> {
       await profileRepo.initialize();
       clientRepo = createClientRepository();
       await clientRepo.initialize();
-      identityRepo = createUserIdentityRepository();
-      await identityRepo.initialize();
     })().catch((err) => {
       clientRepo = null as any;
       _initPromise = null;
@@ -79,24 +75,22 @@ interface Memory {
   createdAt: string;
   updatedAt?: string;
   metadata?: Record<string, unknown>;
-  displayName?: string;
-  userName?: string;
-  userEmail?: string;
-  projectPath?: string;
-  projectName?: string;
+  profileId?: string;
+  repoId?: string;
+  localProjectPath?: string;
   gitRepoUrl?: string;
+  repoNickname?: string;
   isPinned?: boolean;
 }
 
 interface TagInfo {
   tag: string;
   tags?: string[];
-  displayName?: string;
-  userName?: string;
-  userEmail?: string;
-  projectPath?: string;
-  projectName?: string;
+  profileId?: string;
+  repoId?: string;
+  localProjectPath?: string;
   gitRepoUrl?: string;
+  repoNickname?: string;
 }
 
 interface PaginatedResponse<T> {
@@ -131,20 +125,21 @@ function extractScopeFromTag(tag: string): { scope: "project"; hash: string } {
   return { scope: "project", hash: tag };
 }
 
-async function getProjectPathFromTag(tag: string): Promise<string | undefined> {
+async function getProjectScopeFromTag(
+  tag: string
+): Promise<{ profileId: string; repoId?: string } | undefined> {
   const tags = await memoryRepo.getDistinctTags({ scope: "project" });
   const match = tags.find((t) => t.tag === tag);
-  return match?.projectPath;
+  return match?.profileId ? { profileId: match.profileId, repoId: match.repoId } : undefined;
 }
 
 function metadataScore(t: TagInfo): number {
   return (
-    (t.displayName ? 1 : 0) +
-    (t.userName ? 1 : 0) +
-    (t.userEmail ? 1 : 0) +
-    (t.projectPath ? 1 : 0) +
-    (t.projectName ? 1 : 0) +
-    (t.gitRepoUrl ? 1 : 0)
+    (t.profileId ? 1 : 0) +
+    (t.repoId ? 1 : 0) +
+    (t.localProjectPath ? 1 : 0) +
+    (t.gitRepoUrl ? 1 : 0) +
+    (t.repoNickname ? 1 : 0)
   );
 }
 
@@ -160,12 +155,11 @@ export async function handleListTags(): Promise<ApiResponse<{ project: TagInfo[]
       .filter((t) => t.tag.includes("_project_"))
       .map((t) => ({
         tag: t.tag,
-        displayName: t.displayName,
-        userName: t.userName,
-        userEmail: t.userEmail,
-        projectPath: t.projectPath,
-        projectName: t.projectName,
+        profileId: t.profileId,
+        repoId: t.repoId,
+        localProjectPath: t.localProjectPath,
         gitRepoUrl: t.gitRepoUrl,
+        repoNickname: t.repoNickname,
       }));
     // Deduplicate by tag: DISTINCT in Postgres treats NULL as a unique value,
     // so rows with different user metadata can produce duplicate tag entries.
@@ -189,7 +183,8 @@ export async function handleListMemories(
   page: number = 1,
   pageSize: number = 20,
   includePrompts: boolean = true,
-  userEmail?: string
+  profileId: string = "default",
+  repoId?: string
 ): Promise<ApiResponse<PaginatedResponse<Memory | any>>> {
   try {
     await ensureInit();
@@ -203,7 +198,8 @@ export async function handleListMemories(
         scopeHash: hash,
         containerTag: tag,
         limit: 10000,
-        userEmail,
+        profileId,
+        repoId,
       });
     } else {
       // #10: Cap at 1000 rows when no tag filter to prevent unbounded load / OOM.
@@ -215,7 +211,8 @@ export async function handleListMemories(
         includeAllContainers: true,
         containerTagFilter: "_project_",
         limit: 1000,
-        userEmail,
+        profileId,
+        repoId,
       });
       // No client-side filter needed — SQL does it
     }
@@ -231,26 +228,30 @@ export async function handleListMemories(
       updatedAt: r.updatedAt,
       metadata: r.metadata,
       linkedPromptId: r.metadata?.promptId,
-      displayName: r.displayName,
-      userName: r.userName,
-      userEmail: r.userEmail,
-      projectPath: r.projectPath,
-      projectName: r.projectName,
+      profileId: r.profileId,
+      repoId: r.repoId,
+      localProjectPath: r.localProjectPath,
       gitRepoUrl: r.gitRepoUrl,
+      repoNickname: r.repoNickname,
       isPinned: r.isPinned,
     }));
 
     let timeline: any[] = memoriesWithType;
     if (includePrompts) {
-      const projectPath = tag ? await getProjectPathFromTag(tag) : undefined;
-      const prompts = await promptRepo.getCapturedPrompts(projectPath ?? undefined);
+      const scope = tag ? await getProjectScopeFromTag(tag) : { profileId, repoId };
+      const prompts = await promptRepo.getCapturedPrompts({
+        profileId: scope?.profileId ?? profileId,
+        repoId: scope?.repoId ?? repoId,
+      });
       const promptsWithType = prompts.map((p) => ({
         type: "prompt" as const,
         id: p.id,
         sessionId: p.sessionId,
         content: p.content,
         createdAt: p.createdAt,
-        projectPath: p.projectPath,
+        profileId: p.profileId,
+        repoId: p.repoId,
+        localProjectPath: p.localProjectPath,
         linkedMemoryId: p.linkedMemoryId,
       }));
       timeline = [...memoriesWithType, ...promptsWithType];
@@ -315,7 +316,6 @@ export async function handleListMemories(
           linkedPromptId: item.linkedPromptId,
           displayName: item.displayName,
           userName: item.userName,
-          userEmail: item.userEmail,
           projectPath: item.projectPath,
           projectName: item.projectName,
           gitRepoUrl: item.gitRepoUrl,
@@ -346,12 +346,11 @@ export async function handleAddMemory(data: {
   containerTag: string;
   type?: MemoryType;
   tags?: string[];
-  displayName?: string;
-  userName?: string;
-  userEmail?: string;
-  projectPath?: string;
-  projectName?: string;
+  profileId: string;
+  repoId?: string;
+  localProjectPath?: string;
   gitRepoUrl?: string;
+  repoNickname?: string;
 }): Promise<ApiResponse<{ id: string }>> {
   try {
     if (!data.content || !data.containerTag) {
@@ -366,24 +365,8 @@ export async function handleAddMemory(data: {
     await ensureInit();
     await embeddingService.warmup();
 
-    // Derive userEmail if not provided — try client lookup, then git config
-    let resolvedUserEmail = data.userEmail;
-    if (!resolvedUserEmail) {
-      // Try to get email from client ID header (set by plugin)
-      // This is handled at the web-server level, but for direct API calls
-      // we fall back to git config
-      try {
-        const { getTags } = await import("./tags.js");
-        const tags = await getTags(process.cwd());
-        resolvedUserEmail = tags.user.userEmail || undefined;
-      } catch {
-        // git config unavailable — continue without email
-      }
-      if (!resolvedUserEmail) {
-        logDebug("handleAddMemory: no userEmail provided and could not derive from git config", {
-          memoryContent: data.content.substring(0, 50),
-        });
-      }
+    if (!data.profileId) {
+      return { success: false, error: "profileId is required" };
     }
 
     const filteredContent = stripPrivateContent(data.content);
@@ -411,12 +394,11 @@ export async function handleAddMemory(data: {
       createdAt: now,
       updatedAt: now,
       metadata: JSON.stringify({ source: "api" }),
-      displayName: data.displayName,
-      userName: data.userName,
-      userEmail: resolvedUserEmail,
-      projectPath: data.projectPath,
-      projectName: data.projectName,
+      profileId: data.profileId,
+      repoId: data.repoId,
+      localProjectPath: data.localProjectPath,
       gitRepoUrl: data.gitRepoUrl,
+      repoNickname: data.repoNickname,
     };
 
     await memoryRepo.insert(record);
@@ -561,12 +543,11 @@ export async function handleUpdateMemory(
           ? existingMemory.metadata
           : JSON.stringify(existingMemory.metadata)
         : undefined,
-      displayName: existingMemory.displayName,
-      userName: existingMemory.userName,
-      userEmail: existingMemory.userEmail,
-      projectPath: existingMemory.projectPath,
-      projectName: existingMemory.projectName,
+      profileId: existingMemory.profileId,
+      repoId: existingMemory.repoId,
+      localProjectPath: existingMemory.localProjectPath,
       gitRepoUrl: existingMemory.gitRepoUrl,
+      repoNickname: existingMemory.repoNickname,
     };
 
     await memoryRepo.update(updatedRecord);
@@ -604,7 +585,9 @@ interface FormattedPrompt {
   sessionId: string;
   content: string;
   createdAt: string;
-  projectPath: string | null;
+  profileId: string;
+  repoId: string;
+  localProjectPath: string | null;
   linkedMemoryId: string | null;
   similarity?: number;
   isContext?: boolean;
@@ -620,12 +603,11 @@ interface FormattedMemory {
   updatedAt?: string;
   similarity?: number;
   metadata?: Record<string, unknown>;
-  displayName?: string;
-  userName?: string;
-  userEmail?: string;
-  projectPath?: string;
-  projectName?: string;
+  profileId?: string;
+  repoId?: string;
+  localProjectPath?: string;
   gitRepoUrl?: string;
+  repoNickname?: string;
   isPinned?: boolean;
   linkedPromptId?: string;
   isContext?: boolean;
@@ -638,7 +620,8 @@ export async function handleSearch(
   tag?: string,
   page: number = 1,
   pageSize: number = 20,
-  userEmail?: string
+  profileId: string = "default",
+  repoId?: string
 ): Promise<ApiResponse<PaginatedResponse<SearchResultItem>>> {
   try {
     await ensureInit();
@@ -658,12 +641,18 @@ export async function handleSearch(
         limit: pageSize * 4,
         similarityThreshold: 0,
         queryText: query,
-        userEmail,
+        profileId,
+        repoId,
       });
       memoryResults.push(...results);
 
-      const projectPath = await getProjectPathFromTag(tag);
-      promptResults = await promptRepo.searchPrompts(query, projectPath ?? undefined, pageSize * 2);
+      const projectScope = await getProjectScopeFromTag(tag);
+      promptResults = await promptRepo.searchPrompts({
+        query,
+        profileId: projectScope?.profileId ?? profileId,
+        repoId: projectScope?.repoId ?? repoId,
+        limit: pageSize * 2,
+      });
     } else {
       // Search across all project shards without container-tag filter
       const results = await memoryRepo.search({
@@ -675,10 +664,16 @@ export async function handleSearch(
         limit: pageSize * 10,
         similarityThreshold: 0,
         queryText: query,
-        userEmail,
+        profileId,
+        repoId,
       });
       memoryResults.push(...results);
-      promptResults = await promptRepo.searchPrompts(query, undefined, pageSize * 2);
+      promptResults = await promptRepo.searchPrompts({
+        query,
+        profileId,
+        repoId,
+        limit: pageSize * 2,
+      });
     }
 
     const formattedPrompts: FormattedPrompt[] = promptResults.map((p) => ({
@@ -687,7 +682,9 @@ export async function handleSearch(
       sessionId: p.sessionId,
       content: stripPrivateContent(p.content),
       createdAt: safeToISOString(p.createdAt),
-      projectPath: p.projectPath,
+      profileId: p.profileId,
+      repoId: p.repoId,
+      localProjectPath: p.localProjectPath,
       linkedMemoryId: p.linkedMemoryId,
       similarity: undefined,
     }));
@@ -703,12 +700,11 @@ export async function handleSearch(
       updatedAt: r.metadata?.updatedAt ? safeToISOString(r.metadata.updatedAt) : undefined,
       similarity: r.similarity,
       metadata: r.metadata,
-      displayName: r.displayName,
-      userName: r.userName,
-      userEmail: r.userEmail,
-      projectPath: r.projectPath,
-      projectName: r.projectName,
+      profileId: r.profileId,
+      repoId: r.repoId,
+      localProjectPath: r.localProjectPath,
       gitRepoUrl: r.gitRepoUrl,
+      repoNickname: r.repoNickname,
       isPinned: r.isPinned === 1 || r.isPinned === true,
       linkedPromptId: r.metadata?.promptId,
     }));
@@ -745,7 +741,9 @@ export async function handleSearch(
           sessionId: p.sessionId,
           content: stripPrivateContent(p.content),
           createdAt: safeToISOString(p.createdAt),
-          projectPath: p.projectPath,
+          profileId: p.profileId,
+          repoId: p.repoId,
+          localProjectPath: p.localProjectPath,
           linkedMemoryId: p.linkedMemoryId,
           similarity: 0,
           isContext: true,
@@ -767,12 +765,11 @@ export async function handleSearch(
             updatedAt: m.updatedAt ? safeToISOString(m.updatedAt) : undefined,
             similarity: 0,
             metadata: m.metadata,
-            displayName: m.displayName,
-            userName: m.userName,
-            userEmail: m.userEmail,
-            projectPath: m.projectPath,
-            projectName: m.projectName,
+            profileId: m.profileId,
+            repoId: m.repoId,
+            localProjectPath: m.localProjectPath,
             gitRepoUrl: m.gitRepoUrl,
+            repoNickname: m.repoNickname,
             isPinned: m.isPinned,
             linkedPromptId: m.metadata?.promptId as string | undefined,
             isContext: true,
@@ -887,41 +884,27 @@ export async function handleBulkDeletePrompts(
   }
 }
 
-export async function handleGetUserProfile(userId?: string): Promise<ApiResponse<any>> {
+export async function handleGetUserProfile(profileId?: string): Promise<ApiResponse<any>> {
   try {
     await ensureInit();
-    const { getTags } = await import("./tags.js");
-    let targetUserId = userId;
-    if (!targetUserId) {
-      const tags = await getTags(process.cwd());
-      targetUserId = tags.user.userEmail || undefined;
-    }
-    if (!targetUserId) {
+    if (!profileId) {
       return {
         success: true,
         data: {
           exists: false,
-          userId: null,
-          message: "No user ID provided and could not determine from git config.",
+          profileId: null,
+          message: "No profileId provided.",
         },
       };
     }
 
-    // Get nickname from identity store (canonical)
-    let identityNickname: string | null = null;
-    try {
-      identityNickname = await identityRepo!.getNickname(targetUserId);
-    } catch {
-      /* fallback */
-    }
-
-    const profile = await profileRepo.getActiveProfile(targetUserId);
+    const profile = await profileRepo.getActiveProfile(profileId);
     if (!profile)
       return {
         success: true,
         data: {
           exists: false,
-          userId: targetUserId,
+          profileId,
           message: "No profile found. Keep chatting to build your profile.",
         },
       };
@@ -931,82 +914,16 @@ export async function handleGetUserProfile(userId?: string): Promise<ApiResponse
       data: {
         exists: true,
         id: profile.id,
-        userId: profile.userId,
-        displayName: profile.displayName,
-        userName: profile.userName,
-        userEmail: profile.userEmail,
+        profileId: profile.profileId,
         version: profile.version,
         createdAt: safeToISOString(profile.createdAt),
         lastAnalyzedAt: safeToISOString(profile.lastAnalyzedAt),
         totalPromptsAnalyzed: profile.totalPromptsAnalyzed,
-        nickname: identityNickname ?? profile.nickname ?? null,
         profileData,
       },
     };
   } catch (error) {
     log("handleGetUserProfile: error", { error: String(error) });
-    return { success: false, error: "Internal server error" };
-  }
-}
-
-export async function handleSetProfileNickname(data: {
-  nickname: string;
-  userId?: string;
-}): Promise<ApiResponse<{ nickname: string }>> {
-  try {
-    if (typeof data.nickname !== "string") {
-      return { success: false, error: "nickname must be a string" };
-    }
-    const trimmed = data.nickname.trim();
-    if (trimmed.length > 100) {
-      return { success: false, error: "nickname must be 100 characters or less" };
-    }
-    await ensureInit();
-    let userId = data.userId;
-    if (!userId) {
-      const { getTags } = await import("./tags.js");
-      const tags = await getTags(process.cwd());
-      userId = tags.user.userEmail;
-    }
-    if (!userId) {
-      return {
-        success: false,
-        error: "No user ID provided and could not determine from git config",
-      };
-    }
-
-    // Write to profile first (gatekeeper — if no profile, reject)
-    const profileResult = await profileRepo!.setNickname(userId, trimmed);
-    if (!profileResult) {
-      return { success: false, error: "No active profile found — create a profile first" };
-    }
-
-    // Sync to canonical identity store (best-effort)
-    try {
-      await identityRepo!.upsertIdentity(userId, { nickname: trimmed });
-    } catch (err) {
-      logError("handleSetProfileNickname: failed to sync to identity store", {
-        userId,
-        error: String(err),
-      });
-    }
-
-    // Sync to client cache (best-effort)
-    try {
-      const clients = await clientRepo!.getClientsByEmail(userId);
-      for (const c of clients) {
-        await clientRepo!.setNickname(c.id, trimmed);
-      }
-    } catch (err) {
-      logError("handleSetProfileNickname: failed to sync nickname to client cache", {
-        userId,
-        error: String(err),
-      });
-    }
-    logInfo("Nickname updated", { userId, nickname: trimmed });
-    return { success: true, data: { nickname: trimmed } };
-  } catch (error) {
-    logError("handleSetProfileNickname: error", { error: String(error) });
     return { success: false, error: "Internal server error" };
   }
 }
@@ -1055,22 +972,16 @@ export async function handleGetProfileSnapshot(changelogId: string): Promise<Api
   }
 }
 
-export async function handleRefreshProfile(userId?: string): Promise<ApiResponse<any>> {
+export async function handleRefreshProfile(profileId?: string): Promise<ApiResponse<any>> {
   try {
     await ensureInit();
-    const { getTags } = await import("./tags.js");
-    let targetUserId = userId;
-    if (!targetUserId) {
-      const tags = await getTags(process.cwd());
-      targetUserId = tags.user.userEmail || undefined;
-    }
-    if (!targetUserId) {
+    if (!profileId) {
       return {
         success: false,
-        error: "No user ID provided and could not determine from git config.",
+        error: "profileId is required",
       };
     }
-    const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning();
+    const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning(profileId);
     return {
       success: true,
       data: {
@@ -1194,7 +1105,8 @@ export async function handleRunTagMigrationBatch(
 export async function handleContextInject(data: {
   sessionID?: string;
   projectTag: string;
-  userId?: string;
+  profileId: string;
+  repoId: string;
   maxMemories?: number;
   excludeCurrentSession?: boolean;
   maxAgeDays?: number | null;
@@ -1219,6 +1131,8 @@ export async function handleContextInject(data: {
       scopeHash: hash,
       containerTag: data.projectTag,
       limit: maxMemories * 3,
+      profileId: data.profileId,
+      repoId: data.repoId,
     });
 
     // Memories are listed in recency order (newest first) for context injection.
@@ -1253,8 +1167,8 @@ export async function handleContextInject(data: {
     let profileInjected = false;
     let profileStatus: string | undefined;
 
-    if (CONFIG.injectProfile && data.userId) {
-      const profile = await profileRepo.getActiveProfile(data.userId);
+    if (CONFIG.injectProfile && data.profileId) {
+      const profile = await profileRepo.getActiveProfile(data.profileId);
       if (profile) {
         try {
           const profileData = JSON.parse(profile.profileData);
@@ -1290,7 +1204,7 @@ export async function handleContextInject(data: {
           profileInjected = false;
           profileStatus = "corrupt";
           log("handleContextInject: corrupt profile data detected", {
-            userId: data.userId,
+            profileId: data.profileId,
           });
         }
       }
@@ -1324,13 +1238,12 @@ export async function handleContextInject(data: {
 export async function handleAutoCapture(data: {
   sessionID: string;
   projectTag: string;
+  profileId: string;
+  repoId: string;
   projectMetadata: {
-    displayName?: string;
-    userName?: string;
-    userEmail?: string;
-    projectPath?: string;
-    projectName?: string;
+    localProjectPath?: string;
     gitRepoUrl?: string;
+    repoNickname?: string;
   };
   conversationMessages: Array<{
     role: string;
@@ -1385,6 +1298,8 @@ export async function handleAutoCapture(data: {
       scopeHash: hash,
       containerTag: data.projectTag,
       limit: 1,
+      profileId: data.profileId,
+      repoId: data.repoId,
     });
     const firstRow = recentRows[0];
     if (firstRow && firstRow.content) {
@@ -1498,12 +1413,11 @@ export async function handleAutoCapture(data: {
         promptId: data.promptMessageId,
         captureTimestamp: now,
       }),
-      displayName: data.projectMetadata.displayName,
-      userName: data.projectMetadata.userName,
-      userEmail: data.projectMetadata.userEmail,
-      projectPath: data.projectMetadata.projectPath,
-      projectName: data.projectMetadata.projectName,
+      profileId: data.profileId,
+      repoId: data.repoId,
+      localProjectPath: data.projectMetadata.localProjectPath,
       gitRepoUrl: data.projectMetadata.gitRepoUrl,
+      repoNickname: data.projectMetadata.repoNickname,
     };
 
     // ── ISSUE-006: Retry logic for DB insert with exponential backoff ──
@@ -1560,31 +1474,22 @@ export async function handleAutoCapture(data: {
 }
 
 export async function handleUserProfileLearn(data: {
-  userId?: string;
+  profileId: string;
   projectTag?: string;
 }): Promise<ApiResponse<{ updated: boolean }>> {
   try {
     await ensureInit();
 
-    // Resolve userId
-    const { getTags } = await import("./tags.js");
-    let userId = data.userId;
-    if (!userId) {
-      const tags = await getTags(process.cwd());
-      userId = tags.user.userEmail || undefined;
-    }
-
-    if (!userId) {
+    if (!data.profileId) {
       return {
         success: false,
-        error:
-          "Cannot perform profile learning: no user email configured. " +
-          "Set git user.email or provide userId in the request.",
+        error: "Cannot perform profile learning: profileId is required.",
       };
     }
+    const profileId = data.profileId;
 
     // Check if enough unanalyzed prompts exist
-    const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning();
+    const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning(profileId);
     const threshold = CONFIG.userProfileAnalysisInterval;
 
     if (unanalyzedCount < threshold) {
@@ -1595,13 +1500,13 @@ export async function handleUserProfileLearn(data: {
     }
 
     // Fetch prompts for analysis
-    const prompts = await promptRepo.getPromptsForUserLearning(threshold);
+    const prompts = await promptRepo.getPromptsForUserLearning({ profileId, limit: threshold });
     if (prompts.length === 0) {
       return { success: true, data: { updated: false } };
     }
 
     // Fetch existing profile (if any)
-    const existingProfile = await profileRepo.getActiveProfile(userId);
+    const existingProfile = await profileRepo.getActiveProfile(profileId);
 
     // Build existing profile JSON for the AI context
     let existingProfileJson: string | null = null;
@@ -1616,7 +1521,7 @@ export async function handleUserProfileLearn(data: {
     const promptTexts = prompts.map((p) => p.content);
 
     // ── ISSUE-019: Retry counting for profile learning ──
-    const profileAttemptKey = userId;
+    const profileAttemptKey = profileId;
     const profileAttempts = profileLearningAttempts.get(profileAttemptKey) ?? 0;
 
     let updatedProfileData: any;
@@ -1630,7 +1535,7 @@ export async function handleUserProfileLearn(data: {
         logError(
           "handleUserProfileLearn: analyzeUserProfile failed after max retries, marking prompts as captured",
           {
-            userId,
+            profileId,
             attempts: newAttempts,
             error: String(analyzeError),
           }
@@ -1641,7 +1546,7 @@ export async function handleUserProfileLearn(data: {
       }
 
       log("handleUserProfileLearn: analyzeUserProfile failed, will retry on next cycle", {
-        userId,
+        profileId,
         attempts: newAttempts,
         error: String(analyzeError),
       });
@@ -1682,16 +1587,7 @@ export async function handleUserProfileLearn(data: {
         changeSummary
       );
     } else {
-      // Resolve user metadata from tags
-      const tags = await getTags(process.cwd());
-      await profileRepo.createProfile(
-        userId,
-        tags.user.displayName || "Unknown",
-        tags.user.userName || "unknown",
-        tags.user.userEmail || "unknown",
-        updatedProfileData,
-        prompts.length
-      );
+      await profileRepo.createProfile(profileId, updatedProfileData, prompts.length);
     }
 
     // Mark prompts as analyzed
@@ -1710,7 +1606,7 @@ export function handleMigrationDetect(): ApiResponse<{ needsMigration: boolean }
   return { success: true, data: { needsMigration: false } };
 }
 
-export async function handleCleanup(skipGuard = false): Promise<
+export async function handleCleanup(args: { scope: JobScope; skipGuard?: boolean }): Promise<
   ApiResponse<{
     deletedMemories: number;
     deletedMemoriesUser: number;
@@ -1718,6 +1614,7 @@ export async function handleCleanup(skipGuard = false): Promise<
     deletedPrompts: number;
   }>
 > {
+  const skipGuard = args.skipGuard ?? false;
   if (!skipGuard && _cleanupInProgress) {
     return { success: false, error: "Cleanup is already in progress" };
   }
@@ -1776,7 +1673,7 @@ export async function handleCleanup(skipGuard = false): Promise<
   }
 }
 
-export async function handleDeduplicate(skipGuard = false): Promise<
+export async function handleDeduplicate(args: { scope: JobScope; skipGuard?: boolean }): Promise<
   ApiResponse<{
     totalChecked: number;
     groupsChecked: number;
@@ -1785,6 +1682,7 @@ export async function handleDeduplicate(skipGuard = false): Promise<
     failedDeletes: string[];
   }>
 > {
+  const skipGuard = args.skipGuard ?? false;
   if (!skipGuard && _dedupInProgress) {
     return { success: false, error: "Deduplication is already in progress" };
   }
@@ -1958,30 +1856,19 @@ export function handleMigrationRun(_body: {
 
 export async function handleListUserProfiles(): Promise<
   ApiResponse<{
-    profiles: Array<{ userId: string; displayName: string; userEmail: string }>;
-    defaultUserId: string;
+    profiles: Array<{ profileId: string }>;
   }>
 > {
   try {
     await ensureInit();
-    const { getTags } = await import("./tags.js");
-    const tags = await getTags(process.cwd());
-    const defaultUserId = tags.user.userEmail || undefined;
-
-    if (!defaultUserId) {
-      return { success: false, error: "No user email configured. Set git user.email." };
-    }
-
     const profiles = await profileRepo.getAllActiveProfiles();
     const list = profiles.map((p) => ({
-      userId: p.userId,
-      displayName: p.displayName || p.userId,
-      userEmail: p.userEmail || p.userId,
+      profileId: p.profileId,
     }));
 
     return {
       success: true,
-      data: { profiles: list, defaultUserId },
+      data: { profiles: list },
     };
   } catch (error) {
     log("handleListUserProfiles: error", { error: String(error) });
@@ -2012,7 +1899,6 @@ export async function handleClientConnect(data: {
   ApiResponse<{
     firstTime: boolean;
     daysSinceLastSeen: number | null;
-    nickname: string | null;
     welcomeBack: boolean;
     stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
   }>
@@ -2024,9 +1910,7 @@ export async function handleClientConnect(data: {
     await ensureInit();
 
     const metadata = data.metadata ?? {};
-    // Extract user email from metadata for client-to-user linking
-    const userEmail = typeof metadata.user === "string" ? metadata.user : undefined;
-    const result = await clientRepo!.upsertClient(data.clientId, metadata, userEmail);
+    const result = await clientRepo!.upsertClient(data.clientId, metadata);
     const thresholdHours = getServerConfig().clientWelcomeBackThreshold;
 
     let daysSinceLastSeen: number | null = null;
@@ -2041,7 +1925,7 @@ export async function handleClientConnect(data: {
     }
 
     // Log lifecycle event
-    const displayName = result.row.nickname || data.clientId.slice(0, 8);
+    const displayName = data.clientId.slice(0, 8);
     if (result.firstTime) {
       logInfo(`🆕 New client connected: ${displayName}`, {
         clientId: data.clientId,
@@ -2061,25 +1945,6 @@ export async function handleClientConnect(data: {
       });
     }
 
-    if (userEmail) {
-      logDebug(`Client linked to user`, { clientId: data.clientId, userEmail });
-
-      // Sync to identity store (best-effort)
-      try {
-        const configNickname =
-          typeof metadata.nickname === "string" ? metadata.nickname : undefined;
-        if (configNickname) {
-          await identityRepo!.upsertIdentity(userEmail, { nickname: configNickname });
-        }
-      } catch (err) {
-        logError("handleClientConnect: failed to sync identity", {
-          clientId: data.clientId,
-          userEmail,
-          error: String(err),
-        });
-      }
-    }
-
     // Get stats
     const stats = await clientRepo!.getClientStats(data.clientId);
 
@@ -2088,7 +1953,6 @@ export async function handleClientConnect(data: {
       data: {
         firstTime: result.firstTime,
         daysSinceLastSeen,
-        nickname: result.row.nickname,
         welcomeBack,
         stats: {
           totalMemories: stats.totalMemories,
@@ -2103,60 +1967,8 @@ export async function handleClientConnect(data: {
   }
 }
 
-export async function handleSetClientNickname(data: {
-  clientId: string;
-  nickname: string;
-}): Promise<ApiResponse<{ nickname: string }>> {
-  try {
-    if (typeof data.clientId !== "string" || typeof data.nickname !== "string") {
-      return { success: false, error: "clientId and nickname must be strings" };
-    }
-    const trimmedClientId = data.clientId.trim();
-    const trimmedNickname = data.nickname.trim();
-    if (!trimmedClientId || !trimmedNickname) {
-      return { success: false, error: "clientId and nickname are required" };
-    }
-    if (trimmedNickname.length > 100) {
-      return { success: false, error: "nickname must be 100 characters or less" };
-    }
-    await ensureInit();
-
-    // Write to client table
-    const result = await clientRepo!.setNickname(trimmedClientId, trimmedNickname);
-    if (!result) {
-      return { success: false, error: "Client not found — connect first" };
-    }
-
-    // Sync to canonical identity store and profile cache (best-effort)
-    try {
-      const email = await clientRepo!.getEmailByClientId(trimmedClientId);
-      if (email) {
-        await identityRepo!.upsertIdentity(email, { nickname: trimmedNickname });
-        try {
-          await profileRepo!.setNickname(email, trimmedNickname);
-        } catch {
-          /* cache sync best-effort */
-        }
-      }
-    } catch (err) {
-      logError("handleSetClientNickname: failed to sync to identity/profile", {
-        clientId: trimmedClientId,
-        error: String(err),
-      });
-    }
-
-    logInfo(`✏️ Client renamed: ${trimmedNickname}`, { clientId: trimmedClientId });
-
-    return { success: true, data: { nickname: result.nickname! } };
-  } catch (error) {
-    logError("handleSetClientNickname: error", { error: String(error) });
-    return { success: false, error: "Internal server error" };
-  }
-}
-
 export async function handleGetClientStats(data: { clientId: string }): Promise<
   ApiResponse<{
-    nickname: string | null;
     firstSeen: number;
     lastSeen: number;
     totalMemories: number;
@@ -2175,22 +1987,9 @@ export async function handleGetClientStats(data: { clientId: string }): Promise<
       return { success: false, error: "Client not found — connect first" };
     }
 
-    // Prefer identity store nickname over client cache
-    let nickname = stats.client.nickname;
-    try {
-      const email = await clientRepo!.getEmailByClientId(data.clientId);
-      if (email) {
-        const identityNickname = await identityRepo!.getNickname(email);
-        if (identityNickname) nickname = identityNickname;
-      }
-    } catch {
-      /* fallback to client nickname */
-    }
-
     return {
       success: true,
       data: {
-        nickname,
         firstSeen: stats.client.firstSeen,
         lastSeen: stats.client.lastSeen,
         totalMemories: stats.totalMemories,

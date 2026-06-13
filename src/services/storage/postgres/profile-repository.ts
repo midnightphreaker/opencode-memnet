@@ -39,17 +39,13 @@ function rowToProfileRow(row: any): UserProfileRow {
 
   return {
     id: row.id,
-    userId: row.user_id,
-    displayName: row.display_name,
-    userName: row.user_name,
-    userEmail: row.user_email,
+    profileId: row.profile_id,
     profileData,
     version: row.version,
     createdAt: Number(row.created_at),
     lastAnalyzedAt: Number(row.last_analyzed_at),
     totalPromptsAnalyzed: row.total_prompts_analyzed,
     isActive: row.is_active,
-    nickname: row.nickname ?? null,
   };
 }
 
@@ -83,11 +79,11 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
     await closePostgresClient();
   }
 
-  async getActiveProfile(userId: string): Promise<UserProfileRow | null> {
+  async getActiveProfile(profileId: string): Promise<UserProfileRow | null> {
     const sql = getPostgresClient();
     const rows = await sql`
       SELECT * FROM user_profiles
-      WHERE user_id = ${userId} AND is_active = true
+      WHERE profile_id = ${profileId} AND is_active = true
       LIMIT 1
     `;
     if (rows.length === 0) return null;
@@ -111,19 +107,8 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
     return rows.map(rowToProfileRow);
   }
 
-  async setNickname(userId: string, nickname: string): Promise<boolean> {
-    const sql = getPostgresClient();
-    const result = await sql`
-      UPDATE user_profiles SET nickname = ${nickname} WHERE user_id = ${userId} AND is_active = true
-    `;
-    return (result.count ?? 0) > 0;
-  }
-
   async createProfile(
-    userId: string,
-    displayName: string,
-    userName: string,
-    userEmail: string,
+    profileId: string,
     profileData: UserProfileData,
     promptsAnalyzed: number
   ): Promise<string> {
@@ -142,15 +127,15 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
     await sql.begin(async (tx) => {
       await tx`
         INSERT INTO user_profiles (
-          id, user_id, display_name, user_name, user_email,
+          id, profile_id,
           profile_data, version, created_at, last_analyzed_at,
           total_prompts_analyzed, is_active
         ) VALUES (
-          ${id}, ${userId}, ${displayName}, ${userName}, ${userEmail},
+          ${id}, ${profileId},
           ${tx.json(cleanedData as any)}, 1, ${now}, ${now},
           ${promptsAnalyzed}, true
         )
-        ON CONFLICT (id) DO NOTHING
+        ON CONFLICT (profile_id) DO NOTHING
       `;
 
       // Add creation changelog inside same transaction

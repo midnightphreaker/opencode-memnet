@@ -99,10 +99,32 @@ export const migrations: Migration[] = [
   // ── 4: memories table ──
   {
     version: 4,
-    description: "Create memories table with dynamic vector columns",
+    description: "Create repository identity and memories tables",
     transactional: true,
     up: async (sql) => {
       const vecType = vectorColumnType();
+      await sql`
+        CREATE TABLE IF NOT EXISTS git_repositories (
+          id               TEXT PRIMARY KEY,
+          normalized_url   TEXT NOT NULL UNIQUE,
+          canonical_url    TEXT NOT NULL,
+          repo_nickname    TEXT NOT NULL,
+          created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+      `;
+      await sql`
+        CREATE TABLE IF NOT EXISTS profile_repo_links (
+          profile_id         TEXT NOT NULL,
+          repo_id            TEXT NOT NULL REFERENCES git_repositories(id) ON DELETE CASCADE,
+          local_project_path TEXT,
+          git_user_name      TEXT,
+          git_user_email     TEXT,
+          first_seen         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          last_seen          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          PRIMARY KEY (profile_id, repo_id)
+        )
+      `;
       // Dynamic DDL: validated vector type + integer dimensions from config.
       await sql.unsafe(`
         CREATE TABLE IF NOT EXISTS memories (
@@ -132,13 +154,12 @@ export const migrations: Migration[] = [
             )
           ) STORED,
 
-          display_name   TEXT,
-          user_name      TEXT,
-          user_email     TEXT,
-          project_path   TEXT,
-          project_name   TEXT,
-          git_repo_url   TEXT,
-          is_pinned      BOOLEAN NOT NULL DEFAULT FALSE,
+          profile_id    TEXT    NOT NULL,
+          repo_id       TEXT,
+          local_project_path TEXT,
+          git_repo_url  TEXT,
+          repo_nickname TEXT,
+          is_pinned     BOOLEAN NOT NULL DEFAULT FALSE,
 
           migrated_from_db_path TEXT,
           migrated_at          TIMESTAMPTZ
@@ -158,6 +179,8 @@ export const migrations: Migration[] = [
       await sql`CREATE INDEX IF NOT EXISTS idx_memories_type ON memories (type)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories (created_at DESC)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_memories_is_pinned ON memories (is_pinned)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_memories_profile_repo ON memories (profile_id, repo_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_memories_profile_created ON memories (profile_id, created_at DESC)`;
       await sql`
         CREATE INDEX IF NOT EXISTS idx_memories_session_id
         ON memories (session_id)
@@ -205,7 +228,9 @@ export const migrations: Migration[] = [
           id                    TEXT PRIMARY KEY,
           session_id            TEXT    NOT NULL,
           message_id            TEXT    NOT NULL,
-          project_path          TEXT,
+          profile_id            TEXT    NOT NULL,
+          repo_id               TEXT    NOT NULL,
+          local_project_path    TEXT,
           content               TEXT    NOT NULL,
           created_at            BIGINT  NOT NULL,
           captured              SMALLINT NOT NULL DEFAULT 0,
@@ -216,7 +241,7 @@ export const migrations: Migration[] = [
       await sql`CREATE INDEX IF NOT EXISTS idx_user_prompts_session ON user_prompts (session_id)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_user_prompts_captured ON user_prompts (captured)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_user_prompts_created ON user_prompts (created_at DESC)`;
-      await sql`CREATE INDEX IF NOT EXISTS idx_user_prompts_project ON user_prompts (project_path)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_user_prompts_profile_repo ON user_prompts (profile_id, repo_id)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_user_prompts_linked ON user_prompts (linked_memory_id)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_user_prompts_user_learning ON user_prompts (user_learning_captured)`;
     },
@@ -231,10 +256,7 @@ export const migrations: Migration[] = [
       await sql`
         CREATE TABLE IF NOT EXISTS user_profiles (
           id                      TEXT PRIMARY KEY,
-          user_id                 TEXT    NOT NULL UNIQUE,
-          display_name            TEXT    NOT NULL,
-          user_name               TEXT    NOT NULL,
-          user_email              TEXT    NOT NULL,
+          profile_id              TEXT    NOT NULL UNIQUE,
           profile_data            JSONB   NOT NULL,
           version                 INTEGER NOT NULL DEFAULT 1,
           created_at              BIGINT  NOT NULL,
@@ -256,7 +278,7 @@ export const migrations: Migration[] = [
         )
       `;
 
-      await sql`CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles (user_id)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_user_profiles_profile_id ON user_profiles (profile_id)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_user_profiles_is_active ON user_profiles (is_active)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_user_profile_changelogs_profile_id ON user_profile_changelogs (profile_id)`;
       await sql`CREATE INDEX IF NOT EXISTS idx_user_profile_changelogs_version ON user_profile_changelogs (version DESC)`;
@@ -349,13 +371,12 @@ export const migrations: Migration[] = [
   // ── 12: clients table for client identity tracking ──
   {
     version: 12,
-    description: "Create clients table for client identity tracking",
+    description: "Create clients table for device stats",
     transactional: true,
     up: async (sql) => {
       await sql`
         CREATE TABLE IF NOT EXISTS clients (
           id TEXT PRIMARY KEY,
-          nickname TEXT,
           first_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
           last_seen TIMESTAMPTZ NOT NULL DEFAULT now(),
           client_metadata JSONB NOT NULL DEFAULT '{}',
@@ -364,7 +385,6 @@ export const migrations: Migration[] = [
         )
       `;
       await sql`CREATE INDEX IF NOT EXISTS idx_clients_last_seen ON clients (last_seen)`;
-      await sql`CREATE INDEX IF NOT EXISTS idx_clients_nickname ON clients (nickname) WHERE nickname IS NOT NULL`;
     },
   },
 
@@ -410,88 +430,6 @@ export const migrations: Migration[] = [
       `;
       await sql`
         CREATE INDEX IF NOT EXISTS idx_memory_tag_aliases_tag_id ON memory_tag_aliases (tag_id)
-      `;
-    },
-  },
-
-  // ── 14: Add nickname column to user_profiles ──
-  {
-    version: 14,
-    description: "Add nickname column to user_profiles",
-    transactional: true,
-    up: async (sql: SqlClient) => {
-      await sql`
-        ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS nickname TEXT DEFAULT NULL
-      `;
-    },
-  },
-
-  // ── 15: Add user_email to clients table ──
-  {
-    version: 15,
-    description: "Add user_email column to clients table for client-to-user linking",
-    transactional: true,
-    up: async (sql: SqlClient) => {
-      await sql`
-        ALTER TABLE clients ADD COLUMN IF NOT EXISTS user_email TEXT
-      `;
-      await sql`
-        CREATE INDEX IF NOT EXISTS idx_clients_user_email ON clients (user_email)
-      `;
-    },
-  },
-
-  // ── 16: Create user_identities table ──
-  {
-    version: 16,
-    description: "Create user_identities table as canonical identity store",
-    transactional: true,
-    up: async (sql: SqlClient) => {
-      await sql`CREATE EXTENSION IF NOT EXISTS pgcrypto`;
-      await sql`
-        CREATE TABLE IF NOT EXISTS user_identities (
-          id           TEXT PRIMARY KEY,
-          email        TEXT NOT NULL UNIQUE,
-          nickname     TEXT,
-          display_name TEXT,
-          created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-          updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-      `;
-      await sql`
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_user_identities_email ON user_identities (email)
-      `;
-      await sql`
-        CREATE INDEX IF NOT EXISTS idx_user_identities_nickname ON user_identities (nickname) WHERE nickname IS NOT NULL
-      `;
-
-      // Seed from existing user_profiles
-      await sql`
-        INSERT INTO user_identities (id, email, nickname, display_name)
-        SELECT
-          gen_random_uuid()::text,
-          user_email,
-          nickname,
-          display_name
-        FROM user_profiles
-        WHERE is_active = true
-        ON CONFLICT (email) DO UPDATE SET
-          nickname = COALESCE(user_identities.nickname, EXCLUDED.nickname),
-          display_name = COALESCE(user_identities.display_name, EXCLUDED.display_name)
-      `;
-
-      // Seed from clients with user_email
-      await sql`
-        INSERT INTO user_identities (id, email, nickname, display_name)
-        SELECT
-          gen_random_uuid()::text,
-          user_email,
-          nickname,
-          NULL
-        FROM clients
-        WHERE user_email IS NOT NULL
-        ON CONFLICT (email) DO UPDATE SET
-          nickname = COALESCE(user_identities.nickname, EXCLUDED.nickname)
       `;
     },
   },

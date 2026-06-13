@@ -4,6 +4,14 @@
 
 export type MemoryScopeKind = "user" | "project";
 
+export interface ProfileScope {
+  profileId: string;
+}
+
+export interface ProjectScope extends ProfileScope {
+  repoId: string;
+}
+
 // ── Search and query types ──
 
 export interface MemorySearchOptions {
@@ -15,7 +23,8 @@ export interface MemorySearchOptions {
   includeAllContainers?: boolean;
   limit: number;
   similarityThreshold: number;
-  userEmail?: string;
+  profileId: string;
+  repoId?: string;
 }
 
 // ── Row / result types ──
@@ -29,12 +38,11 @@ export interface MemoryRow {
   metadata?: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
-  displayName?: string;
-  userName?: string;
-  userEmail?: string;
-  projectPath?: string;
-  projectName?: string;
+  profileId: string;
+  repoId?: string;
+  localProjectPath?: string;
   gitRepoUrl?: string;
+  repoNickname?: string;
   isPinned?: boolean;
 }
 
@@ -45,12 +53,11 @@ export interface SearchResult {
   similarity: number;
   tags?: string[];
   metadata?: Record<string, unknown>;
-  displayName?: string;
-  userName?: string;
-  userEmail?: string;
-  projectPath?: string;
-  projectName?: string;
+  profileId?: string;
+  repoId?: string;
+  localProjectPath?: string;
   gitRepoUrl?: string;
+  repoNickname?: string;
   isPinned?: boolean;
   containerTag?: string;
   createdAt?: number;
@@ -59,12 +66,11 @@ export interface SearchResult {
 export interface TagInfo {
   tag: string;
   tags?: string[];
-  displayName?: string;
-  userName?: string;
-  userEmail?: string;
-  projectPath?: string;
-  projectName?: string;
+  profileId?: string;
+  repoId?: string;
+  localProjectPath?: string;
   gitRepoUrl?: string;
+  repoNickname?: string;
 }
 
 export interface MemoryRecord {
@@ -78,12 +84,11 @@ export interface MemoryRecord {
   createdAt: number;
   updatedAt: number;
   metadata?: string;
-  displayName?: string;
-  userName?: string;
-  userEmail?: string;
-  projectPath?: string;
-  projectName?: string;
+  profileId: string;
+  repoId?: string;
+  localProjectPath?: string;
   gitRepoUrl?: string;
+  repoNickname?: string;
 }
 
 // ── Memory repository interface ──
@@ -107,7 +112,8 @@ export interface MemoryRepository {
     includeAllContainers?: boolean;
     containerTagFilter?: string;
     limit: number;
-    userEmail?: string;
+    profileId: string;
+    repoId?: string;
   }): Promise<MemoryRow[]>;
 
   getBySessionId(args: {
@@ -204,7 +210,9 @@ export interface UserPromptRow {
   id: string;
   sessionId: string;
   messageId: string;
-  projectPath: string | null;
+  profileId: string;
+  repoId: string;
+  localProjectPath: string | null;
   content: string;
   createdAt: number;
   captured: number; // 0=uncaptured, 1=captured, 2=claimed
@@ -216,12 +224,14 @@ export interface UserPromptRepository {
   initialize(): Promise<void>;
   close(): Promise<void>;
 
-  savePrompt(
-    sessionId: string,
-    messageId: string,
-    projectPath: string,
-    content: string
-  ): Promise<string>;
+  savePrompt(args: {
+    sessionId: string;
+    messageId: string;
+    profileId: string;
+    repoId: string;
+    localProjectPath?: string;
+    content: string;
+  }): Promise<string>;
   getLastUncapturedPrompt(sessionId: string): Promise<UserPromptRow | null>;
   deletePrompt(promptId: string): Promise<void>;
   markAsCaptured(promptId: string): Promise<void>;
@@ -230,15 +240,20 @@ export interface UserPromptRepository {
   countUncapturedPrompts(): Promise<number>;
   getUncapturedPrompts(limit: number): Promise<UserPromptRow[]>;
   markMultipleAsCaptured(promptIds: string[]): Promise<void>;
-  countUnanalyzedForUserLearning(): Promise<number>;
-  getPromptsForUserLearning(limit: number): Promise<UserPromptRow[]>;
+  countUnanalyzedForUserLearning(profileId: string): Promise<number>;
+  getPromptsForUserLearning(args: { profileId: string; limit: number }): Promise<UserPromptRow[]>;
   markAsUserLearningCaptured(promptId: string): Promise<void>;
   markMultipleAsUserLearningCaptured(promptIds: string[]): Promise<void>;
   deleteOldPrompts(cutoffTime: number): Promise<{ deleted: number; linkedMemoryIds: string[] }>;
   linkMemoryToPrompt(promptId: string, memoryId: string): Promise<void>;
   getPromptById(promptId: string): Promise<UserPromptRow | null>;
-  getCapturedPrompts(projectPath?: string): Promise<UserPromptRow[]>;
-  searchPrompts(query: string, projectPath?: string, limit?: number): Promise<UserPromptRow[]>;
+  getCapturedPrompts(args: { profileId: string; repoId?: string }): Promise<UserPromptRow[]>;
+  searchPrompts(args: {
+    query: string;
+    profileId: string;
+    repoId?: string;
+    limit?: number;
+  }): Promise<UserPromptRow[]>;
   getPromptsByIds(ids: string[]): Promise<UserPromptRow[]>;
 }
 
@@ -252,17 +267,13 @@ export interface UserProfileData {
 
 export interface UserProfileRow {
   id: string;
-  userId: string;
-  displayName: string;
-  userName: string;
-  userEmail: string;
+  profileId: string;
   profileData: string;
   version: number;
   createdAt: number;
   lastAnalyzedAt: number;
   totalPromptsAnalyzed: number;
   isActive: boolean;
-  nickname?: string | null;
 }
 
 export interface UserProfileChangelogRow {
@@ -279,14 +290,11 @@ export interface UserProfileRepository {
   initialize(): Promise<void>;
   close(): Promise<void>;
 
-  getActiveProfile(userId: string): Promise<UserProfileRow | null>;
+  getActiveProfile(profileId: string): Promise<UserProfileRow | null>;
   getProfileById(profileId: string): Promise<UserProfileRow | null>;
   getAllActiveProfiles(): Promise<UserProfileRow[]>;
   createProfile(
-    userId: string,
-    displayName: string,
-    userName: string,
-    userEmail: string,
+    profileId: string,
     profileData: UserProfileData,
     promptsAnalyzed: number
   ): Promise<string>;
@@ -306,7 +314,6 @@ export interface UserProfileRepository {
    * confidence boosting, deduplication, and cap enforcement.
    */
   mergeProfileData(existing: UserProfileData, updates: Partial<UserProfileData>): UserProfileData;
-  setNickname(userId: string, nickname: string): Promise<boolean>;
 }
 
 // ── AI session repository interface ──
@@ -365,8 +372,6 @@ export interface AISessionRepository {
 
 export interface ClientRow {
   id: string;
-  nickname: string | null;
-  userEmail?: string;
   firstSeen: number; // unix epoch ms
   lastSeen: number; // unix epoch ms
   clientMetadata: Record<string, unknown>;
@@ -379,10 +384,8 @@ export interface ClientRepository {
   close(): Promise<void>;
   upsertClient(
     id: string,
-    metadata: Record<string, any>,
-    userEmail?: string
+    metadata: Record<string, any>
   ): Promise<{ firstTime: boolean; previousLastSeen: number | null; row: ClientRow }>;
-  setNickname(id: string, nickname: string): Promise<ClientRow | null>;
   getClient(id: string): Promise<ClientRow | null>;
   getClientStats(id: string): Promise<{
     client: ClientRow | null;
@@ -390,42 +393,4 @@ export interface ClientRepository {
     memoriesToday: number;
     totalPrompts: number;
   }>;
-  /** Look up clients by user email. Returns all clients linked to that email. */
-  getClientsByEmail(email: string): Promise<ClientRow[]>;
-  /** Get the user email associated with a client ID. Returns null if not linked. */
-  getEmailByClientId(clientId: string): Promise<string | null>;
-}
-
-// ── User identity types ──
-
-export interface UserIdentityRow {
-  id: string;
-  email: string;
-  nickname: string | null;
-  displayName: string | null;
-  createdAt: number; // unix epoch ms
-  updatedAt: number; // unix epoch ms
-}
-
-export interface UserIdentityRepository {
-  initialize(): Promise<void>;
-  close(): Promise<void>;
-
-  /** Get identity by email. Returns null if not found. */
-  getByEmail(email: string): Promise<UserIdentityRow | null>;
-
-  /** Get identity by ID. Returns null if not found. */
-  getById(id: string): Promise<UserIdentityRow | null>;
-
-  /** Create or update identity. Returns the upserted row. */
-  upsertIdentity(
-    email: string,
-    data: { nickname?: string; displayName?: string }
-  ): Promise<UserIdentityRow>;
-
-  /** Set nickname for an identity. Returns true if updated. */
-  setNickname(email: string, nickname: string): Promise<boolean>;
-
-  /** Get nickname by email. Returns null if no identity or no nickname. */
-  getNickname(email: string): Promise<string | null>;
 }

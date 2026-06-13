@@ -30,27 +30,26 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   const tags = await getTags(directory, TAGS_CONFIG);
   const clientId = getClientId();
   const client = getRemoteClient(clientId);
+  const profileId = CLIENT_CONFIG.profileId ?? "default";
+  const repoId = tags.project.tag;
 
   // Connect to server — registers client and gets connection info
   let connectionInfo: Awaited<ReturnType<typeof client.clientConnect>>["data"] | null = null;
   try {
     const connectResult = await client.clientConnect(clientId, {
       ...getClientMetadata(),
-      user: tags.project.userEmail || tags.user.userEmail,
-      nickname: CLIENT_CONFIG.nickname || undefined,
     });
     if (connectResult.success && connectResult.data) {
       connectionInfo = connectResult.data;
       logInfo("Plugin initialized", {
         project: tags.project.projectName || tags.project.tag,
-        user: tags.user.userEmail || "unknown",
+        profileId,
         clientId: clientId.slice(0, 8),
         firstTime: connectionInfo.firstTime,
-        nickname: connectionInfo.nickname,
       });
 
       // Show welcome toast
-      const displayName = connectionInfo.nickname || clientId.slice(0, 8);
+      const displayName = clientId.slice(0, 8);
       if (connectionInfo.firstTime) {
         ctx.client?.tui
           .showToast({
@@ -87,20 +86,6 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               variant: "success",
               duration: 3000,
             },
-          })
-          .catch((e) => {
-            logDebug("toast failed", { error: String(e) });
-          });
-      }
-      // Sync nickname from config if set
-      const configNickname = CLIENT_CONFIG.nickname;
-      if (configNickname && configNickname !== connectionInfo.nickname) {
-        client
-          .setClientNickname(clientId, configNickname)
-          .then((res) => {
-            if (res.success) {
-              logInfo("Nickname synced from config", { nickname: configNickname });
-            }
           })
           .catch((e) => {
             logDebug("toast failed", { error: String(e) });
@@ -165,7 +150,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         const ctxResult = await client.getContext({
           sessionID: input.sessionID,
           projectTag: tags.project.tag,
-          userId: tags.user.userEmail || undefined,
+          profileId,
+          repoId,
           maxMemories: CLIENT_CONFIG.chatMessage.maxMemories,
           excludeCurrentSession: CLIENT_CONFIG.chatMessage.excludeCurrentSession,
           maxAgeDays: CLIENT_CONFIG.chatMessage.maxAgeDays,
@@ -254,12 +240,11 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                 const result = await client.addMemory(sanitized, tags.project.tag, {
                   type: args.type as any,
                   tags: parsedTags,
-                  displayName: tags.project.displayName,
-                  userName: tags.project.userName,
-                  userEmail: tags.project.userEmail,
-                  projectPath: tags.project.projectPath,
-                  projectName: tags.project.projectName,
+                  profileId,
+                  repoId,
+                  localProjectPath: tags.project.projectPath,
                   gitRepoUrl: tags.project.gitRepoUrl,
+                  repoNickname: tags.project.projectName,
                 });
                 return JSON.stringify({
                   success: result.success,
@@ -273,7 +258,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                 const res = await client.searchMemories(
                   args.query,
                   tags.project.tag,
-                  args.scope ?? CLIENT_CONFIG.memory.defaultScope
+                  args.scope ?? CLIENT_CONFIG.memory.defaultScope,
+                  { profileId, repoId }
                 );
                 return JSON.stringify({
                   success: res.success,
@@ -288,7 +274,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               }
 
               case "profile": {
-                const profileRes = await client.getUserProfile(tags.user.userEmail || undefined);
+                const profileRes = await client.getUserProfile(profileId);
                 return JSON.stringify({ success: true, profile: profileRes.data ?? null });
               }
 
@@ -296,7 +282,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                 const res = await client.listMemories(
                   tags.project.tag,
                   args.limit || 20,
-                  args.scope ?? CLIENT_CONFIG.memory.defaultScope
+                  args.scope ?? CLIENT_CONFIG.memory.defaultScope,
+                  { profileId, repoId }
                 );
                 return JSON.stringify({
                   success: res.success,
@@ -359,13 +346,12 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
             const result = await client.autoCapture({
               sessionID,
               projectTag: tags.project.tag,
+              profileId,
+              repoId,
               projectMetadata: {
-                displayName: tags.project.displayName,
-                userName: tags.project.userName,
-                userEmail: tags.project.userEmail,
-                projectPath: tags.project.projectPath,
-                projectName: tags.project.projectName,
+                localProjectPath: tags.project.projectPath,
                 gitRepoUrl: tags.project.gitRepoUrl,
+                repoNickname: tags.project.projectName,
               },
               conversationMessages: messages.map((m: any) => ({
                 role: m.info.role,
@@ -414,7 +400,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           const memoriesResult = await client.searchMemoriesBySessionID(
             sessionID,
             tags.project.tag,
-            10
+            10,
+            { profileId, repoId }
           );
           if (!memoriesResult.success || memoriesResult.results.length === 0) return;
           let output = `## Restored Session Memory\n\n`;

@@ -1,5 +1,4 @@
 import type { PluginInput } from "@opencode-ai/plugin";
-import { getTags } from "./tags.js";
 import { log, logDebug } from "./logger.js";
 import { CONFIG } from "../config.js";
 import { createUserPromptRepository, createUserProfileRepository } from "./storage/factory.js";
@@ -17,34 +16,26 @@ let isLearningRunning = false;
 
 export async function performUserProfileLearning(
   ctx: PluginInput,
-  directory: string
+  _directory: string,
+  profileId: string
 ): Promise<void> {
   if (isLearningRunning) return;
   isLearningRunning = true;
   try {
-    const count = await promptRepo.countUnanalyzedForUserLearning();
+    const count = await promptRepo.countUnanalyzedForUserLearning(profileId);
     const threshold = CONFIG.userProfileAnalysisInterval;
 
     if (count < threshold) {
       return;
     }
 
-    const prompts = await promptRepo.getPromptsForUserLearning(threshold);
+    const prompts = await promptRepo.getPromptsForUserLearning({ profileId, limit: threshold });
 
     if (prompts.length === 0) {
       return;
     }
 
-    const tags = await getTags(directory);
-    const userId = tags.user.userEmail;
-    if (!userId) {
-      throw new Error(
-        "Cannot perform profile learning: no user email configured. " +
-          "Set git user.email or provide userEmailOverride in config."
-      );
-    }
-
-    const existingProfile = await profileRepo.getActiveProfile(userId);
+    const existingProfile = await profileRepo.getActiveProfile(profileId);
 
     const context = buildUserAnalysisContext(prompts, existingProfile);
 
@@ -76,14 +67,7 @@ export async function performUserProfileLearning(
         changeSummary
       );
     } else {
-      await profileRepo.createProfile(
-        userId,
-        tags.user.displayName || "Unknown",
-        tags.user.userName || "unknown",
-        tags.user.userEmail || "unknown",
-        updatedProfileData,
-        prompts.length
-      );
+      await profileRepo.createProfile(profileId, updatedProfileData, prompts.length);
     }
 
     await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));

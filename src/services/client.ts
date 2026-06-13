@@ -128,6 +128,7 @@ export class LocalMemoryClient {
         includeAllContainers: scope === "all-projects",
         limit: CONFIG.maxMemories,
         similarityThreshold: CONFIG.similarityThreshold,
+        profileId: "default",
       });
 
       return { success: true as const, results, total: results.length, timing: 0 };
@@ -149,12 +150,11 @@ export class LocalMemoryClient {
       sessionID?: string;
       reasoning?: string;
       captureTimestamp?: number;
-      displayName?: string;
-      userName?: string;
-      userEmail?: string;
-      projectPath?: string;
-      projectName?: string;
+      profileId?: string;
+      repoId?: string;
+      localProjectPath?: string;
       gitRepoUrl?: string;
+      repoNickname?: string;
       [key: string]: unknown;
     }
   ) {
@@ -173,12 +173,11 @@ export class LocalMemoryClient {
       const now = Date.now();
 
       const {
-        displayName,
-        userName,
-        userEmail,
-        projectPath,
-        projectName,
+        profileId,
+        repoId,
+        localProjectPath,
         gitRepoUrl,
+        repoNickname,
         type,
         tags: _tags,
         ...dynamicMetadata
@@ -194,12 +193,11 @@ export class LocalMemoryClient {
         type,
         createdAt: now,
         updatedAt: now,
-        displayName,
-        userName,
-        userEmail,
-        projectPath,
-        projectName,
+        profileId: profileId ?? "default",
+        repoId,
+        localProjectPath,
         gitRepoUrl,
+        repoNickname,
         metadata:
           Object.keys(dynamicMetadata).length > 0 ? JSON.stringify(dynamicMetadata) : undefined,
       });
@@ -242,6 +240,7 @@ export class LocalMemoryClient {
         containerTag,
         includeAllContainers: scope === "all-projects",
         limit,
+        profileId: "default",
       });
 
       const memories = rows.map((r) => ({
@@ -249,12 +248,11 @@ export class LocalMemoryClient {
         summary: r.content,
         createdAt: safeToISOString(r.createdAt),
         metadata: r.metadata,
-        displayName: r.displayName,
-        userName: r.userName,
-        userEmail: r.userEmail,
-        projectPath: r.projectPath,
-        projectName: r.projectName,
+        profileId: r.profileId,
+        repoId: r.repoId,
+        localProjectPath: r.localProjectPath,
         gitRepoUrl: r.gitRepoUrl,
+        repoNickname: r.repoNickname,
       }));
 
       return {
@@ -294,12 +292,11 @@ export class LocalMemoryClient {
         tags: row.tags,
         metadata: row.metadata,
         containerTag: row.containerTag,
-        displayName: row.displayName,
-        userName: row.userName,
-        userEmail: row.userEmail,
-        projectPath: row.projectPath,
-        projectName: row.projectName,
+        profileId: row.profileId,
+        repoId: row.repoId,
+        localProjectPath: row.localProjectPath,
         gitRepoUrl: row.gitRepoUrl,
+        repoNickname: row.repoNickname,
         createdAt: row.createdAt,
       }));
 

@@ -9,6 +9,22 @@
  */
 
 import { describe, expect, it } from "bun:test";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
+const source = readFileSync(
+  join(import.meta.dir, "../../src/services/storage/postgres/memory-repository.ts"),
+  "utf-8"
+);
+
+describe("PostgresMemoryRepository strict identity SQL", () => {
+  it("filters project memory by profile_id and repo_id", () => {
+    expect(source).toContain("profile_id");
+    expect(source).toContain("repo_id");
+    expect(source).not.toMatch(/\buser_email\b/);
+    expect(source).not.toMatch(/\bproject_path\b/);
+  });
+});
 
 // ── Re-implement the pure helpers for testing (same logic as memory-repository.ts) ──
 

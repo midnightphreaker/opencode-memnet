@@ -20,8 +20,6 @@ export class PostgresClientRepository implements ClientRepository {
   private mapRow(row: any): ClientRow {
     return {
       id: row.id,
-      nickname: row.nickname,
-      userEmail: row.user_email ?? undefined,
       firstSeen: new Date(row.first_seen).getTime(),
       lastSeen: new Date(row.last_seen).getTime(),
       clientMetadata: row.client_metadata ?? {},
@@ -32,8 +30,7 @@ export class PostgresClientRepository implements ClientRepository {
 
   async upsertClient(
     id: string,
-    metadata: Record<string, any>,
-    userEmail?: string
+    metadata: Record<string, any>
   ): Promise<{ firstTime: boolean; previousLastSeen: number | null; row: ClientRow }> {
     const sql = this.sql();
 
@@ -48,16 +45,12 @@ export class PostgresClientRepository implements ClientRepository {
       firstTime = true;
     }
 
-    // Use provided userEmail, or keep existing value, or NULL
-    const emailValue = userEmail ?? null;
-
     const rows = await sql`
-      INSERT INTO clients (id, nickname, first_seen, last_seen, client_metadata, user_email, created_at, updated_at)
-      VALUES (${id}, NULL, now(), now(), ${sql.json(metadata)}, ${emailValue}, now(), now())
+      INSERT INTO clients (id, first_seen, last_seen, client_metadata, created_at, updated_at)
+      VALUES (${id}, now(), now(), ${sql.json(metadata)}, now(), now())
       ON CONFLICT (id) DO UPDATE SET
         last_seen = now(),
         client_metadata = ${sql.json(metadata)},
-        user_email = COALESCE(${emailValue}, clients.user_email),
         updated_at = now()
       RETURNING *
     `;
@@ -67,16 +60,6 @@ export class PostgresClientRepository implements ClientRepository {
       previousLastSeen,
       row: this.mapRow(rows[0]!),
     };
-  }
-
-  async setNickname(id: string, nickname: string): Promise<ClientRow | null> {
-    const sql = this.sql();
-    const rows = await sql`
-      UPDATE clients SET nickname = ${nickname}, updated_at = now()
-      WHERE id = ${id}
-      RETURNING *
-    `;
-    return rows.length > 0 ? this.mapRow(rows[0]!) : null;
   }
 
   async getClient(id: string): Promise<ClientRow | null> {
@@ -112,18 +95,5 @@ export class PostgresClientRepository implements ClientRepository {
       memoriesToday,
       totalPrompts,
     };
-  }
-
-  async getClientsByEmail(email: string): Promise<ClientRow[]> {
-    const sql = this.sql();
-    const rows = await sql`SELECT * FROM clients WHERE user_email = ${email}`;
-    return rows.map((row: any) => this.mapRow(row));
-  }
-
-  async getEmailByClientId(clientId: string): Promise<string | null> {
-    const sql = this.sql();
-    const rows = await sql`SELECT user_email FROM clients WHERE id = ${clientId}`;
-    if (rows.length === 0) return null;
-    return rows[0]!.user_email ?? null;
   }
 }

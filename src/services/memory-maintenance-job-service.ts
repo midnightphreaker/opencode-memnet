@@ -17,7 +17,7 @@ export type JobType =
 
 export type JobStatus = "queued" | "running" | "completed" | "failed";
 
-export type JobScope = "all_profiles" | "current_profile";
+export type JobScope = { kind: "all" } | { kind: "profile"; profileId: string };
 
 export interface MemoryMaintenanceJob {
   id: string;
@@ -72,9 +72,13 @@ function jobTypeLabel(type: JobType): string {
   }
 }
 
+function scopeKey(scope: JobScope): string {
+  return scope.kind === "all" ? "all" : `profile:${scope.profileId}`;
+}
+
 function isDuplicateJob(existing: MemoryMaintenanceJob, type: JobType, scope: JobScope): boolean {
   // Same type and scope is a duplicate if already queued or running
-  return existing.type === type && existing.scope === scope;
+  return existing.type === type && scopeKey(existing.scope) === scopeKey(scope);
 }
 
 // ── Public API ─────────────────────────────────────────────────────────
@@ -196,7 +200,7 @@ export async function getTagMigrationVirtualJob(): Promise<MemoryMaintenanceJob 
         id: "tag-migration-perpetual",
         type: "tag_untagged_memories",
         status: "running",
-        scope: "all_profiles",
+        scope: { kind: "all" },
         createdAt: new Date().toISOString(),
         processedItems: progress.processed,
         totalItems: progress.total > 0 ? progress.total : undefined,
@@ -267,7 +271,7 @@ async function executeJob(job: MemoryMaintenanceJob): Promise<void> {
 
 async function executeCleanupJob(job: MemoryMaintenanceJob): Promise<void> {
   const { handleCleanup } = await import("./api-handlers.js");
-  const result = await handleCleanup(true);
+  const result = await handleCleanup({ scope: job.scope, skipGuard: true });
 
   if (!result.success) {
     throw new Error(result.error || "Cleanup failed");
@@ -293,7 +297,7 @@ async function executeCleanupJob(job: MemoryMaintenanceJob): Promise<void> {
 
 async function executeDeduplicateJob(job: MemoryMaintenanceJob): Promise<void> {
   const { handleDeduplicate } = await import("./api-handlers.js");
-  const result = await handleDeduplicate(true);
+  const result = await handleDeduplicate({ scope: job.scope, skipGuard: true });
 
   if (!result.success) {
     throw new Error(result.error || "Deduplication failed");

@@ -1,4 +1,5 @@
 // src/server-config.ts
+import { readFileSync } from "node:fs";
 import { resolveSecretValue } from "./services/secret-resolver.js";
 
 /**
@@ -71,6 +72,7 @@ export interface ServerConfig {
   webServerAllowedOrigin: string;
   disableWebuiAuth: boolean;
   disableClientAuth: boolean;
+  profileKeysFile?: string;
   logLevel: "debug" | "info" | "warn" | "error";
   clientWelcomeBackThreshold: number;
   /** @internal When true, tag migration is skipped because LLM config is missing */
@@ -161,6 +163,7 @@ export function initServerConfig(): ServerConfig {
     webServerAllowedOrigin: env.WEB_SERVER_ALLOWED_ORIGIN || "*",
     disableWebuiAuth: env.DISABLE_WEBUI_AUTH === "true",
     disableClientAuth: env.DISABLE_CLIENT_AUTH === "true",
+    profileKeysFile: env.PROFILE_KEYS_FILE || undefined,
     logLevel:
       (env.LOG_LEVEL as "debug" | "info" | "warn" | "error") ||
       (env.DEBUG === "true" || env.DEBUG === "1" ? "debug" : "info"),
@@ -191,6 +194,16 @@ export function validateServerConfig(config: ServerConfig): string[] {
       errors.push(
         "SERVER_API_KEY is required (unless both DISABLE_WEBUI_AUTH and DISABLE_CLIENT_AUTH are true)"
       );
+    }
+  }
+  if (!config.disableClientAuth && config.profileKeysFile) {
+    try {
+      const profileKeys = readFileSync(config.profileKeysFile, "utf-8").trim();
+      if (!profileKeys || profileKeys === "{}" || profileKeys === "[]") {
+        errors.push("PROFILE_KEYS_FILE must contain at least one profile key");
+      }
+    } catch (error) {
+      errors.push(`PROFILE_KEYS_FILE cannot be read: ${String(error)}`);
     }
   }
 

@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 type ScenarioInput = {
   args: Record<string, unknown>;
   userEmail?: string;
+  profileId?: string;
   profileData?: unknown;
 };
 
@@ -28,10 +29,12 @@ import { mock } from "bun:test";
 
 let profileUserId = "not-called";
 const userEmail = ${JSON.stringify(input.userEmail)};
+const profileId = ${JSON.stringify(input.profileId)};
 const profileData = ${JSON.stringify(input.profileData ?? null)};
 const clientConfig = {
   serverUrl: "http://localhost:4747",
   apiKey: "test-key",
+  profileId,
   autoCaptureEnabled: false,
   showAutoCaptureToasts: false,
   showErrorToasts: false,
@@ -132,7 +135,7 @@ afterEach(() => {
 });
 
 describe("memory tool profile runtime behavior", () => {
-  it("reads the profile for the resolved user email", () => {
+  it("reads the profile for the configured profile id", () => {
     const profile = {
       preferences: [{ description: "Default Jira board is DOPS", confidence: 0.9 }],
       patterns: [],
@@ -140,19 +143,21 @@ describe("memory tool profile runtime behavior", () => {
     };
     const result = runScenario({
       userEmail: "test@example.com",
+      profileId: "phrkr",
       profileData: profile,
       args: { mode: "profile" },
     });
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.parsed.profileUserId).toBe("test@example.com");
+    expect(result.parsed.profileUserId).toBe("phrkr");
     expect(result.parsed.result).toEqual({ success: true, profile });
   });
 
   it("returns null profile when the server has no profile", () => {
     const result = runScenario({
       userEmail: "test@example.com",
+      profileId: "phrkr",
       profileData: null,
       args: { mode: "profile" },
     });
@@ -162,14 +167,23 @@ describe("memory tool profile runtime behavior", () => {
     expect(result.parsed.result).toEqual({ success: true, profile: null });
   });
 
-  it("passes undefined user id when no user email is resolved", () => {
+  it("uses the default profile id when none is configured", () => {
     const result = runScenario({
       args: { mode: "profile" },
     });
 
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.parsed.profileUserId).toBeUndefined();
+    expect(result.parsed.profileUserId).toBe("default");
     expect(result.parsed.result).toEqual({ success: true, profile: null });
+  });
+});
+
+describe("profile learning strict identity", () => {
+  it("does not learn from unscoped prompts", () => {
+    const source = readFileSync(join(import.meta.dir, "../src/services/api-handlers.ts"), "utf-8");
+    expect(source).not.toContain("countUnanalyzedForUserLearning()");
+    expect(source).not.toContain("getPromptsForUserLearning(threshold)");
+    expect(source).toContain("profileId");
   });
 });

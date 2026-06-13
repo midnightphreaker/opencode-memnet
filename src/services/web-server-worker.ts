@@ -43,8 +43,8 @@ const MAX_BODY_SIZE = 10 * 1024 * 1024; // 10MB
 const disableWebuiAuth = CONFIG.disableWebuiAuth ?? false;
 const disableClientAuth = CONFIG.disableClientAuth ?? false;
 
-function deriveJobScope(): "all_profiles" | "current_profile" {
-  return disableWebuiAuth ? "all_profiles" : "current_profile";
+function deriveJobScope(): { kind: "all" } | { kind: "profile"; profileId: string } {
+  return disableWebuiAuth ? { kind: "all" } : { kind: "profile", profileId: "default" };
 }
 
 async function parseBody(req: Request): Promise<unknown> {
@@ -145,12 +145,23 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (path === "/api/memories" && method === "GET") {
+      if (url.searchParams.has("userEmail") || url.searchParams.has("userId")) {
+        return jsonResponse({ success: false, error: "Use profileId instead" }, 400);
+      }
       const tag = url.searchParams.get("tag") || undefined;
       const page = parseInt(url.searchParams.get("page") || "1");
       const pageSize = parseInt(url.searchParams.get("pageSize") || "20");
       const includePrompts = url.searchParams.get("includePrompts") !== "false";
-      const userEmail = url.searchParams.get("userEmail") || undefined;
-      const result = await handleListMemories(tag, page, pageSize, includePrompts, userEmail);
+      const profileId = url.searchParams.get("profileId") || "default";
+      const repoId = url.searchParams.get("repoId") || undefined;
+      const result = await handleListMemories(
+        tag,
+        page,
+        pageSize,
+        includePrompts,
+        profileId,
+        repoId
+      );
       return jsonResponse(result);
     }
 
@@ -190,17 +201,21 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (path === "/api/search" && method === "GET") {
+      if (url.searchParams.has("userEmail") || url.searchParams.has("userId")) {
+        return jsonResponse({ success: false, error: "Use profileId instead" }, 400);
+      }
       const query = url.searchParams.get("q");
       const tag = url.searchParams.get("tag") || undefined;
       const page = parseInt(url.searchParams.get("page") || "1");
       const pageSize = parseInt(url.searchParams.get("pageSize") || "20");
-      const userEmail = url.searchParams.get("userEmail") || undefined;
+      const profileId = url.searchParams.get("profileId") || "default";
+      const repoId = url.searchParams.get("repoId") || undefined;
 
       if (!query) {
         return jsonResponse({ success: false, error: "query parameter required" });
       }
 
-      const result = await handleSearch(query, tag, page, pageSize, userEmail);
+      const result = await handleSearch(query, tag, page, pageSize, profileId, repoId);
       return jsonResponse(result);
     }
 
@@ -268,8 +283,11 @@ async function handleRequest(req: Request): Promise<Response> {
     }
 
     if (path === "/api/user-profile" && method === "GET") {
-      const userId = url.searchParams.get("userId") || undefined;
-      const result = await handleGetUserProfile(userId);
+      if (url.searchParams.has("userId")) {
+        return jsonResponse({ success: false, error: "Use profileId, not userId" }, 400);
+      }
+      const profileId = url.searchParams.get("profileId") || undefined;
+      const result = await handleGetUserProfile(profileId);
       return jsonResponse(result);
     }
 
@@ -294,8 +312,11 @@ async function handleRequest(req: Request): Promise<Response> {
 
     if (path === "/api/user-profile/refresh" && method === "POST") {
       const body = (await parseBody(req)) as Record<string, unknown>;
-      const userId = (body.userId as string) || undefined;
-      const result = await handleRefreshProfile(userId);
+      if (body.userId) {
+        return jsonResponse({ success: false, error: "Use profileId, not userId" }, 400);
+      }
+      const profileId = (body.profileId as string) || undefined;
+      const result = await handleRefreshProfile(profileId);
       return jsonResponse(result);
     }
 

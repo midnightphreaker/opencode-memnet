@@ -63,12 +63,11 @@ function rowToMemoryRow(row: any): MemoryRow {
     metadata: parseMetadata(row.metadata),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
-    displayName: row.display_name ?? undefined,
-    userName: row.user_name ?? undefined,
-    userEmail: row.user_email ?? undefined,
-    projectPath: row.project_path ?? undefined,
-    projectName: row.project_name ?? undefined,
+    profileId: row.profile_id,
+    repoId: row.repo_id ?? undefined,
+    localProjectPath: row.local_project_path ?? undefined,
     gitRepoUrl: row.git_repo_url ?? undefined,
+    repoNickname: row.repo_nickname ?? undefined,
     isPinned: row.is_pinned ?? false,
   };
 }
@@ -82,12 +81,11 @@ function rowToSearchResult(row: any): SearchResult {
     tags: tagsStr ? tagsStr.split(",").map((t: string) => t.trim()) : [],
     metadata: parseMetadata(row.metadata),
     containerTag: row.container_tag ?? undefined,
-    displayName: row.display_name ?? undefined,
-    userName: row.user_name ?? undefined,
-    userEmail: row.user_email ?? undefined,
-    projectPath: row.project_path ?? undefined,
-    projectName: row.project_name ?? undefined,
+    profileId: row.profile_id ?? undefined,
+    repoId: row.repo_id ?? undefined,
+    localProjectPath: row.local_project_path ?? undefined,
     gitRepoUrl: row.git_repo_url ?? undefined,
+    repoNickname: row.repo_nickname ?? undefined,
     isPinned: row.is_pinned ?? false,
     createdAt: row.created_at != null ? Number(row.created_at) : undefined,
   };
@@ -122,12 +120,11 @@ function rowToMemoryRecord(row: any): MemoryRecord {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
     metadata: typeof row.metadata === "string" ? row.metadata : JSON.stringify(row.metadata ?? {}),
-    displayName: row.display_name ?? undefined,
-    userName: row.user_name ?? undefined,
-    userEmail: row.user_email ?? undefined,
-    projectPath: row.project_path ?? undefined,
-    projectName: row.project_name ?? undefined,
+    profileId: row.profile_id,
+    repoId: row.repo_id ?? undefined,
+    localProjectPath: row.local_project_path ?? undefined,
     gitRepoUrl: row.git_repo_url ?? undefined,
+    repoNickname: row.repo_nickname ?? undefined,
   };
 }
 
@@ -173,12 +170,11 @@ function computeWeightedScores(
       tags: tagsStr ? tagsStr.split(",").map((t: string) => t.trim()) : [],
       metadata: parseMetadata(row.metadata),
       containerTag: row.container_tag ?? undefined,
-      displayName: row.display_name ?? undefined,
-      userName: row.user_name ?? undefined,
-      userEmail: row.user_email ?? undefined,
-      projectPath: row.project_path ?? undefined,
-      projectName: row.project_name ?? undefined,
+      profileId: row.profile_id ?? undefined,
+      repoId: row.repo_id ?? undefined,
+      localProjectPath: row.local_project_path ?? undefined,
       gitRepoUrl: row.git_repo_url ?? undefined,
+      repoNickname: row.repo_nickname ?? undefined,
       isPinned: row.is_pinned ?? false,
       createdAt: row.created_at != null ? Number(row.created_at) : undefined,
     };
@@ -199,7 +195,7 @@ async function executeSearchQuery(
 ): Promise<any[]> {
   const scopeHashFilter = options.scopeHash || "";
   const containerTagFilter = options.includeAllContainers ? "" : options.containerTag;
-  const userEmail = options.userEmail ?? "";
+  const repoId = options.repoId ?? "";
 
   return sql.unsafe(
     `
@@ -210,7 +206,8 @@ async function executeSearchQuery(
         WHERE scope = $2
           AND ($3::text = '' OR scope_hash = $3)
           AND ($4::text = '' OR container_tag = $4)
-          AND ($6::text = '' OR user_email = $6)
+          AND profile_id = $6
+          AND ($7::text = '' OR repo_id = $7)
         ORDER BY vector <=> $1::${vectorCast}
         LIMIT $5
       )
@@ -221,7 +218,8 @@ async function executeSearchQuery(
         WHERE scope = $2
           AND ($3::text = '' OR scope_hash = $3)
           AND ($4::text = '' OR container_tag = $4)
-          AND ($6::text = '' OR user_email = $6)
+          AND profile_id = $6
+          AND ($7::text = '' OR repo_id = $7)
           AND tags_vector IS NOT NULL
         ORDER BY tags_vector <=> $1::${vectorCast}
         LIMIT $5
@@ -237,7 +235,15 @@ async function executeSearchQuery(
     FROM memories m
     JOIN candidates c ON c.id = m.id
     `,
-    [queryLiteral, options.scope, scopeHashFilter, containerTagFilter, candidateLimit, userEmail]
+    [
+      queryLiteral,
+      options.scope,
+      scopeHashFilter,
+      containerTagFilter,
+      candidateLimit,
+      options.profileId,
+      repoId,
+    ]
   );
 }
 
@@ -275,8 +281,8 @@ export class PostgresMemoryRepository implements MemoryRepository {
       INSERT INTO memories (
         id, scope, scope_hash, content, vector, tags_vector,
         container_tag, tags, type, created_at, updated_at,
-        metadata, display_name, user_name, user_email,
-        project_path, project_name, git_repo_url, is_pinned
+        metadata, profile_id, repo_id, local_project_path,
+        git_repo_url, repo_nickname, is_pinned
       ) VALUES (
         ${record.id},
         ${scope},
@@ -290,12 +296,11 @@ export class PostgresMemoryRepository implements MemoryRepository {
         ${record.createdAt},
         ${record.updatedAt},
         ${sql.json(metadata as any)},
-        ${record.displayName ?? null},
-        ${record.userName ?? null},
-        ${record.userEmail ?? null},
-        ${record.projectPath ?? null},
-        ${record.projectName ?? null},
+        ${record.profileId},
+        ${record.repoId ?? null},
+        ${record.localProjectPath ?? null},
         ${record.gitRepoUrl ?? null},
+        ${record.repoNickname ?? null},
         ${false}
       )
       ON CONFLICT (id) DO NOTHING
@@ -347,12 +352,12 @@ export class PostgresMemoryRepository implements MemoryRepository {
         tags = ${record.tags ?? null},
         type = ${record.type ?? null},
         updated_at = ${record.updatedAt},
-        metadata = ${sql.json(metadata as any)},        display_name = ${record.displayName ?? null},
-        user_name = ${record.userName ?? null},
-        user_email = ${record.userEmail ?? null},
-        project_path = ${record.projectPath ?? null},
-        project_name = ${record.projectName ?? null},
-        git_repo_url = ${record.gitRepoUrl ?? null}
+        metadata = ${sql.json(metadata as any)},
+        profile_id = ${record.profileId},
+        repo_id = ${record.repoId ?? null},
+        local_project_path = ${record.localProjectPath ?? null},
+        git_repo_url = ${record.gitRepoUrl ?? null},
+        repo_nickname = ${record.repoNickname ?? null}
       WHERE id = ${record.id}
     `;
   }
@@ -410,12 +415,13 @@ export class PostgresMemoryRepository implements MemoryRepository {
     includeAllContainers?: boolean;
     containerTagFilter?: string;
     limit: number;
-    userEmail?: string;
+    profileId: string;
+    repoId?: string;
   }): Promise<MemoryRow[]> {
     const sql = getPostgresClient();
     const scopeHashFilter = args.scopeHash || "";
     const containerTagFilter = args.includeAllContainers ? "" : args.containerTag;
-    const userEmailFilter = args.userEmail ?? "";
+    const repoIdFilter = args.repoId ?? "";
 
     // Build dynamic LIKE condition for containerTagFilter
     const tagLikeValue = args.containerTagFilter ? `%${args.containerTagFilter}%` : "";
@@ -427,7 +433,8 @@ export class PostgresMemoryRepository implements MemoryRepository {
         WHERE scope = ${args.scope}
           AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
           AND (${containerTagFilter}::text = '' OR container_tag = ${containerTagFilter})
-          AND (${userEmailFilter}::text = '' OR user_email = ${userEmailFilter})
+          AND profile_id = ${args.profileId}
+          AND (${repoIdFilter}::text = '' OR repo_id = ${repoIdFilter})
           AND container_tag LIKE ${tagLikeValue}
         ORDER BY created_at DESC
         LIMIT ${args.limit}
@@ -440,7 +447,8 @@ export class PostgresMemoryRepository implements MemoryRepository {
       WHERE scope = ${args.scope}
         AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
         AND (${containerTagFilter}::text = '' OR container_tag = ${containerTagFilter})
-        AND (${userEmailFilter}::text = '' OR user_email = ${userEmailFilter})
+        AND profile_id = ${args.profileId}
+        AND (${repoIdFilter}::text = '' OR repo_id = ${repoIdFilter})
       ORDER BY created_at DESC
       LIMIT ${args.limit}
     `;
@@ -473,12 +481,11 @@ export class PostgresMemoryRepository implements MemoryRepository {
       tags: row.tags ? row.tags.split(",").map((t: string) => t.trim()) : [],
       metadata: parseMetadata(row.metadata),
       containerTag: row.container_tag ?? undefined,
-      displayName: row.display_name ?? undefined,
-      userName: row.user_name ?? undefined,
-      userEmail: row.user_email ?? undefined,
-      projectPath: row.project_path ?? undefined,
-      projectName: row.project_name ?? undefined,
+      profileId: row.profile_id ?? undefined,
+      repoId: row.repo_id ?? undefined,
+      localProjectPath: row.local_project_path ?? undefined,
       gitRepoUrl: row.git_repo_url ?? undefined,
+      repoNickname: row.repo_nickname ?? undefined,
       isPinned: row.is_pinned ?? false,
       createdAt: Number(row.created_at),
     }));
@@ -526,8 +533,8 @@ export class PostgresMemoryRepository implements MemoryRepository {
     const scopeHashFilter = args?.scopeHash ?? "";
 
     const rows = await sql`
-      SELECT DISTINCT container_tag, display_name, user_name, user_email,
-                      project_path, project_name, git_repo_url
+      SELECT DISTINCT container_tag, profile_id, repo_id, local_project_path,
+                      git_repo_url, repo_nickname
       FROM memories
       WHERE scope = ${scope}
         AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
@@ -535,12 +542,11 @@ export class PostgresMemoryRepository implements MemoryRepository {
 
     return rows.map((row: any) => ({
       tag: row.container_tag,
-      displayName: row.display_name ?? undefined,
-      userName: row.user_name ?? undefined,
-      userEmail: row.user_email ?? undefined,
-      projectPath: row.project_path ?? undefined,
-      projectName: row.project_name ?? undefined,
+      profileId: row.profile_id ?? undefined,
+      repoId: row.repo_id ?? undefined,
+      localProjectPath: row.local_project_path ?? undefined,
       gitRepoUrl: row.git_repo_url ?? undefined,
+      repoNickname: row.repo_nickname ?? undefined,
     }));
   }
 

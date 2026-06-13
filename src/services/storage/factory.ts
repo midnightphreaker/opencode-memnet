@@ -21,8 +21,6 @@ import type {
   MemorySearchOptions,
   SearchResult,
   TagInfo,
-  UserIdentityRepository,
-  UserIdentityRow,
   UserProfileChangelogRow,
   UserProfileData,
   UserProfileRepository,
@@ -38,7 +36,6 @@ let promptRepo: UserPromptRepository | null = null;
 let profileRepo: UserProfileRepository | null = null;
 let sessionRepo: AISessionRepository | null = null;
 let clientRepo: ClientRepository | null = null;
-let identityRepo: UserIdentityRepository | null = null;
 let tagRegistry: PostgresTagRegistry | null = null;
 
 export function createMemoryRepository(): MemoryRepository {
@@ -71,12 +68,6 @@ export function createClientRepository(): ClientRepository {
   return clientRepo;
 }
 
-export function createUserIdentityRepository(): UserIdentityRepository {
-  if (identityRepo) return identityRepo;
-  identityRepo = new PostgresUserIdentityRepositoryLazy();
-  return identityRepo;
-}
-
 export function createTagRegistry(): PostgresTagRegistry {
   if (tagRegistry) return tagRegistry;
   tagRegistry = new PostgresTagRegistry();
@@ -92,21 +83,18 @@ export async function initializeStorage(): Promise<{
   profileRepo: UserProfileRepository;
   sessionRepo: AISessionRepository;
   clientRepo: ClientRepository;
-  identityRepo: UserIdentityRepository;
 }> {
   const mem = createMemoryRepository();
   const prompt = createUserPromptRepository();
   const profile = createUserProfileRepository();
   const session = createAISessionRepository();
   const client = createClientRepository();
-  const identity = createUserIdentityRepository();
 
   await mem.initialize();
   await prompt.initialize();
   await profile.initialize();
   await session.initialize();
   await client.initialize();
-  await identity.initialize();
 
   return {
     memoryRepo: mem,
@@ -114,7 +102,6 @@ export async function initializeStorage(): Promise<{
     profileRepo: profile,
     sessionRepo: session,
     clientRepo: client,
-    identityRepo: identity,
   };
 }
 
@@ -141,10 +128,6 @@ export async function closeStorage(): Promise<void> {
   if (clientRepo) {
     await clientRepo.close();
     clientRepo = null;
-  }
-  if (identityRepo) {
-    await identityRepo.close();
-    identityRepo = null;
   }
 }
 
@@ -276,13 +259,8 @@ class PostgresUserPromptRepositoryLazy implements UserPromptRepository {
   async close(): Promise<void> {
     await (await this.repo()).close();
   }
-  async savePrompt(
-    sessionId: string,
-    messageId: string,
-    projectPath: string,
-    content: string
-  ): Promise<string> {
-    return (await this.repo()).savePrompt(sessionId, messageId, projectPath, content);
+  async savePrompt(args: Parameters<UserPromptRepository["savePrompt"]>[0]): Promise<string> {
+    return (await this.repo()).savePrompt(args);
   }
   async getLastUncapturedPrompt(sessionId: string): Promise<UserPromptRow | null> {
     return (await this.repo()).getLastUncapturedPrompt(sessionId);
@@ -308,11 +286,13 @@ class PostgresUserPromptRepositoryLazy implements UserPromptRepository {
   async markMultipleAsCaptured(promptIds: string[]): Promise<void> {
     await (await this.repo()).markMultipleAsCaptured(promptIds);
   }
-  async countUnanalyzedForUserLearning(): Promise<number> {
-    return (await this.repo()).countUnanalyzedForUserLearning();
+  async countUnanalyzedForUserLearning(profileId: string): Promise<number> {
+    return (await this.repo()).countUnanalyzedForUserLearning(profileId);
   }
-  async getPromptsForUserLearning(limit: number): Promise<UserPromptRow[]> {
-    return (await this.repo()).getPromptsForUserLearning(limit);
+  async getPromptsForUserLearning(
+    args: Parameters<UserPromptRepository["getPromptsForUserLearning"]>[0]
+  ): Promise<UserPromptRow[]> {
+    return (await this.repo()).getPromptsForUserLearning(args);
   }
   async markAsUserLearningCaptured(promptId: string): Promise<void> {
     await (await this.repo()).markAsUserLearningCaptured(promptId);
@@ -331,15 +311,15 @@ class PostgresUserPromptRepositoryLazy implements UserPromptRepository {
   async getPromptById(promptId: string): Promise<UserPromptRow | null> {
     return (await this.repo()).getPromptById(promptId);
   }
-  async getCapturedPrompts(projectPath?: string): Promise<UserPromptRow[]> {
-    return (await this.repo()).getCapturedPrompts(projectPath);
+  async getCapturedPrompts(
+    args: Parameters<UserPromptRepository["getCapturedPrompts"]>[0]
+  ): Promise<UserPromptRow[]> {
+    return (await this.repo()).getCapturedPrompts(args);
   }
   async searchPrompts(
-    query: string,
-    projectPath?: string,
-    limit?: number
+    args: Parameters<UserPromptRepository["searchPrompts"]>[0]
   ): Promise<UserPromptRow[]> {
-    return (await this.repo()).searchPrompts(query, projectPath, limit);
+    return (await this.repo()).searchPrompts(args);
   }
   async getPromptsByIds(ids: string[]): Promise<UserPromptRow[]> {
     return (await this.repo()).getPromptsByIds(ids);
@@ -367,8 +347,8 @@ class PostgresUserProfileRepositoryLazy implements UserProfileRepository {
   async close(): Promise<void> {
     await (await this.repo()).close();
   }
-  async getActiveProfile(userId: string): Promise<UserProfileRow | null> {
-    return (await this.repo()).getActiveProfile(userId);
+  async getActiveProfile(profileId: string): Promise<UserProfileRow | null> {
+    return (await this.repo()).getActiveProfile(profileId);
   }
   async getProfileById(profileId: string): Promise<UserProfileRow | null> {
     return (await this.repo()).getProfileById(profileId);
@@ -377,21 +357,11 @@ class PostgresUserProfileRepositoryLazy implements UserProfileRepository {
     return (await this.repo()).getAllActiveProfiles();
   }
   async createProfile(
-    userId: string,
-    displayName: string,
-    userName: string,
-    userEmail: string,
+    profileId: string,
     profileData: UserProfileData,
     promptsAnalyzed: number
   ): Promise<string> {
-    return (await this.repo()).createProfile(
-      userId,
-      displayName,
-      userName,
-      userEmail,
-      profileData,
-      promptsAnalyzed
-    );
+    return (await this.repo()).createProfile(profileId, profileData, promptsAnalyzed);
   }
   async updateProfile(
     profileId: string,
@@ -425,10 +395,6 @@ class PostgresUserProfileRepositoryLazy implements UserProfileRepository {
       maxPatterns: CONFIG.userProfileMaxPatterns,
       maxWorkflows: CONFIG.userProfileMaxWorkflows,
     });
-  }
-
-  async setNickname(userId: string, nickname: string): Promise<boolean> {
-    return (await this.repo()).setNickname(userId, nickname);
   }
 }
 
@@ -516,13 +482,9 @@ class PostgresClientRepositoryLazy implements ClientRepository {
   }
   async upsertClient(
     id: string,
-    metadata: Record<string, unknown>,
-    userEmail?: string
+    metadata: Record<string, unknown>
   ): Promise<{ firstTime: boolean; previousLastSeen: number | null; row: ClientRow }> {
-    return (await this.repo()).upsertClient(id, metadata, userEmail);
-  }
-  async setNickname(id: string, nickname: string): Promise<ClientRow | null> {
-    return (await this.repo()).setNickname(id, nickname);
+    return (await this.repo()).upsertClient(id, metadata);
   }
   async getClient(id: string): Promise<ClientRow | null> {
     return (await this.repo()).getClient(id);
@@ -534,52 +496,5 @@ class PostgresClientRepositoryLazy implements ClientRepository {
     totalPrompts: number;
   }> {
     return (await this.repo()).getClientStats(id);
-  }
-  async getClientsByEmail(email: string): Promise<ClientRow[]> {
-    return (await this.repo()).getClientsByEmail(email);
-  }
-  async getEmailByClientId(clientId: string): Promise<string | null> {
-    return (await this.repo()).getEmailByClientId(clientId);
-  }
-}
-
-class PostgresUserIdentityRepositoryLazy implements UserIdentityRepository {
-  private target: Promise<UserIdentityRepository> | null = null;
-
-  private async repo(): Promise<UserIdentityRepository> {
-    if (!this.target) {
-      this.target = import("./postgres/identity-repository.js")
-        .then(({ PostgresUserIdentityRepository }) => new PostgresUserIdentityRepository())
-        .catch((err) => {
-          this.target = null;
-          throw err;
-        });
-    }
-    return this.target!;
-  }
-
-  async initialize(): Promise<void> {
-    await (await this.repo()).initialize();
-  }
-  async close(): Promise<void> {
-    await (await this.repo()).close();
-  }
-  async getByEmail(email: string): Promise<UserIdentityRow | null> {
-    return (await this.repo()).getByEmail(email);
-  }
-  async getById(id: string): Promise<UserIdentityRow | null> {
-    return (await this.repo()).getById(id);
-  }
-  async upsertIdentity(
-    email: string,
-    data: { nickname?: string; displayName?: string }
-  ): Promise<UserIdentityRow> {
-    return (await this.repo()).upsertIdentity(email, data);
-  }
-  async setNickname(email: string, nickname: string): Promise<boolean> {
-    return (await this.repo()).setNickname(email, nickname);
-  }
-  async getNickname(email: string): Promise<string | null> {
-    return (await this.repo()).getNickname(email);
   }
 }

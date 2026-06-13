@@ -123,7 +123,8 @@ export class RemoteMemoryClient {
   async getContext(params: {
     sessionID?: string;
     projectTag: string;
-    userId?: string;
+    profileId: string;
+    repoId: string;
     maxMemories?: number;
     excludeCurrentSession?: boolean;
     maxAgeDays?: number | null;
@@ -136,6 +137,8 @@ export class RemoteMemoryClient {
   async autoCapture(params: {
     sessionID: string;
     projectTag: string;
+    profileId: string;
+    repoId: string;
     projectMetadata: Record<string, unknown>;
     conversationMessages: any[];
     userPrompt: string;
@@ -152,7 +155,8 @@ export class RemoteMemoryClient {
   async searchMemories(
     query: string,
     containerTag: string,
-    scope: string = "project"
+    scope: string = "project",
+    params?: { profileId?: string; repoId?: string }
   ): Promise<{
     success: boolean;
     error?: string;
@@ -163,6 +167,8 @@ export class RemoteMemoryClient {
     const res = await this.request("GET", "/api/search", undefined, {
       q: query,
       tag: scope === "all-projects" ? undefined : containerTag,
+      profileId: params?.profileId,
+      repoId: scope === "all-projects" ? undefined : params?.repoId,
       pageSize: "20",
     });
     if (!res.success) return { success: false, error: res.error, results: [], total: 0, timing: 0 };
@@ -191,12 +197,11 @@ export class RemoteMemoryClient {
       containerTag,
       type: metadata?.type,
       tags: metadata?.tags,
-      displayName: metadata?.displayName,
-      userName: metadata?.userName,
-      userEmail: metadata?.userEmail,
-      projectPath: metadata?.projectPath,
-      projectName: metadata?.projectName,
+      profileId: metadata?.profileId,
+      repoId: metadata?.repoId,
+      localProjectPath: metadata?.localProjectPath,
       gitRepoUrl: metadata?.gitRepoUrl,
+      repoNickname: metadata?.repoNickname,
     });
   }
 
@@ -207,10 +212,13 @@ export class RemoteMemoryClient {
   async listMemories(
     containerTag: string,
     limit: number = 20,
-    scope: string = "project"
+    scope: string = "project",
+    params?: { profileId?: string; repoId?: string }
   ): Promise<{ success: boolean; error?: string; memories: any[]; pagination: any }> {
     const res = await this.request("GET", "/api/memories", undefined, {
       tag: scope === "all-projects" ? undefined : containerTag,
+      profileId: params?.profileId,
+      repoId: scope === "all-projects" ? undefined : params?.repoId,
       pageSize: String(limit),
     });
     if (!res.success) return { success: false, error: res.error, memories: [], pagination: {} };
@@ -222,12 +230,11 @@ export class RemoteMemoryClient {
         summary: i.content,
         createdAt: i.createdAt,
         metadata: i.metadata,
-        displayName: i.displayName,
-        userName: i.userName,
-        userEmail: i.userEmail,
-        projectPath: i.projectPath,
-        projectName: i.projectName,
+        profileId: i.profileId,
+        repoId: i.repoId,
+        localProjectPath: i.localProjectPath,
         gitRepoUrl: i.gitRepoUrl,
+        repoNickname: i.repoNickname,
       }));
     const data = res.data as any;
     return {
@@ -244,11 +251,14 @@ export class RemoteMemoryClient {
   async searchMemoriesBySessionID(
     sessionID: string,
     containerTag: string,
-    limit: number = 10
+    limit: number = 10,
+    params?: { profileId?: string; repoId?: string }
   ): Promise<{ success: boolean; error?: string; results: any[]; total: number; timing: number }> {
     const res = await this.request("GET", "/api/search", undefined, {
       q: sessionID,
       tag: containerTag,
+      profileId: params?.profileId,
+      repoId: params?.repoId,
       pageSize: String(limit),
     });
     if (!res.success) return { success: false, error: res.error, results: [], total: 0, timing: 0 };
@@ -261,12 +271,11 @@ export class RemoteMemoryClient {
         similarity: i.similarity ?? 0,
         tags: i.tags,
         metadata: i.metadata,
-        displayName: i.displayName,
-        userName: i.userName,
-        userEmail: i.userEmail,
-        projectPath: i.projectPath,
-        projectName: i.projectName,
+        profileId: i.profileId,
+        repoId: i.repoId,
+        localProjectPath: i.localProjectPath,
         gitRepoUrl: i.gitRepoUrl,
+        repoNickname: i.repoNickname,
         createdAt: i.createdAt,
       }));
     return { success: true, results, total: results.length, timing: 0 };
@@ -274,9 +283,9 @@ export class RemoteMemoryClient {
 
   // ─── User Profile ───────────────────────────────────────
 
-  async getUserProfile(userId?: string): Promise<ApiResponse<any>> {
+  async getUserProfile(profileId?: string): Promise<ApiResponse<any>> {
     const query: Record<string, string> = {};
-    if (userId) query.userId = userId;
+    if (profileId) query.profileId = profileId;
     return this.request("GET", "/api/user-profile", undefined, query);
   }
 
@@ -289,24 +298,14 @@ export class RemoteMemoryClient {
     ApiResponse<{
       firstTime: boolean;
       daysSinceLastSeen: number | null;
-      nickname: string | null;
       welcomeBack: boolean;
       stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
     }>
   > {
     return this.request("POST", "/api/client/connect", { clientId, metadata });
   }
-
-  async setClientNickname(
-    clientId: string,
-    nickname: string
-  ): Promise<ApiResponse<{ nickname: string }>> {
-    return this.request("PUT", "/api/client/nickname", { clientId, nickname });
-  }
-
   async getClientStats(clientId: string): Promise<
     ApiResponse<{
-      nickname: string | null;
       firstSeen: number;
       lastSeen: number;
       totalMemories: number;

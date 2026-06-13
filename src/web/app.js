@@ -26,7 +26,7 @@ const state = {
   userProfile: null,
   authKey: localStorage.getItem("opencode-memnet-apikey") || "",
   activeProfileId: localStorage.getItem("opencode-memnet-active-profile") || "",
-  panelViewUserId: "",
+  panelViewProfileId: "",
   authDisabled: false,
   lastJobStatus: {
     activity: { active: false, text: "Idle", queuedCount: 0 },
@@ -432,7 +432,7 @@ async function addMemory(e) {
       containerTag,
       type: type || undefined,
       tags,
-      userEmail: state.activeProfileId || undefined,
+      profileId: state.activeProfileId || undefined,
     }),
   });
 
@@ -466,7 +466,7 @@ async function loadMemories() {
   }
 
   if (state.activeProfileId) {
-    endpoint += `&userEmail=${encodeURIComponent(state.activeProfileId)}`;
+    endpoint += `&profileId=${encodeURIComponent(state.activeProfileId)}`;
   }
 
   const result = await fetchAPI(endpoint);
@@ -1155,9 +1155,9 @@ async function runMigration(strategy) {
 }
 
 async function loadUserProfile() {
-  const viewUserId = state.panelViewUserId || state.activeProfileId;
-  const endpoint = viewUserId
-    ? `/api/user-profile?userId=${encodeURIComponent(viewUserId)}`
+  const viewProfileId = state.panelViewProfileId || state.activeProfileId;
+  const endpoint = viewProfileId
+    ? `/api/user-profile?profileId=${encodeURIComponent(viewProfileId)}`
     : "/api/user-profile";
   const result = await fetchAPI(endpoint);
   if (result.success) {
@@ -1221,7 +1221,7 @@ function renderUserProfile() {
   container.innerHTML = `
     <div class="profile-header">
       <div class="profile-info">
-        <h3>${escapeHtml(profile.displayName || profile.userId)}</h3>
+        <h3>${escapeHtml(profile.profileId)}</h3>
         <div class="profile-stats">
           <div class="stat-pill">
             <span class="label">${t("profile-version")}</span>
@@ -1402,7 +1402,7 @@ function openProfileSheet() {
     loadProfilePanelSelector();
   } else {
     document.getElementById("profile-selector-row").style.display = "none";
-    state.panelViewUserId = state.activeProfileId;
+    state.panelViewProfileId = state.activeProfileId;
     loadUserProfile();
   }
 }
@@ -1422,21 +1422,18 @@ async function loadProfilePanelSelector() {
       select.innerHTML = "";
       data.data.profiles.forEach((p) => {
         const opt = document.createElement("option");
-        opt.value = p.userId;
-        opt.textContent = p.displayName + " (" + p.userEmail + ")";
+        opt.value = p.profileId;
+        opt.textContent = p.profileId;
         select.appendChild(opt);
       });
 
       // Select the default or currently active profile
-      const defaultId = data.data.defaultUserId;
-      const targetId = state.activeProfileId || defaultId;
-      if (data.data.profiles.some((p) => p.userId === targetId)) {
+      const targetId = state.activeProfileId || data.data.profiles[0].profileId;
+      if (data.data.profiles.some((p) => p.profileId === targetId)) {
         select.value = targetId;
-      } else if (data.data.profiles.some((p) => p.userId === defaultId)) {
-        select.value = defaultId;
       }
 
-      state.panelViewUserId = select.value;
+      state.panelViewProfileId = select.value;
       loadUserProfile();
     } else {
       // No profiles available — show empty state
@@ -1492,7 +1489,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   document.getElementById("refresh-profile-btn")?.addEventListener("click", refreshProfile);
   document.getElementById("profile-panel-select").addEventListener("change", (e) => {
-    state.panelViewUserId = e.target.value;
+    state.panelViewProfileId = e.target.value;
     loadUserProfile();
   });
 
@@ -1581,59 +1578,26 @@ document.addEventListener("DOMContentLoaded", async () => {
         select.innerHTML = "";
         data.data.profiles.forEach((p) => {
           const opt = document.createElement("option");
-          opt.value = p.userId;
-          opt.textContent = p.displayName + " (" + p.userEmail + ")";
+          opt.value = p.profileId;
+          opt.textContent = p.profileId;
           select.appendChild(opt);
         });
         select.disabled = false;
 
-        const defaultId = data.data.defaultUserId;
         select._populating = true;
-        const targetId = state.activeProfileId || defaultId;
-        if (data.data.profiles.some((p) => p.userId === targetId)) {
+        const targetId = state.activeProfileId || data.data.profiles[0].profileId;
+        if (data.data.profiles.some((p) => p.profileId === targetId)) {
           select.value = targetId;
-        } else if (data.data.profiles.some((p) => p.userId === defaultId)) {
-          select.value = defaultId;
         } else if (data.data.profiles.length > 0) {
-          select.value = data.data.profiles[0].userId;
+          select.value = data.data.profiles[0].profileId;
         }
         if (!state.activeProfileId && data.data.profiles.length > 0) {
-          state.activeProfileId = data.data.profiles[0].userId;
+          state.activeProfileId = data.data.profiles[0].profileId;
         }
         select._populating = false;
       }
     } catch (e) {
       console.warn("Failed to load profiles:", e);
-    }
-  }
-
-  async function loadNickname() {
-    try {
-      const result = await fetchAPI("/api/user-profile");
-      if (result.success && result.data && result.data.exists) {
-        document.getElementById("settings-nickname").value = result.data.nickname || "";
-      }
-    } catch (e) {
-      console.warn("Failed to load nickname:", e);
-    }
-  }
-
-  async function saveNickname() {
-    const nickname = document.getElementById("settings-nickname").value.trim();
-    try {
-      const result = await fetchAPI("/api/user-profile/nickname", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ nickname }),
-      });
-      if (result.success) {
-        showToast(t("nickname-updated"), "success");
-      } else {
-        showToast(result.error || t("nickname-update-failed"), "error");
-      }
-    } catch (e) {
-      showToast(t("nickname-update-failed"), "error");
-      console.warn("Failed to save nickname:", e);
     }
   }
 
@@ -1650,7 +1614,6 @@ document.addEventListener("DOMContentLoaded", async () => {
         loadMemories();
         loadStats();
       }
-      await loadNickname();
     }
   });
   document.getElementById("settings-close").addEventListener("click", () => {
@@ -1685,8 +1648,6 @@ document.addEventListener("DOMContentLoaded", async () => {
     // Try to load profiles and set the default
     await populateProfileDropdown();
 
-    await saveNickname();
-
     document.getElementById("settings-panel").classList.add("hidden");
     loadTags();
     loadMemories();
@@ -1717,7 +1678,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       document.getElementById("settings-profile").disabled = false;
       // Auto-load profiles since we have access
       populateProfileDropdown();
-      // Hide auth-related fields (API key, profile), keep nickname accessible
+      // Hide auth-related fields when auth is disabled.
       document.getElementById("settings-apikey").closest(".settings-field").style.display = "none";
       document.getElementById("settings-profile").closest(".settings-field").style.display = "none";
       // When auth is disabled, update title and hide localStorage note

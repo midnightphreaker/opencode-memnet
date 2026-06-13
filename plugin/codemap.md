@@ -30,4 +30,4 @@ OpenCode plugin client that connects to the opencode-memnet server to inject con
 - Consumed by: OpenCode runtime loads this as a plugin via `@opencode-ai/plugin` / `@opencode-ai/sdk`.
 - Depends on:
   - `../shared/` — `client-config` (config loading), `tags` (project/user resolution), `privacy` (content sanitization), `logger` (structured logging).
-  - Server REST API endpoints: `/api/context/inject`, `/api/memories`, `/api/search`, `/api/auto-capture`, `/api/client/connect`, `/api/client/nickname`, `/api/client/stats`, `/api/user-profile`.
+  - Server REST API endpoints: `/api/context/inject`, `/api/memories`, `/api/search`, `/api/auto-capture`, `/api/client/connect`, `/api/client/stats`, `/api/user-profile`.

@@ -42,10 +42,22 @@ try {
   const { RemoteMemoryClient } = await import(${JSON.stringify(remoteClientUrl)});
   const client = new RemoteMemoryClient("https://memory.example", "test-key", "client-id");
 
-  await client.searchMemories("database migration", "opencode_project_current", "project");
-  await client.searchMemories("database migration", "opencode_project_current", "all-projects");
-  await client.listMemories("opencode_project_current", 5, "project");
-  await client.listMemories("opencode_project_current", 5, "all-projects");
+  await client.searchMemories("database migration", "opencode_project_current", "project", {
+    profileId: "phrkr",
+    repoId: "repo_123",
+  });
+  await client.searchMemories("database migration", "opencode_project_current", "all-projects", {
+    profileId: "phrkr",
+    repoId: "repo_123",
+  });
+  await client.listMemories("opencode_project_current", 5, "project", {
+    profileId: "phrkr",
+    repoId: "repo_123",
+  });
+  await client.listMemories("opencode_project_current", 5, "all-projects", {
+    profileId: "phrkr",
+    repoId: "repo_123",
+  });
 
   console.log(JSON.stringify({ urls }));
 } finally {
@@ -78,10 +90,11 @@ describe("RemoteMemoryClient memory scope query parameters", () => {
       throw new Error(result.stderr || result.stdout);
     }
     expect(result.parsed.urls).toEqual([
-      "https://memory.example/api/search?q=database+migration&tag=opencode_project_current&pageSize=20",
-      "https://memory.example/api/search?q=database+migration&pageSize=20",
-      "https://memory.example/api/memories?tag=opencode_project_current&pageSize=5",
-      "https://memory.example/api/memories?pageSize=5",
+      "https://memory.example/api/search?q=database+migration&tag=opencode_project_current&profileId=phrkr&repoId=repo_123&pageSize=20",
+      "https://memory.example/api/search?q=database+migration&profileId=phrkr&pageSize=20",
+      "https://memory.example/api/memories?tag=opencode_project_current&profileId=phrkr&repoId=repo_123&pageSize=5",
+      "https://memory.example/api/memories?profileId=phrkr&pageSize=5",
     ]);
+    expect(result.parsed.urls.some((url: string) => url.includes("repoId=repo_123"))).toBe(true);
   });
 });

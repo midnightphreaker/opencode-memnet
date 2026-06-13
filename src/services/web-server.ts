@@ -30,9 +30,7 @@ import {
   handleMigrationRun,
   handleListUserProfiles,
   handleClientConnect,
-  handleSetClientNickname,
   handleGetClientStats,
-  handleSetProfileNickname,
 } from "./api-handlers.js";
 import {
   enqueueJob,
@@ -67,8 +65,8 @@ export class WebServer {
   private readonly disableWebuiAuth: boolean;
   private readonly disableClientAuth: boolean;
 
-  private deriveJobScope(): "all_profiles" | "current_profile" {
-    return this.disableWebuiAuth ? "all_profiles" : "current_profile";
+  private deriveJobScope(): { kind: "all" } | { kind: "profile"; profileId: string } {
+    return this.disableWebuiAuth ? { kind: "all" } : { kind: "profile", profileId: "default" };
   }
 
   constructor(
@@ -244,12 +242,23 @@ export class WebServer {
       }
 
       if (path === "/api/memories" && method === "GET") {
+        if (url.searchParams.has("userEmail") || url.searchParams.has("userId")) {
+          return this.jsonResponse({ success: false, error: "Use profileId instead" }, 400);
+        }
         const tag = url.searchParams.get("tag") || undefined;
         const page = parseInt(url.searchParams.get("page") || "1") || 1;
         const pageSize = parseInt(url.searchParams.get("pageSize") || "20") || 20;
         const includePrompts = url.searchParams.get("includePrompts") !== "false";
-        const userEmail = url.searchParams.get("userEmail") || undefined;
-        const result = await handleListMemories(tag, page, pageSize, includePrompts, userEmail);
+        const profileId = url.searchParams.get("profileId") || "default";
+        const repoId = url.searchParams.get("repoId") || undefined;
+        const result = await handleListMemories(
+          tag,
+          page,
+          pageSize,
+          includePrompts,
+          profileId,
+          repoId
+        );
         return this.jsonResponse(result);
       }
 
@@ -289,11 +298,15 @@ export class WebServer {
       }
 
       if (path === "/api/search" && method === "GET") {
+        if (url.searchParams.has("userEmail") || url.searchParams.has("userId")) {
+          return this.jsonResponse({ success: false, error: "Use profileId instead" }, 400);
+        }
         const query = url.searchParams.get("q");
         const tag = url.searchParams.get("tag") || undefined;
         const page = parseInt(url.searchParams.get("page") || "1") || 1;
         const pageSize = parseInt(url.searchParams.get("pageSize") || "20") || 20;
-        const userEmail = url.searchParams.get("userEmail") || undefined;
+        const profileId = url.searchParams.get("profileId") || "default";
+        const repoId = url.searchParams.get("repoId") || undefined;
 
         if (query && query.length > 1000) {
           return new Response(
@@ -309,7 +322,7 @@ export class WebServer {
           return this.jsonResponse({ success: false, error: "query parameter required" });
         }
 
-        const result = await handleSearch(query, tag, page, pageSize, userEmail);
+        const result = await handleSearch(query, tag, page, pageSize, profileId, repoId);
         return this.jsonResponse(result);
       }
 
@@ -377,8 +390,11 @@ export class WebServer {
       }
 
       if (path === "/api/user-profile" && method === "GET") {
-        const userId = url.searchParams.get("userId") || undefined;
-        const result = await handleGetUserProfile(userId);
+        if (url.searchParams.has("userId")) {
+          return this.jsonResponse({ success: false, error: "Use profileId, not userId" }, 400);
+        }
+        const profileId = url.searchParams.get("profileId") || undefined;
+        const result = await handleGetUserProfile(profileId);
         return this.jsonResponse(result);
       }
 
@@ -403,15 +419,11 @@ export class WebServer {
 
       if (path === "/api/user-profile/refresh" && method === "POST") {
         const body = await this.parseBody(req);
-        const userId = body.userId || undefined;
-        const result = await handleRefreshProfile(userId);
-        return this.jsonResponse(result);
-      }
-
-      if (path === "/api/user-profile/nickname" && method === "PUT") {
-        const body = await this.parseBody(req);
-        const userId = url.searchParams.get("userId") || body.userId || undefined;
-        const result = await handleSetProfileNickname({ ...body, userId });
+        if (body.userId) {
+          return this.jsonResponse({ success: false, error: "Use profileId, not userId" }, 400);
+        }
+        const profileId = body.profileId || undefined;
+        const result = await handleRefreshProfile(profileId);
         return this.jsonResponse(result);
       }
 
@@ -528,12 +540,6 @@ export class WebServer {
       if (path === "/api/client/connect" && method === "POST") {
         const body = await this.parseBody(req);
         const result = await handleClientConnect(body);
-        return this.jsonResponse(result);
-      }
-
-      if (path === "/api/client/nickname" && method === "PUT") {
-        const body = await this.parseBody(req);
-        const result = await handleSetClientNickname(body);
         return this.jsonResponse(result);
       }
 

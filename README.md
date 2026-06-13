@@ -28,7 +28,6 @@ This project builds upon and would not exist without the original [OpenCode Memo
   - [Server Environment Variables](#server-environment-variables)
   - [Secret Management](#secret-management)
   - [Client Configuration File](#client-configuration-file)
-- [Client Nickname](#client-nickname)
 - [API Reference](#api-reference)
 - [WebUI](#webui)
 - [User Profiles](#user-profiles)
@@ -380,6 +379,7 @@ These must be set before the server will start.
 | `WEB_SERVER_ALLOWED_ORIGIN` | `*`         | CORS allowed origin                                                                                           |
 | `DISABLE_WEBUI_AUTH`        | `false`     | Disable API key auth for WebUI. **WARNING:** Secure the server by other means (reverse proxy, firewall, etc.) |
 | `DISABLE_CLIENT_AUTH`       | `false`     | Disable API key auth for client plugin. **WARNING:** Secure the server by other means                         |
+| `PROFILE_KEYS_FILE`         | --          | Optional profile-key file. `SERVER_API_KEY` is admin/all-profiles; profile keys are single-profile            |
 | `LOG_LEVEL`                 | `info`      | Console log level: `debug`, `info`, `warn`, `error`. File logs are always verbose                             |
 | `DEBUG`                     | `false`     | Shortcut for `LOG_LEVEL=debug`. Set to `true` or `1` for verbose console output                               |
 
@@ -448,6 +448,7 @@ Full configuration with defaults:
   // Server connection (required)
   "serverUrl": "http://localhost:4747",
   "apiKey": "my-secret-key",
+  "profileId": "default",
 
   // Auto-capture
   "autoCaptureEnabled": true,
@@ -496,26 +497,26 @@ Full configuration with defaults:
 | `customMessage.frequency`           | `"first"`               | When to inject: `"first"` or `"always"`        |
 | `customMessage.text`                | `""`                    | Custom text sent to the model                  |
 | `memory.defaultScope`               | `"project"`             | Default scope: `"project"` or `"all-projects"` |
+| `profileId`                         | `"default"`             | Static profile identity sent to the server     |
 | `logLevel`                          | `info`                  | Log level: `debug`, `info`, `warn`, `error`    |
 
 ---
 
-## Client Nickname
+## Strict Identity
 
-You can assign a human-readable display name to your OpenCode client instance. The nickname appears in plugin toast messages (e.g., "Welcome back, my-laptop!") and in the WebUI Memory Explorer settings panel.
+This release uses a clean-start identity model. Existing databases from earlier
+identity schemes must be recreated before running this version; old `user_email`,
+nickname, and path-keyed project identity columns are not migrated forward.
 
-**Via config file** — add `"nickname"` to your `opencode-memnet.jsonc` or `opencode-memnet.json`:
+Runtime identity is explicit:
 
-```jsonc
-{
-  "serverUrl": "http://localhost:4747",
-  "apiKey": "...",
-  "nickname": "my-laptop",
-  // ... other settings
-}
-```
-
-**Via Web UI** — open the Memory Explorer → click Settings (gear icon) → enter a nickname → click Save.
+- `SERVER_API_KEY` is the admin/all-profiles credential.
+- `PROFILE_KEYS_FILE` can provide single-profile client keys. A profile key is
+  tied to one `profile_id`; the WebUI profile selector is locked to that profile.
+- Project memory is scoped by `profile_id` plus `repo_id`.
+- `repo_id` is derived from normalized git repository identity. The plugin must
+  run in a git repository and send repo URL, git user name, and git user email.
+- Local project paths are stored only as display/debug metadata, not identity.
 
 ---
 
@@ -541,34 +542,34 @@ curl http://localhost:4747/api/health
 
 ### Memories
 
-| Method   | Path                        | Description                                                                               |
-| -------- | --------------------------- | ----------------------------------------------------------------------------------------- |
-| `GET`    | `/api/memories`             | List memories (query: `?tag=`, `?page=`, `?pageSize=`, `?userEmail=`, `?includePrompts=`) |
-| `POST`   | `/api/memories`             | Add a memory                                                                              |
-| `PUT`    | `/api/memories/:id`         | Update a memory                                                                           |
-| `DELETE` | `/api/memories/:id`         | Delete a memory                                                                           |
-| `POST`   | `/api/memories/bulk-delete` | Bulk delete memories                                                                      |
-| `POST`   | `/api/memories/:id/pin`     | Pin a memory                                                                              |
-| `POST`   | `/api/memories/:id/unpin`   | Unpin a memory                                                                            |
+| Method   | Path                        | Description                                                                                           |
+| -------- | --------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `GET`    | `/api/memories`             | List memories (query: `?tag=`, `?page=`, `?pageSize=`, `?profileId=`, `?repoId=`, `?includePrompts=`) |
+| `POST`   | `/api/memories`             | Add a memory                                                                                          |
+| `PUT`    | `/api/memories/:id`         | Update a memory                                                                                       |
+| `DELETE` | `/api/memories/:id`         | Delete a memory                                                                                       |
+| `POST`   | `/api/memories/bulk-delete` | Bulk delete memories                                                                                  |
+| `POST`   | `/api/memories/:id/pin`     | Pin a memory                                                                                          |
+| `POST`   | `/api/memories/:id/unpin`   | Unpin a memory                                                                                        |
 
 ### Search and Context
 
-| Method | Path                  | Description                                                          |
-| ------ | --------------------- | -------------------------------------------------------------------- |
-| `GET`  | `/api/search`         | Semantic search (query: `?q=`, `?tag=`, `?pageSize=`, `?userEmail=`) |
-| `POST` | `/api/context/inject` | Context injection for chat messages                                  |
-| `POST` | `/api/auto-capture`   | Server-side auto-capture from conversation data                      |
+| Method | Path                  | Description                                                                      |
+| ------ | --------------------- | -------------------------------------------------------------------------------- |
+| `GET`  | `/api/search`         | Semantic search (query: `?q=`, `?tag=`, `?pageSize=`, `?profileId=`, `?repoId=`) |
+| `POST` | `/api/context/inject` | Context injection for chat messages                                              |
+| `POST` | `/api/auto-capture`   | Server-side auto-capture from conversation data                                  |
 
 ### User Profiles
 
-| Method | Path                          | Description                            |
-| ------ | ----------------------------- | -------------------------------------- |
-| `GET`  | `/api/user-profile`           | Get active profile (query: `?userId=`) |
-| `GET`  | `/api/user-profiles`          | List all active profiles               |
-| `POST` | `/api/user-profile/learn`     | Trigger profile learning               |
-| `POST` | `/api/user-profile/refresh`   | Refresh profile data                   |
-| `GET`  | `/api/user-profile/changelog` | Profile version history                |
-| `GET`  | `/api/user-profile/snapshot`  | Profile snapshot at a specific version |
+| Method | Path                          | Description                               |
+| ------ | ----------------------------- | ----------------------------------------- |
+| `GET`  | `/api/user-profile`           | Get active profile (query: `?profileId=`) |
+| `GET`  | `/api/user-profiles`          | List all active profiles                  |
+| `POST` | `/api/user-profile/learn`     | Trigger profile learning                  |
+| `POST` | `/api/user-profile/refresh`   | Refresh profile data                      |
+| `GET`  | `/api/user-profile/changelog` | Profile version history                   |
+| `GET`  | `/api/user-profile/snapshot`  | Profile snapshot at a specific version    |
 
 ### Tags and Stats
 
@@ -606,7 +607,9 @@ Profiles are learned automatically from chat sessions over time:
 - **Workflows** -- multi-step processes the user follows
 - **Changelog** -- versioned history of profile evolution
 
-User identity is auto-detected from `git config user.email` in the project directory. Profiles are keyed by email -- switching git identities switches profiles automatically.
+Profiles are keyed by explicit `profile_id`. Project memories and prompts are
+scoped by `profile_id` and `repo_id`; local paths remain display/debug metadata
+only.
 
 ---
 

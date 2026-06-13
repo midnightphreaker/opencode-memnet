@@ -90,6 +90,9 @@ import {
   resetJobQueue,
 } from "../src/services/memory-maintenance-job-service.js";
 
+const allScope = { kind: "all" } as const;
+const profileScope = { kind: "profile", profileId: "phrkr" } as const;
+
 // ── Helpers ─────────────────────────────────────────────────────────────
 
 async function tick(ms = 10): Promise<void> {
@@ -104,49 +107,56 @@ describe("memory-maintenance-job-service", () => {
     resetJobQueue();
   });
 
+  it("represents current-profile jobs with explicit profileId", () => {
+    const result = enqueueJob("cleanup_memories", { kind: "profile", profileId: "phrkr" });
+    expect(result.success).toBe(true);
+    const status = getJobStatus();
+    expect(status.current?.scope).toEqual({ kind: "profile", profileId: "phrkr" });
+  });
+
   describe("duplicate job rejection", () => {
     it("should reject a second cleanup_memories with the same scope while one is running", async () => {
-      const r1 = enqueueJob("cleanup_memories", "all_profiles");
+      const r1 = enqueueJob("cleanup_memories", allScope);
       expect(r1.success).toBe(true);
 
       await tick();
 
-      const r2 = enqueueJob("cleanup_memories", "all_profiles");
+      const r2 = enqueueJob("cleanup_memories", allScope);
       expect(r2.success).toBe(false);
       expect(r2.code).toBe("JOB_ALREADY_QUEUED_OR_RUNNING");
       expect(r2.error).toContain("already running");
     });
 
     it("should reject a second deduplicate_memories with the same scope while one is running", async () => {
-      const r1 = enqueueJob("deduplicate_memories", "all_profiles");
+      const r1 = enqueueJob("deduplicate_memories", allScope);
       expect(r1.success).toBe(true);
 
       await tick();
 
-      const r2 = enqueueJob("deduplicate_memories", "all_profiles");
+      const r2 = enqueueJob("deduplicate_memories", allScope);
       expect(r2.success).toBe(false);
       expect(r2.code).toBe("JOB_ALREADY_QUEUED_OR_RUNNING");
     });
 
     it("should allow same-type job with different scope", async () => {
-      const r1 = enqueueJob("cleanup_memories", "all_profiles");
+      const r1 = enqueueJob("cleanup_memories", allScope);
       expect(r1.success).toBe(true);
 
       await tick();
 
-      const r2 = enqueueJob("cleanup_memories", "current_profile");
+      const r2 = enqueueJob("cleanup_memories", profileScope);
       expect(r2.success).toBe(true);
     });
   });
 
   describe("cross-type job queueing (global single-runner)", () => {
     it("should queue cleanup when deduplicate is running", async () => {
-      const r1 = enqueueJob("deduplicate_memories", "all_profiles");
+      const r1 = enqueueJob("deduplicate_memories", allScope);
       expect(r1.success).toBe(true);
 
       await tick();
 
-      const r2 = enqueueJob("cleanup_memories", "all_profiles");
+      const r2 = enqueueJob("cleanup_memories", allScope);
       expect(r2.success).toBe(true);
       expect(r2.data!.status).toBe("queued");
 
@@ -159,12 +169,12 @@ describe("memory-maintenance-job-service", () => {
     });
 
     it("should queue deduplicate when cleanup is running", async () => {
-      const r1 = enqueueJob("cleanup_memories", "all_profiles");
+      const r1 = enqueueJob("cleanup_memories", allScope);
       expect(r1.success).toBe(true);
 
       await tick();
 
-      const r2 = enqueueJob("deduplicate_memories", "all_profiles");
+      const r2 = enqueueJob("deduplicate_memories", allScope);
       expect(r2.success).toBe(true);
       expect(r2.data!.status).toBe("queued");
 
@@ -176,12 +186,12 @@ describe("memory-maintenance-job-service", () => {
     });
 
     it("should queue multiple cross-type jobs", async () => {
-      enqueueJob("cleanup_memories", "all_profiles");
+      enqueueJob("cleanup_memories", allScope);
       await tick();
 
-      enqueueJob("deduplicate_memories", "all_profiles");
-      enqueueJob("cleanup_memories", "current_profile");
-      enqueueJob("deduplicate_memories", "current_profile");
+      enqueueJob("deduplicate_memories", allScope);
+      enqueueJob("cleanup_memories", profileScope);
+      enqueueJob("deduplicate_memories", profileScope);
 
       const status = getJobStatus();
       expect(status.current).not.toBeNull();
@@ -193,11 +203,11 @@ describe("memory-maintenance-job-service", () => {
   describe("sequential execution", () => {
     it("should process queued jobs one at a time after the running job completes", async () => {
       // Enqueue cleanup (will hang due to mock)
-      enqueueJob("cleanup_memories", "all_profiles");
+      enqueueJob("cleanup_memories", allScope);
       await tick();
 
       // Enqueue deduplicate (should be queued)
-      enqueueJob("deduplicate_memories", "all_profiles");
+      enqueueJob("deduplicate_memories", allScope);
 
       // Verify: cleanup running, deduplicate queued
       let status = getJobStatus();
@@ -238,7 +248,7 @@ describe("memory-maintenance-job-service", () => {
     });
 
     it("should report running job in status", async () => {
-      enqueueJob("cleanup_memories", "all_profiles");
+      enqueueJob("cleanup_memories", allScope);
       await tick();
 
       const status = getJobStatus();
@@ -249,11 +259,11 @@ describe("memory-maintenance-job-service", () => {
     });
 
     it("should report queued jobs count", async () => {
-      enqueueJob("cleanup_memories", "all_profiles");
+      enqueueJob("cleanup_memories", allScope);
       await tick();
 
-      enqueueJob("deduplicate_memories", "all_profiles");
-      enqueueJob("cleanup_memories", "current_profile");
+      enqueueJob("deduplicate_memories", allScope);
+      enqueueJob("cleanup_memories", profileScope);
 
       const status = getJobStatus();
       expect(status.queued.length).toBe(2);
@@ -264,7 +274,7 @@ describe("memory-maintenance-job-service", () => {
       // Make cleanup resolve immediately
       mockState.resolveCleanup();
 
-      enqueueJob("cleanup_memories", "all_profiles");
+      enqueueJob("cleanup_memories", allScope);
       await tick(50);
 
       const status = getJobStatus();
@@ -279,18 +289,18 @@ describe("memory-maintenance-job-service", () => {
 
   describe("normalize_memory_tags job type", () => {
     it("should accept normalize_memory_tags job type", () => {
-      const result = enqueueJob("normalize_memory_tags", "all_profiles");
+      const result = enqueueJob("normalize_memory_tags", allScope);
       expect(result.success).toBe(true);
       expect(result.data!.type).toBe("normalize_memory_tags");
     });
 
     it("should reject duplicate normalize_memory_tags while running", async () => {
-      const r1 = enqueueJob("normalize_memory_tags", "all_profiles");
+      const r1 = enqueueJob("normalize_memory_tags", allScope);
       expect(r1.success).toBe(true);
 
       await tick();
 
-      const r2 = enqueueJob("normalize_memory_tags", "all_profiles");
+      const r2 = enqueueJob("normalize_memory_tags", allScope);
       expect(r2.success).toBe(false);
       expect(r2.code).toBe("JOB_ALREADY_QUEUED_OR_RUNNING");
 

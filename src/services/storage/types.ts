@@ -127,20 +127,27 @@ export interface MemoryRepository {
     containerTag?: string;
     scope?: MemoryScopeKind;
     scopeHash?: string;
+    profileId?: string;
+    repoId?: string;
   }): Promise<number>;
 
   /**
    * Returns a breakdown of memory counts grouped by type.
    * Used by handleStats to avoid loading all rows into memory.
    */
-  countByType(): Promise<Record<string, number>>;
+  countByType(args?: { profileId?: string; repoId?: string }): Promise<Record<string, number>>;
 
   getDistinctTags(args?: {
     scope?: MemoryScopeKind;
     scopeHash?: string;
     profileId?: string;
+    repoId?: string;
   }): Promise<TagInfo[]>;
-  getDistinctTagValues(args?: { scope?: MemoryScopeKind }): Promise<string[]>;
+  getDistinctTagValues(args?: {
+    scope?: MemoryScopeKind;
+    profileId?: string;
+    repoId?: string;
+  }): Promise<string[]>;
 
   pin(memoryId: string): Promise<void>;
   unpin(memoryId: string): Promise<void>;

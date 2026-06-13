@@ -17,7 +17,6 @@ import type {
   MemoryRecord,
   MemoryRepository,
   MemoryRow,
-  MemoryScopeKind,
   MemorySearchOptions,
   SearchResult,
   TagInfo,
@@ -184,15 +183,19 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
   async count(args?: Parameters<MemoryRepository["count"]>[0]): Promise<number> {
     return (await this.repo()).count(args);
   }
-  async countByType(): Promise<Record<string, number>> {
-    return (await this.repo()).countByType();
+  async countByType(
+    args?: Parameters<MemoryRepository["countByType"]>[0]
+  ): Promise<Record<string, number>> {
+    return (await this.repo()).countByType(args);
   }
   async getDistinctTags(
     args?: Parameters<MemoryRepository["getDistinctTags"]>[0]
   ): Promise<TagInfo[]> {
     return (await this.repo()).getDistinctTags(args);
   }
-  async getDistinctTagValues(args?: { scope?: MemoryScopeKind }): Promise<string[]> {
+  async getDistinctTagValues(
+    args?: Parameters<MemoryRepository["getDistinctTagValues"]>[0]
+  ): Promise<string[]> {
     return (await this.repo()).getDistinctTagValues(args);
   }
   async pin(memoryId: string): Promise<void> {

@@ -397,7 +397,8 @@ export class WebServer {
       }
 
       if (path === "/api/stats" && method === "GET") {
-        const result = await handleStats();
+        const profileFilter = principal.kind === "profile" ? principal.profileId : undefined;
+        const result = await handleStats(profileFilter);
         return this.jsonResponse(result);
       }
 

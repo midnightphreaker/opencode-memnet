@@ -495,26 +495,41 @@ export class PostgresMemoryRepository implements MemoryRepository {
     containerTag?: string;
     scope?: MemoryScopeKind;
     scopeHash?: string;
+    profileId?: string;
+    repoId?: string;
   }): Promise<number> {
     const sql = getPostgresClient();
     const scope = args?.scope ?? "user";
     const scopeHashFilter = args?.scopeHash ?? "";
     const containerTagFilter = args?.containerTag ?? "";
+    const profileIdFilter = args?.profileId ?? "";
+    const repoIdFilter = args?.repoId ?? "";
 
     const rows = await sql`
       SELECT COUNT(*) as count FROM memories
       WHERE scope = ${scope}
         AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
         AND (${containerTagFilter}::text = '' OR container_tag = ${containerTagFilter})
+        AND (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
+        AND (${repoIdFilter}::text = '' OR repo_id = ${repoIdFilter})
     `;
 
     return Number(rows[0]?.count ?? 0);
   }
 
-  async countByType(): Promise<Record<string, number>> {
+  async countByType(args?: {
+    profileId?: string;
+    repoId?: string;
+  }): Promise<Record<string, number>> {
     const sql = getPostgresClient();
+    const profileIdFilter = args?.profileId ?? "";
+    const repoIdFilter = args?.repoId ?? "";
     const rows = await sql`
-      SELECT type, COUNT(*) as count FROM memories GROUP BY type
+      SELECT type, COUNT(*) as count
+      FROM memories
+      WHERE (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
+        AND (${repoIdFilter}::text = '' OR repo_id = ${repoIdFilter})
+      GROUP BY type
     `;
     const result: Record<string, number> = {};
     for (const row of rows) {
@@ -528,11 +543,13 @@ export class PostgresMemoryRepository implements MemoryRepository {
     scope?: MemoryScopeKind;
     scopeHash?: string;
     profileId?: string;
+    repoId?: string;
   }): Promise<TagInfo[]> {
     const sql = getPostgresClient();
     const scope = args?.scope ?? "user";
     const scopeHashFilter = args?.scopeHash ?? "";
     const profileIdFilter = args?.profileId ?? "";
+    const repoIdFilter = args?.repoId ?? "";
 
     const rows = await sql`
       SELECT DISTINCT container_tag, profile_id, repo_id, local_project_path,
@@ -541,6 +558,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       WHERE scope = ${scope}
         AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
         AND (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
+        AND (${repoIdFilter}::text = '' OR repo_id = ${repoIdFilter})
     `;
 
     return rows.map((row: any) => ({
@@ -553,12 +571,24 @@ export class PostgresMemoryRepository implements MemoryRepository {
     }));
   }
 
-  async getDistinctTagValues(args?: { scope?: MemoryScopeKind }): Promise<string[]> {
+  async getDistinctTagValues(args?: {
+    scope?: MemoryScopeKind;
+    profileId?: string;
+    repoId?: string;
+  }): Promise<string[]> {
     const sql = getPostgresClient();
     const scope = args?.scope ?? "project";
-    const rows = await sql<
-      { tags: string | null }[]
-    >`SELECT DISTINCT unnest(string_to_array(tags, ',')) AS tags FROM memories WHERE scope = ${scope} AND tags IS NOT NULL AND tags != ''`;
+    const profileIdFilter = args?.profileId ?? "";
+    const repoIdFilter = args?.repoId ?? "";
+    const rows = await sql<{ tags: string | null }[]>`
+      SELECT DISTINCT unnest(string_to_array(tags, ',')) AS tags
+      FROM memories
+      WHERE scope = ${scope}
+        AND tags IS NOT NULL
+        AND tags != ''
+        AND (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
+        AND (${repoIdFilter}::text = '' OR repo_id = ${repoIdFilter})
+    `;
     const tagSet = new Set<string>();
     for (const row of rows) {
       if (row.tags) {

@@ -136,9 +136,10 @@ function extractScopeFromTag(tag: string): { scope: "project"; hash: string } {
 }
 
 async function getProjectScopeFromTag(
-  tag: string
+  tag: string,
+  profileId?: string
 ): Promise<{ profileId: string; repoId?: string } | undefined> {
-  const tags = await memoryRepo.getDistinctTags({ scope: "project" });
+  const tags = await memoryRepo.getDistinctTags({ scope: "project", profileId });
   const match = tags.find((t) => t.tag === tag);
   return match?.profileId ? { profileId: match.profileId, repoId: match.repoId } : undefined;
 }
@@ -251,7 +252,7 @@ export async function handleListMemories(
 
     let timeline: any[] = memoriesWithType;
     if (includePrompts) {
-      const scope = tag ? await getProjectScopeFromTag(tag) : { profileId, repoId };
+      const scope = tag ? await getProjectScopeFromTag(tag, profileId) : { profileId, repoId };
       const prompts = await promptRepo.getCapturedPrompts({
         profileId: scope?.profileId ?? profileId,
         repoId: scope?.repoId ?? repoId,
@@ -679,7 +680,7 @@ export async function handleSearch(
       });
       memoryResults.push(...results);
 
-      const projectScope = await getProjectScopeFromTag(tag);
+      const projectScope = await getProjectScopeFromTag(tag, profileId);
       promptResults = await promptRepo.searchPrompts({
         query,
         profileId: projectScope?.profileId ?? profileId,
@@ -820,7 +821,7 @@ export async function handleSearch(
   }
 }
 
-export async function handleStats(): Promise<
+export async function handleStats(profileId?: string): Promise<
   ApiResponse<{
     total: number;
     byScope: { user: number; project: number };
@@ -831,9 +832,9 @@ export async function handleStats(): Promise<
     await ensureInit();
     // Use COUNT(*) queries instead of loading all rows into memory.
     const [userCount, projectCount, typeCount] = await Promise.all([
-      memoryRepo.count({ scope: "user" }),
-      memoryRepo.count({ scope: "project" }),
-      memoryRepo.countByType(),
+      memoryRepo.count({ scope: "user", profileId }),
+      memoryRepo.count({ scope: "project", profileId }),
+      memoryRepo.countByType({ profileId }),
     ]);
     return {
       success: true,

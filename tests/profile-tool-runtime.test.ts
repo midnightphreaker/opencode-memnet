@@ -7,6 +7,7 @@ type ScenarioInput = {
   args: Record<string, unknown>;
   userEmail?: string;
   profileId?: string;
+  principal?: { kind: "admin" } | { kind: "profile"; profileId: string; displayName?: string };
   profileData?: unknown;
 };
 
@@ -30,6 +31,7 @@ import { mock } from "bun:test";
 let profileUserId = "not-called";
 const userEmail = ${JSON.stringify(input.userEmail)};
 const profileId = ${JSON.stringify(input.profileId)};
+const principal = ${JSON.stringify(input.principal ?? null)};
 const profileData = ${JSON.stringify(input.profileData ?? null)};
 const clientConfig = {
   serverUrl: "http://localhost:4747",
@@ -51,7 +53,18 @@ const clientConfig = {
 
 mock.module(${JSON.stringify(remoteClientUrl)}, () => ({
   getRemoteClient: () => ({
-    clientConnect: async () => ({ success: true, data: null }),
+    clientConnect: async () => ({
+      success: true,
+      data: principal
+        ? {
+            firstTime: false,
+            daysSinceLastSeen: null,
+            welcomeBack: false,
+            stats: null,
+            principal,
+          }
+        : null,
+    }),
     getUserProfile: async (userId) => {
       profileUserId = userId;
       return { success: true, data: profileData };
@@ -175,6 +188,32 @@ describe("memory tool profile runtime behavior", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.parsed.profileUserId).toBe("default");
+    expect(result.parsed.result).toEqual({ success: true, profile: null });
+  });
+
+  it("uses the server profile principal over a conflicting configured profile id", () => {
+    const result = runScenario({
+      profileId: "configured-admin-profile",
+      principal: { kind: "profile", profileId: "profile-key-owner" },
+      args: { mode: "profile" },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.parsed.profileUserId).toBe("profile-key-owner");
+    expect(result.parsed.result).toEqual({ success: true, profile: null });
+  });
+
+  it("keeps the configured profile id for admin principals", () => {
+    const result = runScenario({
+      profileId: "configured-admin-profile",
+      principal: { kind: "admin" },
+      args: { mode: "profile" },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.parsed.profileUserId).toBe("configured-admin-profile");
     expect(result.parsed.result).toEqual({ success: true, profile: null });
   });
 });

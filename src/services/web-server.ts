@@ -3,6 +3,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { log, logDebug, logError } from "./logger.js";
 import { AuthMiddleware } from "./auth.js";
+import type { AuthResult, RouteKind } from "./auth.js";
+import type { ConfiguredProfile, Principal } from "./profile-auth.js";
+import { principalResponse, requireProfileIdForPrincipal } from "./profile-auth.js";
 import {
   handleListTags,
   handleListMemories,
@@ -62,23 +65,19 @@ export class WebServer {
   private startPromise: Promise<void> | null = null;
   private readonly allowedOrigin: string;
   private readonly auth: AuthMiddleware | null;
-  private readonly disableWebuiAuth: boolean;
-  private readonly disableClientAuth: boolean;
-
-  private deriveJobScope(): { kind: "all" } | { kind: "profile"; profileId: string } {
-    return this.disableWebuiAuth ? { kind: "all" } : { kind: "profile", profileId: "default" };
-  }
 
   constructor(
     config: WebServerConfig,
     apiKey: string,
-    options?: { disableWebuiAuth?: boolean; disableClientAuth?: boolean }
+    options?: {
+      disableWebuiAuth?: boolean;
+      disableClientAuth?: boolean;
+      configuredProfiles?: ConfiguredProfile[];
+    }
   ) {
     this.config = config;
     this.allowedOrigin = config.allowedOrigin ?? "*";
-    this.disableWebuiAuth = options?.disableWebuiAuth ?? false;
-    this.disableClientAuth = options?.disableClientAuth ?? false;
-    this.auth = apiKey ? new AuthMiddleware(apiKey, options) : null;
+    this.auth = new AuthMiddleware(apiKey, options);
   }
 
   async start(): Promise<void> {
@@ -156,6 +155,50 @@ export class WebServer {
     }
   }
 
+  private getRouteKind(req: Request): RouteKind {
+    return req.headers.get("X-Opencode-Memnet-Client") === "plugin" ? "client" : "webui";
+  }
+
+  private authenticateApiRequest(req: Request, path: string): AuthResult | Response {
+    if (path === "/api/health") {
+      return { principal: { kind: "admin" }, authDisabled: true };
+    }
+    if (!path.startsWith("/api/")) {
+      return { principal: { kind: "admin" }, authDisabled: true };
+    }
+    if (!this.auth) {
+      return this.jsonResponse({ success: false, error: "Authentication is not configured" }, 401);
+    }
+    return this.auth.authenticate(req, this.getRouteKind(req));
+  }
+
+  private profileIdForRequest(
+    principal: Principal,
+    requestedProfileId: string | undefined,
+    options: { defaultProfileId?: string; requireAdminProfileId?: boolean } = {}
+  ): string {
+    return requireProfileIdForPrincipal(principal, requestedProfileId, options);
+  }
+
+  private applyPrincipalProfileToBody<T extends Record<string, any>>(
+    principal: Principal,
+    body: T,
+    options: { requireAdminProfileId?: boolean } = {}
+  ): T {
+    return {
+      ...body,
+      profileId: this.profileIdForRequest(principal, body.profileId, options),
+    };
+  }
+
+  private deriveJobScope(
+    principal: Principal
+  ): { kind: "all" } | { kind: "profile"; profileId: string } {
+    return principal.kind === "profile"
+      ? { kind: "profile", profileId: principal.profileId }
+      : { kind: "all" };
+  }
+
   // --- HTTP request handling (inlined from web-server-worker.ts) ---
 
   private async handleRequest(req: Request): Promise<Response> {
@@ -189,19 +232,24 @@ export class WebServer {
       const headers = new Headers();
       headers.set("Access-Control-Allow-Origin", this.allowedOrigin);
       headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
-      headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Client-ID");
+      headers.set(
+        "Access-Control-Allow-Headers",
+        "Content-Type, Authorization, X-Client-ID, X-Opencode-Memnet-Client"
+      );
       headers.set("Access-Control-Max-Age", "86400");
       if (this.allowedOrigin !== "*") headers.set("Vary", "Origin");
       return new Response(null, { status: 204, headers });
     }
 
-    // Auth: all /api/* routes (except public health) require API key unless auth is disabled
+    // Auth: all /api/* routes (except public health) produce a request principal.
+    let requestPrincipal: Principal = { kind: "admin" };
     if (path.startsWith("/api/") && path !== "/api/health") {
-      if (!this.disableWebuiAuth && !this.disableClientAuth && this.auth) {
-        const authResult = this.auth.authenticate(req, "webui");
-        if (authResult instanceof Response) return authResult;
-      }
+      const authContext = this.authenticateApiRequest(req, path);
+      if (authContext instanceof Response) return authContext;
+      const principal = authContext.principal;
+      requestPrincipal = principal;
     }
+    const principal = requestPrincipal;
 
     const startTime = performance.now();
 
@@ -237,7 +285,8 @@ export class WebServer {
       }
 
       if (path === "/api/tags" && method === "GET") {
-        const result = await handleListTags();
+        const profileId = principal.kind === "profile" ? principal.profileId : undefined;
+        const result = await handleListTags(profileId);
         return this.jsonResponse(result);
       }
 
@@ -249,7 +298,10 @@ export class WebServer {
         const page = parseInt(url.searchParams.get("page") || "1") || 1;
         const pageSize = parseInt(url.searchParams.get("pageSize") || "20") || 20;
         const includePrompts = url.searchParams.get("includePrompts") !== "false";
-        const profileId = url.searchParams.get("profileId") || "default";
+        const requestedProfileId = url.searchParams.get("profileId") || undefined;
+        const profileId = this.profileIdForRequest(principal, requestedProfileId, {
+          defaultProfileId: "default",
+        });
         const repoId = url.searchParams.get("repoId") || undefined;
         const result = await handleListMemories(
           tag,
@@ -264,7 +316,10 @@ export class WebServer {
 
       if (path === "/api/memories" && method === "POST") {
         const body = await this.parseBody(req);
-        const result = await handleAddMemory(body);
+        const scopedBody = this.applyPrincipalProfileToBody(principal, body, {
+          requireAdminProfileId: true,
+        });
+        const result = await handleAddMemory(scopedBody);
         return this.jsonResponse(result);
       }
 
@@ -275,7 +330,7 @@ export class WebServer {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
         const cascade = url.searchParams.get("cascade") === "true";
-        const result = await handleDeleteMemory(id, cascade);
+        const result = await handleDeleteMemory(id, cascade, principal);
         return this.jsonResponse(result);
       }
 
@@ -286,14 +341,14 @@ export class WebServer {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
         const body = await this.parseBody(req);
-        const result = await handleUpdateMemory(id, body);
+        const result = await handleUpdateMemory(id, body, principal);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/memories/bulk-delete" && method === "POST") {
         const body = await this.parseBody(req);
         const cascade = body.cascade !== false;
-        const result = await handleBulkDelete(body.ids || [], cascade);
+        const result = await handleBulkDelete(body.ids || [], cascade, principal);
         return this.jsonResponse(result);
       }
 
@@ -305,7 +360,10 @@ export class WebServer {
         const tag = url.searchParams.get("tag") || undefined;
         const page = parseInt(url.searchParams.get("page") || "1") || 1;
         const pageSize = parseInt(url.searchParams.get("pageSize") || "20") || 20;
-        const profileId = url.searchParams.get("profileId") || "default";
+        const requestedProfileId = url.searchParams.get("profileId") || undefined;
+        const profileId = this.profileIdForRequest(principal, requestedProfileId, {
+          defaultProfileId: "default",
+        });
         const repoId = url.searchParams.get("repoId") || undefined;
 
         if (query && query.length > 1000) {
@@ -336,7 +394,7 @@ export class WebServer {
         if (!id) {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
-        const result = await handlePinMemory(id);
+        const result = await handlePinMemory(id, principal);
         return this.jsonResponse(result);
       }
 
@@ -345,7 +403,7 @@ export class WebServer {
         if (!id) {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
-        const result = await handleUnpinMemory(id);
+        const result = await handleUnpinMemory(id, principal);
         return this.jsonResponse(result);
       }
 
@@ -378,14 +436,14 @@ export class WebServer {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
         const cascade = url.searchParams.get("cascade") === "true";
-        const result = await handleDeletePrompt(id, cascade);
+        const result = await handleDeletePrompt(id, cascade, principal);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/prompts/bulk-delete" && method === "POST") {
         const body = await this.parseBody(req);
         const cascade = body.cascade !== false;
-        const result = await handleBulkDeletePrompts(body.ids || [], cascade);
+        const result = await handleBulkDeletePrompts(body.ids || [], cascade, principal);
         return this.jsonResponse(result);
       }
 
@@ -393,17 +451,24 @@ export class WebServer {
         if (url.searchParams.has("userId")) {
           return this.jsonResponse({ success: false, error: "Use profileId, not userId" }, 400);
         }
-        const profileId = url.searchParams.get("profileId") || undefined;
+        const requestedProfileId = url.searchParams.get("profileId") || undefined;
+        const profileId =
+          principal.kind === "admin"
+            ? requestedProfileId
+            : this.profileIdForRequest(principal, requestedProfileId);
         const result = await handleGetUserProfile(profileId);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/user-profile/changelog" && method === "GET") {
-        const profileId = url.searchParams.get("profileId");
+        const profileId = this.profileIdForRequest(
+          principal,
+          url.searchParams.get("profileId") || undefined,
+          {
+            requireAdminProfileId: true,
+          }
+        );
         const limit = parseInt(url.searchParams.get("limit") || "5");
-        if (!profileId) {
-          return this.jsonResponse({ success: false, error: "profileId parameter required" });
-        }
         const result = await handleGetProfileChangelog(profileId, limit);
         return this.jsonResponse(result);
       }
@@ -413,7 +478,7 @@ export class WebServer {
         if (!changelogId) {
           return this.jsonResponse({ success: false, error: "changelogId parameter required" });
         }
-        const result = await handleGetProfileSnapshot(changelogId);
+        const result = await handleGetProfileSnapshot(changelogId, principal);
         return this.jsonResponse(result);
       }
 
@@ -422,26 +487,37 @@ export class WebServer {
         if (body.userId) {
           return this.jsonResponse({ success: false, error: "Use profileId, not userId" }, 400);
         }
-        const profileId = body.profileId || undefined;
+        const profileId = this.profileIdForRequest(principal, body.profileId, {
+          requireAdminProfileId: true,
+        });
         const result = await handleRefreshProfile(profileId);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/context/inject" && method === "POST") {
         const body = await this.parseBody(req);
-        const result = await (await import("./api-handlers.js")).handleContextInject(body);
+        const scopedBody = this.applyPrincipalProfileToBody(principal, body, {
+          requireAdminProfileId: true,
+        });
+        const result = await (await import("./api-handlers.js")).handleContextInject(scopedBody);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/auto-capture" && method === "POST") {
         const body = await this.parseBody(req);
-        const result = await (await import("./api-handlers.js")).handleAutoCapture(body);
+        const scopedBody = this.applyPrincipalProfileToBody(principal, body, {
+          requireAdminProfileId: true,
+        });
+        const result = await (await import("./api-handlers.js")).handleAutoCapture(scopedBody);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/user-profile/learn" && method === "POST") {
         const body = await this.parseBody(req);
-        const result = await (await import("./api-handlers.js")).handleUserProfileLearn(body);
+        const scopedBody = this.applyPrincipalProfileToBody(principal, body, {
+          requireAdminProfileId: true,
+        });
+        const result = await (await import("./api-handlers.js")).handleUserProfileLearn(scopedBody);
         return this.jsonResponse(result);
       }
 
@@ -451,7 +527,7 @@ export class WebServer {
       }
 
       if (path === "/api/cleanup" && method === "POST") {
-        const scope = this.deriveJobScope();
+        const scope = this.deriveJobScope(principal);
         const result = enqueueJob("cleanup_memories", scope);
         if (!result.success) {
           return this.jsonResponse({ success: false, error: result.error, code: result.code }, 409);
@@ -468,7 +544,7 @@ export class WebServer {
       }
 
       if (path === "/api/deduplicate" && method === "POST") {
-        const scope = this.deriveJobScope();
+        const scope = this.deriveJobScope(principal);
         const result = enqueueJob("deduplicate_memories", scope);
         if (!result.success) {
           return this.jsonResponse({ success: false, error: result.error, code: result.code }, 409);
@@ -486,7 +562,7 @@ export class WebServer {
 
       // Tag normalization job
       if (path === "/api/tags/normalize" && method === "POST") {
-        const scope = this.deriveJobScope();
+        const scope = this.deriveJobScope(principal);
         const result = enqueueJob("normalize_memory_tags", scope);
         if (!result.success) {
           return this.jsonResponse({ success: false, error: result.error, code: result.code }, 409);
@@ -532,14 +608,21 @@ export class WebServer {
       }
 
       if (path === "/api/user-profiles" && method === "GET") {
-        const result = await handleListUserProfiles();
-        return this.jsonResponse(result);
+        const result = await handleListUserProfiles(principal);
+        if (!result.success) return this.jsonResponse(result);
+        return this.jsonResponse({
+          success: true,
+          data: {
+            ...result.data,
+            principal: principalResponse(principal),
+          },
+        });
       }
 
       // ── Client Identity ──
       if (path === "/api/client/connect" && method === "POST") {
         const body = await this.parseBody(req);
-        const result = await handleClientConnect(body);
+        const result = await handleClientConnect(body, principal);
         return this.jsonResponse(result);
       }
 
@@ -622,7 +705,8 @@ export class WebServer {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": this.allowedOrigin,
       "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-ID",
+      "Access-Control-Allow-Headers":
+        "Content-Type, Authorization, X-Client-ID, X-Opencode-Memnet-Client",
     };
 
     if (this.allowedOrigin !== "*") {
@@ -640,7 +724,11 @@ export class WebServer {
 export async function startWebServer(
   config: WebServerConfig,
   apiKey: string,
-  options?: { disableWebuiAuth?: boolean; disableClientAuth?: boolean }
+  options?: {
+    disableWebuiAuth?: boolean;
+    disableClientAuth?: boolean;
+    configuredProfiles?: ConfiguredProfile[];
+  }
 ): Promise<WebServer> {
   const server = new WebServer(config, apiKey, options);
   await server.start();

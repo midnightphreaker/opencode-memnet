@@ -60,6 +60,7 @@ async function main(): Promise<void> {
       {
         disableWebuiAuth: config.disableWebuiAuth,
         disableClientAuth: config.disableClientAuth,
+        configuredProfiles: config.configuredProfiles,
       }
     );
 

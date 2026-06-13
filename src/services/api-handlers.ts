@@ -3,6 +3,7 @@ import { log, logInfo, logDebug, logError } from "./logger.js";
 import { getServerConfig } from "../server-config.js";
 import { CONFIG } from "../config.js";
 import type { MemoryType } from "../types/index.js";
+import type { Principal } from "./profile-auth.js";
 import {
   createMemoryRepository,
   createUserPromptRepository,
@@ -143,7 +144,9 @@ function metadataScore(t: TagInfo): number {
   );
 }
 
-export async function handleListTags(): Promise<ApiResponse<{ project: TagInfo[] }>> {
+export async function handleListTags(
+  _profileId?: string
+): Promise<ApiResponse<{ project: TagInfo[] }>> {
   try {
     await ensureInit();
     // Tags are stored as SQLite metadata; embedding model is not needed.
@@ -437,7 +440,8 @@ export async function handleAddMemory(data: {
 
 export async function handleDeleteMemory(
   id: string,
-  cascade: boolean = false
+  cascade: boolean = false,
+  principal?: Principal
 ): Promise<ApiResponse<{ deletedPrompt: boolean }>> {
   try {
     await ensureInit();
@@ -472,7 +476,8 @@ export async function handleDeleteMemory(
 
 export async function handleBulkDelete(
   ids: string[],
-  cascade: boolean = false
+  cascade: boolean = false,
+  principal?: Principal
 ): Promise<ApiResponse<{ deleted: number; total: number; failedIds?: string[] }>> {
   try {
     if (!ids || ids.length === 0) return { success: false, error: "ids array is required" };
@@ -483,7 +488,7 @@ export async function handleBulkDelete(
       let deleted = 0;
       const failedIds: string[] = [];
       for (const id of ids) {
-        const result = await handleDeleteMemory(id, cascade);
+        const result = await handleDeleteMemory(id, cascade, principal);
         if (result.success) deleted++;
         else failedIds.push(id);
       }
@@ -499,7 +504,8 @@ export async function handleBulkDelete(
 
 export async function handleUpdateMemory(
   id: string,
-  data: { content?: string; type?: MemoryType; tags?: string[]; containerTag?: string }
+  data: { content?: string; type?: MemoryType; tags?: string[]; containerTag?: string },
+  _principal?: Principal
 ): Promise<ApiResponse<void>> {
   try {
     await ensureInit();
@@ -816,7 +822,10 @@ export async function handleStats(): Promise<
   }
 }
 
-export async function handlePinMemory(id: string): Promise<ApiResponse<void>> {
+export async function handlePinMemory(
+  id: string,
+  _principal?: Principal
+): Promise<ApiResponse<void>> {
   try {
     await ensureInit();
     if (!id) return { success: false, error: "id is required" };
@@ -830,7 +839,10 @@ export async function handlePinMemory(id: string): Promise<ApiResponse<void>> {
   }
 }
 
-export async function handleUnpinMemory(id: string): Promise<ApiResponse<void>> {
+export async function handleUnpinMemory(
+  id: string,
+  _principal?: Principal
+): Promise<ApiResponse<void>> {
   try {
     await ensureInit();
     if (!id) return { success: false, error: "id is required" };
@@ -846,7 +858,8 @@ export async function handleUnpinMemory(id: string): Promise<ApiResponse<void>> 
 
 export async function handleDeletePrompt(
   id: string,
-  cascade: boolean = false
+  cascade: boolean = false,
+  principal?: Principal
 ): Promise<ApiResponse<{ deletedMemory: boolean }>> {
   try {
     await ensureInit();
@@ -855,7 +868,7 @@ export async function handleDeletePrompt(
     if (!prompt) return { success: false, error: "Prompt not found" };
     let deletedMemory = false;
     if (cascade && prompt.linkedMemoryId) {
-      const result = await handleDeleteMemory(prompt.linkedMemoryId, false);
+      const result = await handleDeleteMemory(prompt.linkedMemoryId, false, principal);
       if (result.success) deletedMemory = true;
     }
     await promptRepo.deletePrompt(id);
@@ -868,13 +881,14 @@ export async function handleDeletePrompt(
 
 export async function handleBulkDeletePrompts(
   ids: string[],
-  cascade: boolean = false
+  cascade: boolean = false,
+  principal?: Principal
 ): Promise<ApiResponse<{ deleted: number }>> {
   try {
     if (!ids || ids.length === 0) return { success: false, error: "ids array is required" };
     let deleted = 0;
     for (const id of ids) {
-      const result = await handleDeletePrompt(id, cascade);
+      const result = await handleDeletePrompt(id, cascade, principal);
       if (result.success) deleted++;
     }
     return { success: true, data: { deleted } };
@@ -951,7 +965,10 @@ export async function handleGetProfileChangelog(
   }
 }
 
-export async function handleGetProfileSnapshot(changelogId: string): Promise<ApiResponse<any>> {
+export async function handleGetProfileSnapshot(
+  changelogId: string,
+  _principal?: Principal
+): Promise<ApiResponse<any>> {
   try {
     await ensureInit();
     if (!changelogId) return { success: false, error: "changelogId is required" };
@@ -1854,7 +1871,7 @@ export function handleMigrationRun(_body: {
 
 // ── List all user profiles ───────────────────────────────
 
-export async function handleListUserProfiles(): Promise<
+export async function handleListUserProfiles(_principal?: Principal): Promise<
   ApiResponse<{
     profiles: Array<{ profileId: string }>;
   }>
@@ -1892,10 +1909,13 @@ export async function handleResetTagMigration(): Promise<ApiResponse> {
 
 // ── Client Identity Handlers ───────────────────────────────
 
-export async function handleClientConnect(data: {
-  clientId: string;
-  metadata?: Record<string, unknown>;
-}): Promise<
+export async function handleClientConnect(
+  data: {
+    clientId: string;
+    metadata?: Record<string, unknown>;
+  },
+  _principal?: Principal
+): Promise<
   ApiResponse<{
     firstTime: boolean;
     daysSinceLastSeen: number | null;

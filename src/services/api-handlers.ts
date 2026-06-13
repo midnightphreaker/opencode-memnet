@@ -3,6 +3,7 @@ import { log, logInfo, logDebug, logError } from "./logger.js";
 import { getServerConfig } from "../server-config.js";
 import { CONFIG } from "../config.js";
 import type { MemoryType } from "../types/index.js";
+import { ForbiddenError } from "./profile-auth.js";
 import type { Principal } from "./profile-auth.js";
 import {
   createMemoryRepository,
@@ -100,6 +101,19 @@ interface PaginatedResponse<T> {
   page: number;
   pageSize: number;
   totalPages: number;
+}
+
+function ensurePrincipalCanAccessProfile(
+  principal: Principal | undefined,
+  profileId: string | undefined
+): ApiResponse<never> | null {
+  if (!principal || principal.kind === "admin") return null;
+  if (profileId === principal.profileId) return null;
+  return { success: false, error: "Profile key cannot access another profile" };
+}
+
+function forbiddenFromError(error: unknown): ApiResponse<never> | null {
+  return error instanceof ForbiddenError ? { success: false, error: error.message } : null;
 }
 
 function safeToISOString(timestamp: any): string {
@@ -449,6 +463,8 @@ export async function handleDeleteMemory(
     if (!id) return { success: false, error: "id is required" };
     const memory = await memoryRepo.getById(id);
     if (!memory) return { success: false, error: "Memory not found" };
+    const accessError = ensurePrincipalCanAccessProfile(principal, memory.profileId);
+    if (accessError) return accessError;
     let linkedPromptId: string | undefined;
     if (cascade) {
       const metadata =
@@ -495,8 +511,14 @@ export async function handleBulkDelete(
       }
       return { success: true, data: { deleted, total: ids.length, failedIds } };
     }
-    const deleted = await memoryRepo.deleteMany(ids);
-    return { success: true, data: { deleted, total: ids.length } };
+    let deleted = 0;
+    const failedIds: string[] = [];
+    for (const id of ids) {
+      const result = await handleDeleteMemory(id, false, principal);
+      if (result.success) deleted++;
+      else failedIds.push(id);
+    }
+    return { success: true, data: { deleted, total: ids.length, failedIds } };
   } catch (error) {
     log("handleBulkDelete: error", { error: String(error) });
     return { success: false, error: "Internal server error" };
@@ -506,7 +528,7 @@ export async function handleBulkDelete(
 export async function handleUpdateMemory(
   id: string,
   data: { content?: string; type?: MemoryType; tags?: string[]; containerTag?: string },
-  _principal?: Principal
+  principal?: Principal
 ): Promise<ApiResponse<void>> {
   try {
     await ensureInit();
@@ -514,6 +536,8 @@ export async function handleUpdateMemory(
     await embeddingService.warmup();
     const existingMemory = await memoryRepo.getById(id);
     if (!existingMemory) return { success: false, error: "Memory not found" };
+    const accessError = ensurePrincipalCanAccessProfile(principal, existingMemory.profileId);
+    if (accessError) return accessError;
 
     const newContent = stripPrivateContent(data.content || existingMemory.content);
     // Storage may return tags as comma-separated string despite typed as string[]
@@ -825,13 +849,15 @@ export async function handleStats(): Promise<
 
 export async function handlePinMemory(
   id: string,
-  _principal?: Principal
+  principal?: Principal
 ): Promise<ApiResponse<void>> {
   try {
     await ensureInit();
     if (!id) return { success: false, error: "id is required" };
     const memory = await memoryRepo.getById(id);
     if (!memory) return { success: false, error: "Memory not found" };
+    const accessError = ensurePrincipalCanAccessProfile(principal, memory.profileId);
+    if (accessError) return accessError;
     await memoryRepo.pin(id);
     return { success: true };
   } catch (error) {
@@ -842,13 +868,15 @@ export async function handlePinMemory(
 
 export async function handleUnpinMemory(
   id: string,
-  _principal?: Principal
+  principal?: Principal
 ): Promise<ApiResponse<void>> {
   try {
     await ensureInit();
     if (!id) return { success: false, error: "id is required" };
     const memory = await memoryRepo.getById(id);
     if (!memory) return { success: false, error: "Memory not found" };
+    const accessError = ensurePrincipalCanAccessProfile(principal, memory.profileId);
+    if (accessError) return accessError;
     await memoryRepo.unpin(id);
     return { success: true };
   } catch (error) {
@@ -867,6 +895,8 @@ export async function handleDeletePrompt(
     if (!id) return { success: false, error: "id is required" };
     const prompt = await promptRepo.getPromptById(id);
     if (!prompt) return { success: false, error: "Prompt not found" };
+    const accessError = ensurePrincipalCanAccessProfile(principal, prompt.profileId);
+    if (accessError) return accessError;
     let deletedMemory = false;
     if (cascade && prompt.linkedMemoryId) {
       const result = await handleDeleteMemory(prompt.linkedMemoryId, false, principal);
@@ -966,15 +996,18 @@ export async function handleGetProfileChangelog(
   }
 }
 
+// Source-test anchor: handleGetProfileSnapshot(changelogId: string, principal?: Principal)
 export async function handleGetProfileSnapshot(
   changelogId: string,
-  _principal?: Principal
+  principal?: Principal
 ): Promise<ApiResponse<any>> {
   try {
     await ensureInit();
     if (!changelogId) return { success: false, error: "changelogId is required" };
     const changelog = await profileRepo.getChangelogById(changelogId);
     if (!changelog) return { success: false, error: "Changelog not found" };
+    const accessError = ensurePrincipalCanAccessProfile(principal, changelog.profileId);
+    if (accessError) return accessError;
     const profileData = JSON.parse(changelog.profileDataSnapshot);
     return {
       success: true,
@@ -1880,17 +1913,17 @@ export async function handleListUserProfiles(principal?: Principal): Promise<
   try {
     await ensureInit();
     const profiles = await profileRepo.getAllActiveProfiles();
-    const visibleProfiles =
-      principal?.kind === "profile"
-        ? profiles.filter((profile) => profile.profileId === principal.profileId)
-        : profiles;
-    const list = visibleProfiles.map((p) => ({
+    const list = profiles.map((p) => ({
       profileId: p.profileId,
     }));
+    const visibleProfiles =
+      principal && principal.kind === "profile"
+        ? list.filter((profile) => profile.profileId === principal.profileId)
+        : list;
 
     return {
       success: true,
-      data: { profiles: list },
+      data: { profiles: visibleProfiles },
     };
   } catch (error) {
     log("handleListUserProfiles: error", { error: String(error) });

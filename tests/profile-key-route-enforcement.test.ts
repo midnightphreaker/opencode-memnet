@@ -58,14 +58,26 @@ describe("profile key route enforcement", () => {
     expect(sharedRouteResult).toBeInstanceOf(Response);
     expect((sharedRouteResult as Response).status).toBe(401);
 
-    const pluginRouteResult = server.authenticateApiRequest(
+    const clientConnectResult = server.authenticateApiRequest(
       new Request("http://localhost/api/client/connect", {
         method: "POST",
         headers: { "X-Opencode-Memnet-Client": "plugin" },
       }),
       "/api/client/connect"
     );
-    expect(pluginRouteResult).toEqual({
+    expect(clientConnectResult).toEqual({
+      principal: { kind: "admin" },
+      authDisabled: true,
+    });
+
+    const clientStatsResult = server.authenticateApiRequest(
+      new Request("http://localhost/api/client/stats", {
+        method: "GET",
+        headers: { "X-Opencode-Memnet-Client": "plugin" },
+      }),
+      "/api/client/stats"
+    );
+    expect(clientStatsResult).toEqual({
       principal: { kind: "admin" },
       authDisabled: true,
     });

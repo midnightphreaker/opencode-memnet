@@ -62,6 +62,7 @@ export class WebServer {
   private static readonly CLIENT_AUTH_ROUTES = new Set([
     "POST /api/auto-capture",
     "POST /api/client/connect",
+    "GET /api/client/stats",
     "POST /api/context/inject",
     "POST /api/user-profile/learn",
   ]);

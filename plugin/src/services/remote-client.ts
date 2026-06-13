@@ -64,13 +64,18 @@ export class RemoteMemoryClient {
       });
       const startTime = performance.now();
 
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+        "X-Client-ID": this.clientId,
+        "X-Opencode-Memnet-Client": "plugin",
+      };
+      if (this.apiKey) {
+        headers.Authorization = `Bearer ${this.apiKey}`;
+      }
+
       const response = await fetch(url.toString(), {
         method,
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${this.apiKey}`,
-          "X-Client-ID": this.clientId,
-        },
+        headers,
         body: body ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       });

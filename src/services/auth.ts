@@ -1,21 +1,37 @@
-// src/services/auth.ts
-import crypto from "node:crypto";
+import {
+  findProfileByApiKey,
+  timingSafeEqualString,
+  type ConfiguredProfile,
+  type Principal,
+} from "./profile-auth.js";
+
+export type RouteKind = "webui" | "client";
+
+export interface AuthResult {
+  principal: Principal;
+  authDisabled: boolean;
+}
 
 export class AuthMiddleware {
   private readonly apiKey: string;
   private readonly disableWebuiAuth: boolean;
   private readonly disableClientAuth: boolean;
+  private readonly configuredProfiles: ConfiguredProfile[];
 
   constructor(
     apiKey: string,
-    options?: { disableWebuiAuth?: boolean; disableClientAuth?: boolean }
+    options?: {
+      disableWebuiAuth?: boolean;
+      disableClientAuth?: boolean;
+      configuredProfiles?: ConfiguredProfile[];
+    }
   ) {
     this.apiKey = apiKey;
     this.disableWebuiAuth = options?.disableWebuiAuth ?? false;
     this.disableClientAuth = options?.disableClientAuth ?? false;
+    this.configuredProfiles = options?.configuredProfiles ?? [];
   }
 
-  /** True when both WebUI and client auth are disabled — no auth check needed. */
   get isAuthFullyDisabled(): boolean {
     return this.disableWebuiAuth && this.disableClientAuth;
   }
@@ -28,31 +44,39 @@ export class AuthMiddleware {
     return this.disableClientAuth;
   }
 
-  /**
-   * Authenticate a request. Returns null on success, or a 401 Response on failure.
-   * If both auth modes are disabled, always returns null.
-   */
-  authenticate(req: Request): Response | null {
-    if (this.isAuthFullyDisabled) return null;
-
+  authenticate(req: Request, routeKind: RouteKind): AuthResult | Response {
     const authHeader = req.headers.get("Authorization");
+    const routeAuthDisabled =
+      routeKind === "client" ? this.disableClientAuth : this.disableWebuiAuth;
+
     if (!authHeader) {
+      if (routeAuthDisabled) {
+        return { principal: { kind: "admin" }, authDisabled: true };
+      }
       return this.unauthorized("Missing Authorization header");
     }
+
     const parts = authHeader.split(" ");
-    if (parts.length !== 2 || parts[0] !== "Bearer") {
+    if (parts.length !== 2 || parts[0] !== "Bearer" || !parts[1]) {
       return this.unauthorized("Invalid Authorization format. Use: Bearer <key>");
     }
-    if (!this.apiKey) {
-      return this.unauthorized("Invalid API key");
+
+    const key = parts[1];
+    if (this.apiKey && timingSafeEqualString(key, this.apiKey)) {
+      return { principal: { kind: "admin" }, authDisabled: false };
     }
-    // Constant-time comparison to prevent timing side-channel attacks
-    const keyBuf = Buffer.from(parts[1]!);
-    const expectedBuf = Buffer.from(this.apiKey);
-    if (keyBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(keyBuf, expectedBuf)) {
-      return this.unauthorized("Invalid API key");
+
+    const profile = findProfileByApiKey(this.configuredProfiles, key);
+    if (profile) {
+      return {
+        principal: profile.displayName
+          ? { kind: "profile", profileId: profile.profileId, displayName: profile.displayName }
+          : { kind: "profile", profileId: profile.profileId },
+        authDisabled: false,
+      };
     }
-    return null;
+
+    return this.unauthorized("Invalid API key");
   }
 
   private unauthorized(message: string): Response {

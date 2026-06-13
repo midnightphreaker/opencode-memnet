@@ -198,8 +198,8 @@ export class WebServer {
     // Auth: all /api/* routes (except public health) require API key unless auth is disabled
     if (path.startsWith("/api/") && path !== "/api/health") {
       if (!this.disableWebuiAuth && !this.disableClientAuth && this.auth) {
-        const authError = this.auth.authenticate(req);
-        if (authError) return authError;
+        const authResult = this.auth.authenticate(req, "webui");
+        if (authResult instanceof Response) return authResult;
       }
     }
 

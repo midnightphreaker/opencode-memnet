@@ -1,5 +1,9 @@
 // src/server-config.ts
-import { readFileSync } from "node:fs";
+import {
+  loadConfiguredProfiles,
+  profileKeyMatchesServerKey,
+  type ConfiguredProfile,
+} from "./services/profile-auth.js";
 import { resolveSecretValue } from "./services/secret-resolver.js";
 
 /**
@@ -73,6 +77,7 @@ export interface ServerConfig {
   disableWebuiAuth: boolean;
   disableClientAuth: boolean;
   profileKeysFile?: string;
+  configuredProfiles: ConfiguredProfile[];
   logLevel: "debug" | "info" | "warn" | "error";
   clientWelcomeBackThreshold: number;
   /** @internal When true, tag migration is skipped because LLM config is missing */
@@ -164,6 +169,7 @@ export function initServerConfig(): ServerConfig {
     disableWebuiAuth: env.DISABLE_WEBUI_AUTH === "true",
     disableClientAuth: env.DISABLE_CLIENT_AUTH === "true",
     profileKeysFile: env.PROFILE_KEYS_FILE || undefined,
+    configuredProfiles: loadConfiguredProfiles(env.PROFILE_KEYS_FILE || undefined),
     logLevel:
       (env.LOG_LEVEL as "debug" | "info" | "warn" | "error") ||
       (env.DEBUG === "true" || env.DEBUG === "1" ? "debug" : "info"),
@@ -196,15 +202,15 @@ export function validateServerConfig(config: ServerConfig): string[] {
       );
     }
   }
-  if (!config.disableClientAuth && config.profileKeysFile) {
-    try {
-      const profileKeys = readFileSync(config.profileKeysFile, "utf-8").trim();
-      if (!profileKeys || profileKeys === "{}" || profileKeys === "[]") {
-        errors.push("PROFILE_KEYS_FILE must contain at least one profile key");
-      }
-    } catch (error) {
-      errors.push(`PROFILE_KEYS_FILE cannot be read: ${String(error)}`);
-    }
+  if (
+    !config.disableClientAuth &&
+    config.profileKeysFile &&
+    config.configuredProfiles.length === 0
+  ) {
+    errors.push("PROFILE_KEYS_FILE must contain at least one profile key");
+  }
+  if (profileKeyMatchesServerKey(config.configuredProfiles, config.serverApiKey)) {
+    errors.push("PROFILE_KEYS_FILE contains a profile apiKey that matches SERVER_API_KEY");
   }
 
   // Validate LLM provider config for tag migration

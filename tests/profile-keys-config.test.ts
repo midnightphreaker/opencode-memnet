@@ -53,6 +53,7 @@ function makeConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
     webServerAllowedOrigin: "*",
     disableWebuiAuth: false,
     disableClientAuth: false,
+    configuredProfiles: [],
     logLevel: "info",
     clientWelcomeBackThreshold: 168,
     ...overrides,
@@ -71,5 +72,19 @@ describe("profile key config", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("rejects profile keys that match SERVER_API_KEY", () => {
+    const errors = validateServerConfig(
+      makeConfig({
+        serverApiKey: "admin",
+        profileKeysFile: "/tmp/profile-keys.jsonc",
+        configuredProfiles: [{ profileId: "phrkr", apiKey: "admin" }],
+      })
+    );
+
+    expect(errors).toContain(
+      "PROFILE_KEYS_FILE contains a profile apiKey that matches SERVER_API_KEY"
+    );
   });
 });

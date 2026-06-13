@@ -1609,7 +1609,7 @@ git commit -m "feat: scope aggregate reads by profile"
 - Modify: `src/web/app.js`
 - Test: `tests/webui-profile-key-lock.test.ts`
 
-- [ ] **Step 1: Write failing WebUI source test**
+- [x] **Step 1: Write failing WebUI source test**
 
 Create `tests/webui-profile-key-lock.test.ts`:
 
@@ -1640,7 +1640,7 @@ describe("WebUI profile key lock", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1650,7 +1650,7 @@ bun test tests/webui-profile-key-lock.test.ts
 
 Expected: FAIL because WebUI does not track principal metadata.
 
-- [ ] **Step 3: Add principal state and helper**
+- [x] **Step 3: Add principal state and helper**
 
 In `src/web/app.js`, add state fields:
 
@@ -1672,7 +1672,7 @@ function applyProfilePrincipal(principal) {
 }
 ```
 
-- [ ] **Step 4: Use authenticated profile list calls**
+- [x] **Step 4: Use authenticated profile list calls**
 
 In `loadProfilePanelSelector()`, replace raw `fetch("/api/user-profiles", ...)` with:
 
@@ -1688,7 +1688,7 @@ const data = await fetchAPI("/api/user-profiles");
 
 Remove now-unused local `headers` variables in those functions.
 
-- [ ] **Step 5: Apply principal metadata to selectors**
+- [x] **Step 5: Apply principal metadata to selectors**
 
 In both profile-list success branches, call:
 
@@ -1723,7 +1723,7 @@ if (state.authDisabled || state.principal?.kind === "admin") {
 }
 ```
 
-- [ ] **Step 6: Run WebUI tests**
+- [x] **Step 6: Run WebUI tests**
 
 Run:
 
@@ -1734,7 +1734,7 @@ bun run build
 
 Expected: tests and server build pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/web/app.js tests/webui-profile-key-lock.test.ts

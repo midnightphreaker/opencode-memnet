@@ -27,6 +27,8 @@ const state = {
   authKey: localStorage.getItem("opencode-memnet-apikey") || "",
   activeProfileId: localStorage.getItem("opencode-memnet-active-profile") || "",
   panelViewProfileId: "",
+  principal: null,
+  profileLocked: false,
   authDisabled: false,
   lastJobStatus: {
     activity: { active: false, text: "Idle", queuedCount: 0 },
@@ -71,6 +73,16 @@ async function fetchAPI(endpoint, options = {}) {
     return { success: false, error: error.message };
   } finally {
     clearTimeout(timeoutId);
+  }
+}
+
+function applyProfilePrincipal(principal) {
+  state.principal = principal || null;
+  state.profileLocked = state.principal?.kind === "profile";
+  if (state.profileLocked) {
+    state.activeProfileId = state.principal.profileId;
+    state.panelViewProfileId = state.principal.profileId;
+    localStorage.setItem("opencode-memnet-active-profile", state.activeProfileId);
   }
 }
 
@@ -1398,7 +1410,7 @@ async function refreshProfile() {
 // ── Profile sheet ──
 function openProfileSheet() {
   document.getElementById("profile-sheet").classList.add("sheet-open");
-  if (state.authDisabled) {
+  if (state.authDisabled || state.principal?.kind === "admin") {
     loadProfilePanelSelector();
   } else {
     document.getElementById("profile-selector-row").style.display = "none";
@@ -1413,10 +1425,10 @@ async function loadProfilePanelSelector() {
   selectorRow.style.display = "flex";
 
   try {
-    const res = await fetch("/api/user-profiles", {
-      headers: { "X-Client-ID": getWebClientId() },
-    });
-    const data = await res.json();
+    const data = await fetchAPI("/api/user-profiles");
+    if (data.success) {
+      applyProfilePrincipal(data.data.principal);
+    }
 
     if (data.success && data.data.profiles && data.data.profiles.length > 0) {
       select.innerHTML = "";
@@ -1432,6 +1444,10 @@ async function loadProfilePanelSelector() {
       if (data.data.profiles.some((p) => p.profileId === targetId)) {
         select.value = targetId;
       }
+      if (state.profileLocked) {
+        select.value = state.activeProfileId;
+      }
+      select.disabled = state.profileLocked;
 
       state.panelViewProfileId = select.value;
       loadUserProfile();
@@ -1489,6 +1505,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   document.getElementById("refresh-profile-btn")?.addEventListener("click", refreshProfile);
   document.getElementById("profile-panel-select").addEventListener("change", (e) => {
+    if (state.profileLocked) return;
     state.panelViewProfileId = e.target.value;
     loadUserProfile();
   });
@@ -1567,11 +1584,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   async function populateProfileDropdown() {
     if (!state.authKey && !state.authDisabled) return;
     try {
-      const headers = {};
-      if (state.authKey) headers["Authorization"] = `Bearer ${state.authKey}`;
-      headers["X-Client-ID"] = getWebClientId();
-      const res = await fetch("/api/user-profiles", { headers });
-      const data = await res.json();
+      const data = await fetchAPI("/api/user-profiles");
+      if (data.success) {
+        applyProfilePrincipal(data.data.principal);
+      }
 
       if (data.success && data.data.profiles.length > 0) {
         const select = document.getElementById("settings-profile");
@@ -1594,6 +1610,10 @@ document.addEventListener("DOMContentLoaded", async () => {
         if (!state.activeProfileId && data.data.profiles.length > 0) {
           state.activeProfileId = data.data.profiles[0].profileId;
         }
+        if (state.profileLocked) {
+          select.value = state.activeProfileId;
+        }
+        select.disabled = state.profileLocked;
         select._populating = false;
       }
     } catch (e) {
@@ -1621,6 +1641,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   document.getElementById("settings-profile").addEventListener("change", () => {
     if (document.getElementById("settings-profile")._populating) return;
+    if (state.profileLocked) return;
     const newProfileId = document.getElementById("settings-profile").value;
     if (state.activeProfileId === newProfileId) return;
     state.activeProfileId = newProfileId;
@@ -1689,6 +1710,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   } catch (e) {
     console.warn("Auth check failed:", e);
   }
+
+  if (state.authKey && !state.authDisabled) await populateProfileDropdown();
 
   await loadTags();
   await loadMemories();

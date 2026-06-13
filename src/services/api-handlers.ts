@@ -3,7 +3,6 @@ import { log, logInfo, logDebug, logError } from "./logger.js";
 import { getServerConfig } from "../server-config.js";
 import { CONFIG } from "../config.js";
 import type { MemoryType } from "../types/index.js";
-import { ForbiddenError } from "./profile-auth.js";
 import type { Principal } from "./profile-auth.js";
 import {
   createMemoryRepository,
@@ -110,10 +109,6 @@ function ensurePrincipalCanAccessProfile(
   if (!principal || principal.kind === "admin") return null;
   if (profileId === principal.profileId) return null;
   return { success: false, error: "Profile key cannot access another profile" };
-}
-
-function forbiddenFromError(error: unknown): ApiResponse<never> | null {
-  return error instanceof ForbiddenError ? { success: false, error: error.message } : null;
 }
 
 function safeToISOString(timestamp: any): string {
@@ -465,7 +460,7 @@ export async function handleDeleteMemory(
     if (!memory) return { success: false, error: "Memory not found" };
     const accessError = ensurePrincipalCanAccessProfile(principal, memory.profileId);
     if (accessError) return accessError;
-    let linkedPromptId: string | undefined;
+    let deletedPrompt = false;
     if (cascade) {
       const metadata =
         typeof memory.metadata === "string"
@@ -477,13 +472,20 @@ export async function handleDeleteMemory(
               }
             })()
           : memory.metadata;
-      linkedPromptId = metadata?.promptId as string | undefined;
-      if (linkedPromptId) await promptRepo.deletePrompt(linkedPromptId);
+      const linkedPromptId = metadata?.promptId as string | undefined;
+      if (linkedPromptId) {
+        const promptResult = await handleDeletePrompt(linkedPromptId, false, principal);
+        if (promptResult.success) {
+          deletedPrompt = true;
+        } else if (promptResult.error !== "Prompt not found") {
+          return { success: false, error: promptResult.error };
+        }
+      }
     }
     await memoryRepo.delete(id);
     return {
       success: true,
-      data: { deletedPrompt: cascade && !!linkedPromptId },
+      data: { deletedPrompt },
     };
   } catch (error) {
     log("handleDeleteMemory: error", { error: String(error) });
@@ -996,7 +998,6 @@ export async function handleGetProfileChangelog(
   }
 }
 
-// Source-test anchor: handleGetProfileSnapshot(changelogId: string, principal?: Principal)
 export async function handleGetProfileSnapshot(
   changelogId: string,
   principal?: Principal

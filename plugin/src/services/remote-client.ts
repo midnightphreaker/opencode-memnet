@@ -305,6 +305,7 @@ export class RemoteMemoryClient {
       daysSinceLastSeen: number | null;
       welcomeBack: boolean;
       stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
+      principal: { kind: "admin" } | { kind: "profile"; profileId: string; displayName?: string };
     }>
   > {
     return this.request("POST", "/api/client/connect", { clientId, metadata });

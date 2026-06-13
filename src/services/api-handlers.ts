@@ -3,7 +3,7 @@ import { log, logInfo, logDebug, logError } from "./logger.js";
 import { getServerConfig } from "../server-config.js";
 import { CONFIG } from "../config.js";
 import type { MemoryType } from "../types/index.js";
-import type { Principal } from "./profile-auth.js";
+import { principalResponse, type Principal } from "./profile-auth.js";
 import {
   createMemoryRepository,
   createUserPromptRepository,
@@ -1973,13 +1973,14 @@ export async function handleClientConnect(
     clientId: string;
     metadata?: Record<string, unknown>;
   },
-  _principal?: Principal
+  principal: Principal = { kind: "admin" }
 ): Promise<
   ApiResponse<{
     firstTime: boolean;
     daysSinceLastSeen: number | null;
     welcomeBack: boolean;
     stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
+    principal: ReturnType<typeof principalResponse>;
   }>
 > {
   try {
@@ -2038,6 +2039,7 @@ export async function handleClientConnect(
           memoriesToday: stats.memoriesToday,
           totalPrompts: stats.totalPrompts,
         },
+        principal: principalResponse(principal),
       },
     };
   } catch (error) {

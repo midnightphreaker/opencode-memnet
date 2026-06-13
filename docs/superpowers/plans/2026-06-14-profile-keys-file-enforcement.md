@@ -1753,7 +1753,7 @@ git commit -m "feat: lock webui to profile key principal"
 - Test: `tests/plugin-profile-key.test.ts`
 - Test: `tests/plugin-remote-client-scope.test.ts`
 
-- [ ] **Step 1: Write failing plugin test**
+- [x] **Step 1: Write failing plugin test**
 
 Create `tests/plugin-profile-key.test.ts`:
 
@@ -1793,7 +1793,7 @@ describe("plugin profile key support", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run:
 
@@ -1803,7 +1803,7 @@ bun test tests/plugin-profile-key.test.ts
 
 Expected: FAIL because plugin does not use server principal metadata.
 
-- [ ] **Step 3: Type `clientConnect` principal response**
+- [x] **Step 3: Type `clientConnect` principal response**
 
 In `plugin/src/services/remote-client.ts`, update the `clientConnect()` return type:
 
@@ -1817,7 +1817,7 @@ ApiResponse<{
 }>;
 ```
 
-- [ ] **Step 4: Return principal from server client connect**
+- [x] **Step 4: Return principal from server client connect**
 
 In `src/services/api-handlers.ts`, change `handleClientConnect` signature:
 
@@ -1843,7 +1843,7 @@ Import `principalResponse` from `./profile-auth.js` and add to returned data:
 principal: principalResponse(principal),
 ```
 
-- [ ] **Step 5: Use effective profile ID in plugin runtime**
+- [x] **Step 5: Use effective profile ID in plugin runtime**
 
 In `plugin/src/index-remote.ts`, replace:
 
@@ -1875,7 +1875,7 @@ const profileId = effectiveProfileId ?? "default";
 
 Do not use the fallback before `clientConnect` has had a chance to return a profile principal.
 
-- [ ] **Step 6: Run plugin tests and build**
+- [x] **Step 6: Run plugin tests and build**
 
 Run:
 
@@ -1887,7 +1887,7 @@ bun run typecheck:plugin
 
 Expected: tests pass, plugin build passes, plugin type-check passes.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add src/services/api-handlers.ts plugin/src/services/remote-client.ts plugin/src/index-remote.ts shared/client-config.ts tests/plugin-profile-key.test.ts

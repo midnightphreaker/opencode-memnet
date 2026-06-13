@@ -30,7 +30,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   const tags = await getTags(directory, TAGS_CONFIG);
   const clientId = getClientId();
   const client = getRemoteClient(clientId);
-  const profileId = CLIENT_CONFIG.profileId ?? "default";
+  let effectiveProfileId = CLIENT_CONFIG.profileId;
   const repoId = tags.project.tag;
 
   // Connect to server — registers client and gets connection info
@@ -41,9 +41,15 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     });
     if (connectResult.success && connectResult.data) {
       connectionInfo = connectResult.data;
+      if (connectionInfo.principal?.kind === "profile") {
+        effectiveProfileId = connectionInfo.principal.profileId;
+      }
+      if (connectionInfo.principal?.kind !== "profile") {
+        effectiveProfileId = effectiveProfileId ?? "default";
+      }
       logInfo("Plugin initialized", {
         project: tags.project.projectName || tags.project.tag,
-        profileId,
+        profileId: effectiveProfileId,
         clientId: clientId.slice(0, 8),
         firstTime: connectionInfo.firstTime,
       });
@@ -95,6 +101,12 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   } catch (err) {
     logWarn("Failed to connect to server on init", { error: String(err) });
   }
+  if (connectionInfo?.principal?.kind === "profile") {
+    effectiveProfileId = connectionInfo.principal.profileId;
+  }
+  if (connectionInfo?.principal?.kind !== "profile") {
+    effectiveProfileId = effectiveProfileId ?? "default";
+  }
   let idleTimeout: Timer | null = null;
   let captureInProgress = false;
   const customMessageInjectedSessions = new Set<string>();
@@ -102,6 +114,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   return {
     "chat.message": async (input, output) => {
       if (!isClientConfigured()) return;
+      const profileId = effectiveProfileId ?? "default";
       const customMessageText = CLIENT_CONFIG.customMessage?.text ?? "";
       const hasCustomMessage =
         CLIENT_CONFIG.customMessage?.enabled === true && customMessageText.trim().length > 0;
@@ -196,6 +209,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           if (!isClientConfigured()) {
             return JSON.stringify({ success: false, error: "Memory system not configured." });
           }
+          const profileId = effectiveProfileId ?? "default";
           logDebug("memory tool called", {
             mode: args.mode || "help",
             hasContent: !!args.content,
@@ -315,6 +329,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
 
     event: async (input: { event: { type: string; properties?: any } }) => {
       const event = input.event;
+      const profileId = effectiveProfileId ?? "default";
       logDebug(`event received`, { type: event.type, hasProperties: !!event.properties });
 
       if (event.type === "session.idle") {

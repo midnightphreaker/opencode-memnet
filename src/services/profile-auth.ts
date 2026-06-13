@@ -26,12 +26,9 @@ function asString(value: unknown): string | undefined {
 }
 
 export function timingSafeEqualString(actual: string, expected: string): boolean {
-  const actualBuffer = Buffer.from(actual);
-  const expectedBuffer = Buffer.from(expected);
-  return (
-    actualBuffer.length === expectedBuffer.length &&
-    crypto.timingSafeEqual(actualBuffer, expectedBuffer)
-  );
+  const actualDigest = crypto.createHash("sha256").update(actual).digest();
+  const expectedDigest = crypto.createHash("sha256").update(expected).digest();
+  return crypto.timingSafeEqual(actualDigest, expectedDigest);
 }
 
 export function loadConfiguredProfiles(filePath?: string): ConfiguredProfile[] {
@@ -61,6 +58,11 @@ export function loadConfiguredProfiles(filePath?: string): ConfiguredProfile[] {
 
     if (!profileId) {
       throw new Error(`PROFILE_KEYS_FILE profile at index ${index} is missing profileId`);
+    }
+    for (const field of Object.keys(entry)) {
+      if (field !== "profileId" && field !== "displayName" && field !== "apiKey") {
+        throw new Error(`Unsupported PROFILE_KEYS_FILE field for profile ${profileId}: ${field}`);
+      }
     }
     if (!apiKeySource) {
       throw new Error(`PROFILE_KEYS_FILE profile ${profileId} is missing apiKey`);
@@ -94,18 +96,28 @@ export function getConfiguredProfileById(
 }
 
 export function findProfileByApiKey(
-  profiles: readonly ConfiguredProfile[],
+  profiles: readonly ConfiguredProfile[] | undefined,
   apiKey: string
 ): ConfiguredProfile | undefined {
-  return profiles.find((profile) => timingSafeEqualString(apiKey, profile.apiKey));
+  let match: ConfiguredProfile | undefined;
+  for (const profile of profiles ?? []) {
+    if (timingSafeEqualString(apiKey, profile.apiKey) && !match) {
+      match = profile;
+    }
+  }
+  return match;
 }
 
 export function profileKeyMatchesServerKey(
-  profiles: readonly ConfiguredProfile[],
+  profiles: readonly ConfiguredProfile[] | undefined,
   serverApiKey: string
 ): boolean {
   if (!serverApiKey) return false;
-  return profiles.some((profile) => timingSafeEqualString(profile.apiKey, serverApiKey));
+  let matches = false;
+  for (const profile of profiles ?? []) {
+    matches = timingSafeEqualString(profile.apiKey, serverApiKey) || matches;
+  }
+  return matches;
 }
 
 export function requireProfileIdForPrincipal(

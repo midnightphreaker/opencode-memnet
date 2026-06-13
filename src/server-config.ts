@@ -185,6 +185,7 @@ export function getServerConfig(): ServerConfig {
 
 export function validateServerConfig(config: ServerConfig): string[] {
   const errors: string[] = [];
+  const configuredProfiles = config.configuredProfiles ?? [];
   if (!config.postgres.url?.trim()) errors.push("POSTGRES_URL is required");
   else if (
     !config.postgres.url.startsWith("postgresql://") &&
@@ -202,14 +203,10 @@ export function validateServerConfig(config: ServerConfig): string[] {
       );
     }
   }
-  if (
-    !config.disableClientAuth &&
-    config.profileKeysFile &&
-    config.configuredProfiles.length === 0
-  ) {
+  if (!config.disableClientAuth && config.profileKeysFile && configuredProfiles.length === 0) {
     errors.push("PROFILE_KEYS_FILE must contain at least one profile key");
   }
-  if (profileKeyMatchesServerKey(config.configuredProfiles, config.serverApiKey)) {
+  if (profileKeyMatchesServerKey(configuredProfiles, config.serverApiKey)) {
     errors.push("PROFILE_KEYS_FILE contains a profile apiKey that matches SERVER_API_KEY");
   }
 

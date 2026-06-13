@@ -87,4 +87,11 @@ describe("profile key config", () => {
       "PROFILE_KEYS_FILE contains a profile apiKey that matches SERVER_API_KEY"
     );
   });
+
+  it("does not crash when older test fixtures omit configuredProfiles", () => {
+    const config = makeConfig();
+    delete (config as Partial<ServerConfig>).configuredProfiles;
+
+    expect(() => validateServerConfig(config)).not.toThrow();
+  });
 });

@@ -94,6 +94,20 @@ describe("profile key file parsing", () => {
 
     expect(() => loadConfiguredProfiles(file)).toThrow("Duplicate apiKey in PROFILE_KEYS_FILE");
   });
+
+  it("rejects unsupported profile fields", () => {
+    const file = writeProfileFile(`
+      {
+        "profiles": [
+          { "profileId": "phrkr", "apiKey": "one", "userEmail": "phrkr@example.test" }
+        ]
+      }
+    `);
+
+    expect(() => loadConfiguredProfiles(file)).toThrow(
+      "Unsupported PROFILE_KEYS_FILE field for profile phrkr: userEmail"
+    );
+  });
 });
 
 describe("profile key helpers", () => {

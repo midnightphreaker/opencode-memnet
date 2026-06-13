@@ -674,6 +674,8 @@ export async function handleSearch(
     const queryVector = await embeddingService.embedWithTimeout(query, { kind: "query" });
     let memoryResults: any[] = [];
     let promptResults: any[] = [];
+    let contextProfileId = profileId;
+    let contextRepoId = repoId;
 
     if (tag) {
       const { scope, hash } = extractScopeFromTag(tag);
@@ -691,10 +693,12 @@ export async function handleSearch(
       memoryResults.push(...results);
 
       const projectScope = await getProjectScopeFromTag(tag, profileId);
+      contextProfileId = projectScope?.profileId ?? profileId;
+      contextRepoId = projectScope?.repoId ?? repoId;
       promptResults = await promptRepo.searchPrompts({
         query,
-        profileId: projectScope?.profileId ?? profileId,
-        repoId: projectScope?.repoId ?? repoId,
+        profileId: contextProfileId,
+        repoId: contextRepoId,
         limit: pageSize * 2,
       });
     } else {
@@ -779,7 +783,7 @@ export async function handleSearch(
     if (missingPromptIds.size > 0) {
       const extraPrompts = await promptRepo.getPromptsByIds(Array.from(missingPromptIds));
       for (const p of extraPrompts) {
-        if (!matchesRequestedScope(p, profileId, repoId)) continue;
+        if (!matchesRequestedScope(p, contextProfileId, contextRepoId)) continue;
         paginatedResults.push({
           type: "prompt",
           id: p.id,
@@ -801,7 +805,7 @@ export async function handleSearch(
         const m = await memoryRepo.getById(mid);
         if (
           m &&
-          matchesRequestedScope(m, profileId, repoId) &&
+          matchesRequestedScope(m, contextProfileId, contextRepoId) &&
           !paginatedResults.some((existing) => existing.id === m.id)
         ) {
           paginatedResults.push({

@@ -32,6 +32,9 @@ const memoryRepo = {
   initialize: async () => {},
   search: async () => memoryResults,
   getById: async (id: string) => memories.get(id),
+  getDistinctTags: async () => [
+    { tag: "repo_project_alpha", profileId: "phrkr", repoId: "repo-a" },
+  ],
 };
 
 const promptRepo = {
@@ -131,6 +134,26 @@ describe("profile key search context scope", () => {
     memories.set("mem-other", memory("mem-other", "other", "repo-b"));
 
     const result = await handleSearch("needle", undefined, 1, 20, "phrkr", "repo-a");
+
+    expect(result.success).toBe(true);
+    expect(result.data?.items.map((item) => item.id)).toEqual(["prompt-own"]);
+  });
+
+  it("does not append same-profile prompts from another repo during tag search", async () => {
+    memoryResults = [searchMemory("mem-own", "phrkr", "repo-a", "prompt-other-repo")];
+    prompts.set("prompt-other-repo", prompt("prompt-other-repo", "phrkr", "repo-b"));
+
+    const result = await handleSearch("needle", "repo_project_alpha", 1, 20, "phrkr");
+
+    expect(result.success).toBe(true);
+    expect(result.data?.items.map((item) => item.id)).toEqual(["mem-own"]);
+  });
+
+  it("does not append same-profile memories from another repo during tag search", async () => {
+    promptResults = [prompt("prompt-own", "phrkr", "repo-a", "mem-other-repo")];
+    memories.set("mem-other-repo", memory("mem-other-repo", "phrkr", "repo-b"));
+
+    const result = await handleSearch("needle", "repo_project_alpha", 1, 20, "phrkr");
 
     expect(result.success).toBe(true);
     expect(result.data?.items.map((item) => item.id)).toEqual(["prompt-own"]);

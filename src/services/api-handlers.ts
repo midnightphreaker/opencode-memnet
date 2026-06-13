@@ -145,7 +145,7 @@ function metadataScore(t: TagInfo): number {
 }
 
 export async function handleListTags(
-  _profileId?: string
+  profileId?: string
 ): Promise<ApiResponse<{ project: TagInfo[] }>> {
   try {
     await ensureInit();
@@ -153,9 +153,10 @@ export async function handleListTags(
     // Calling warmup() here would block on local transformer init in the worker
     // thread and hang every read API. Only handlers that compute similarity
     // (e.g. handleSearch) should warm up the embedding service.
-    const allTags = await memoryRepo.getDistinctTags({ scope: "project" });
+    const allTags = await memoryRepo.getDistinctTags({ scope: "project", profileId });
     const projectTags: TagInfo[] = allTags
       .filter((t) => t.tag.includes("_project_"))
+      .filter((t) => !profileId || t.profileId === profileId)
       .map((t) => ({
         tag: t.tag,
         profileId: t.profileId,
@@ -1871,7 +1872,7 @@ export function handleMigrationRun(_body: {
 
 // ── List all user profiles ───────────────────────────────
 
-export async function handleListUserProfiles(_principal?: Principal): Promise<
+export async function handleListUserProfiles(principal?: Principal): Promise<
   ApiResponse<{
     profiles: Array<{ profileId: string }>;
   }>
@@ -1879,7 +1880,11 @@ export async function handleListUserProfiles(_principal?: Principal): Promise<
   try {
     await ensureInit();
     const profiles = await profileRepo.getAllActiveProfiles();
-    const list = profiles.map((p) => ({
+    const visibleProfiles =
+      principal?.kind === "profile"
+        ? profiles.filter((profile) => profile.profileId === principal.profileId)
+        : profiles;
+    const list = visibleProfiles.map((p) => ({
       profileId: p.profileId,
     }));
 

@@ -11,7 +11,7 @@ Services are organized into functional groups. Each group is independently testa
 **API & HTTP layer**
 
 - `api-handlers.ts` — Central handler registry: memory CRUD, search (vector similarity), pin/unpin, bulk operations, tag migration triggers, cleanup, deduplication, user profile endpoints, client identity, and auto-capture. Initializes repos lazily via `ensureInit()`.
-- `web-server.ts` / `web-server-worker.ts` — Bun-based HTTP server. `web-server.ts` is the primary class-based server (used by `src/server.ts`); `web-server-worker.ts` is the worker-thread variant. Both route requests to `api-handlers` and serve the WebUI static files.
+- `web-server.ts` — Bun-based HTTP server used by `src/server.ts`. Routes requests to `api-handlers` and serves the WebUI static files.
 - `health-handler.ts` — Public and detailed health checks (DB + embedding status, version, uptime).
 
 **Memory clients**

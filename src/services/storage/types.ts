@@ -135,7 +135,11 @@ export interface MemoryRepository {
    */
   countByType(): Promise<Record<string, number>>;
 
-  getDistinctTags(args?: { scope?: MemoryScopeKind; scopeHash?: string }): Promise<TagInfo[]>;
+  getDistinctTags(args?: {
+    scope?: MemoryScopeKind;
+    scopeHash?: string;
+    profileId?: string;
+  }): Promise<TagInfo[]>;
   getDistinctTagValues(args?: { scope?: MemoryScopeKind }): Promise<string[]>;
 
   pin(memoryId: string): Promise<void>;

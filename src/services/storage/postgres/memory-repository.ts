@@ -527,10 +527,12 @@ export class PostgresMemoryRepository implements MemoryRepository {
   async getDistinctTags(args?: {
     scope?: MemoryScopeKind;
     scopeHash?: string;
+    profileId?: string;
   }): Promise<TagInfo[]> {
     const sql = getPostgresClient();
     const scope = args?.scope ?? "user";
     const scopeHashFilter = args?.scopeHash ?? "";
+    const profileIdFilter = args?.profileId ?? "";
 
     const rows = await sql`
       SELECT DISTINCT container_tag, profile_id, repo_id, local_project_path,
@@ -538,6 +540,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       FROM memories
       WHERE scope = ${scope}
         AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
+        AND (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
     `;
 
     return rows.map((row: any) => ({

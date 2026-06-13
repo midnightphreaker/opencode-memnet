@@ -59,6 +59,13 @@ export function getActiveRequestCount(): number {
 }
 
 export class WebServer {
+  private static readonly CLIENT_AUTH_ROUTES = new Set([
+    "POST /api/auto-capture",
+    "POST /api/client/connect",
+    "POST /api/context/inject",
+    "POST /api/user-profile/learn",
+  ]);
+
   private server: ReturnType<typeof Bun.serve> | null = null;
   private config: WebServerConfig;
   private isOwner: boolean = false;
@@ -155,8 +162,12 @@ export class WebServer {
     }
   }
 
-  private getRouteKind(req: Request): RouteKind {
-    return req.headers.get("X-Opencode-Memnet-Client") === "plugin" ? "client" : "webui";
+  private getRouteKind(req: Request, path: string): RouteKind {
+    const routeKey = `${req.method.toUpperCase()} ${path}`;
+    const isPluginOnlyRoute = WebServer.CLIENT_AUTH_ROUTES.has(routeKey);
+    return req.headers.get("X-Opencode-Memnet-Client") === "plugin" && isPluginOnlyRoute
+      ? "client"
+      : "webui";
   }
 
   private authenticateApiRequest(req: Request, path: string): AuthResult | Response {
@@ -169,7 +180,7 @@ export class WebServer {
     if (!this.auth) {
       return this.jsonResponse({ success: false, error: "Authentication is not configured" }, 401);
     }
-    return this.auth.authenticate(req, this.getRouteKind(req));
+    return this.auth.authenticate(req, this.getRouteKind(req, path));
   }
 
   private profileIdForRequest(
@@ -199,7 +210,7 @@ export class WebServer {
       : { kind: "all" };
   }
 
-  // --- HTTP request handling (inlined from web-server-worker.ts) ---
+  // --- HTTP request handling ---
 
   private async handleRequest(req: Request): Promise<Response> {
     activeRequests++;

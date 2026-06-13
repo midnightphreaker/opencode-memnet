@@ -11,5 +11,5 @@ Defines domain types and safe-deserialization utilities for the user profile lea
 
 ## Integration
 
-- Consumed by: `api-handlers` (HTTP routes), `user-memory-learning` (analysis pipeline), `storage/factory` (Postgres repo), `storage/postgres/profile-utils` (merge logic), `web-server` / `web-server-worker` (API endpoints), `index` (CLI orchestration)
+- Consumed by: `api-handlers` (HTTP routes), `user-memory-learning` (analysis pipeline), `storage/factory` (Postgres repo), `storage/postgres/profile-utils` (merge logic), `web-server` (API endpoints), `index` (CLI orchestration)
 - Depends on: No external dependencies; pure TypeScript with no imports outside this directory

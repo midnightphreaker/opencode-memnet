@@ -1,526 +1,340 @@
-<p align="center">
-  <img src="src/web/logo-banner.svg" alt="opencode MEMnet">
-</p>
+# opencode-memnet
 
-[![MIT License](https://img.shields.io/badge/license-MIT-blue)](https://git.phrk.org/pub/opencode-memnet) [![Version](https://img.shields.io/badge/version-3.0.0-green)](package.json)
+Persistent memory server and OpenCode plugin for coding agents.
 
-Persistent memory for AI coding agents. AI assistants forget everything between sessions -- preferences, patterns, past decisions, project context. opencode-memnet gives them a long-term memory layer backed by semantic search, so every conversation picks up where the last one left off.
+The server stores memories, prompts, profile data, and vector embeddings in
+Postgres with pgvector. The plugin is a thin HTTP client that sends project
+context, searches memory, injects relevant context into chat messages, and
+captures new memory from sessions.
 
-This project builds upon and would not exist without the original [OpenCode Memory](https://github.com/tickernelz/opencode-mem) by **tickernelz**. Thank you for creating and sharing this excellent work.
+This README documents the supported local install path:
 
----
+- Server: `docker-compose.yml`
+- Plugin: clone this repo, run `bun run build:plugin`, load the built local plugin
+- No npm publishing workflow
+- No external database container instructions outside this repository's Compose file
 
-## Table of Contents
+## Quickstart
 
-- [Quick Start](#quick-start)
-- [What is opencode-memnet?](#what-is-opencode-memnet)
-- [Architecture](#architecture)
-- [Server Installation](#server-installation)
-  - [Prerequisites](#prerequisites)
-  - [Option 1: Docker Compose (Bundled Database)](#option-1-docker-compose-bundled-database)
-  - [Option 2: Docker Compose (External Database)](#option-2-docker-compose-external-database)
-  - [Option 3: Manual (Bun)](#option-3-manual-bun)
-  - [Production Considerations](#production-considerations)
-- [Client Plugin Installation](#client-plugin-installation)
-  - [Option 1: Bun (Recommended)](#option-1-bun-recommended)
-  - [Option 2: Manual Configuration](#option-2-manual-configuration)
-- [Configuration Reference](#configuration-reference)
-  - [Server Environment Variables](#server-environment-variables)
-  - [Secret Management](#secret-management)
-  - [Client Configuration File](#client-configuration-file)
-- [API Reference](#api-reference)
-- [WebUI](#webui)
-- [User Profiles](#user-profiles)
-- [Development](#development)
-  - [Setup and Build](#setup-and-build)
-  - [Project Structure](#project-structure)
-  - [Testing and Linting](#testing-and-linting)
-- [Troubleshooting](#troubleshooting)
-- [License](#license)
+### Requirements
 
----
+- Git
+- Docker with Docker Compose
+- Bun
+- An OpenAI-compatible embedding API
+- Optional: an OpenAI-compatible chat completions API for auto-capture/profile learning
 
-## Quick Start
-
-Get a working memory server and client plugin in a few minutes.
-
-**1. Clone and start the server (Docker, bundled database):**
+### 1. Clone
 
 ```bash
 git clone https://git.phrk.org/pub/opencode-memnet.git
 cd opencode-memnet
+```
+
+### 2. Create `.env`
+
+```bash
 cp .env.example .env
 ```
 
-Edit `.env` — set at minimum:
+Set the required values:
 
-```bash
-SERVER_API_KEY=my-secret
+```env
+SERVER_API_KEY=change-me-admin-key
+POSTGRES_PASSWORD=change-me-db-password
+
 EMBEDDING_API_URL=https://api.openai.com/v1
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_API_KEY=sk-...
-```
 
-```bash
-docker compose up -d
-```
-
-**2. Configure the client plugin:**
-
-```bash
-mkdir -p ~/.config/opencode
-cat > ~/.config/opencode/opencode-memnet.jsonc << 'EOF'
-{
-  "serverUrl": "http://localhost:4747",
-  "apiKey": "my-secret",
-}
-EOF
-```
-
-**3. Verify it is running:**
-
-```bash
-curl http://localhost:4747/api/health
-```
-
-Done. Start OpenCode and the plugin will connect automatically.
-
----
-
-## What is opencode-memnet?
-
-**Problem:** AI coding agents have no memory across sessions. Every time you start a new conversation, the agent starts from scratch -- it does not know your coding style, past decisions, project conventions, or previous fixes.
-
-**Solution:** opencode-memnet is a standalone memory server with a thin client plugin. It stores memories as vector embeddings in PostgreSQL with pgvector, enabling semantic search so the agent retrieves relevant context without exact keyword matches.
-
-**Key features:**
-
-- **Semantic memory storage** -- memories are embedded and searchable by meaning, not just keywords
-- **Auto-capture** -- automatically extracts memories from conversation sessions using an LLM
-- **Context injection** -- injects relevant memories into chat messages before the agent processes them
-- **User profiles** -- learns coding preferences, patterns, and workflows over time
-- **WebUI** -- browse, search, edit, and manage memories and profiles in a browser
-- **Server + plugin architecture** -- server is independent of any specific AI tool; plugin is a thin client
-
----
-
-## Architecture
-
-![opencode-memnet Architecture](docs/diagrams/diagram-03.svg)
-
-| Component         | Directory | Description                                                                     |
-| ----------------- | --------- | ------------------------------------------------------------------------------- |
-| **Server**        | `src/`    | Standalone Bun process serving REST API + WebUI, connected to Postgres/pgvector |
-| **Client Plugin** | `plugin/` | Thin OpenCode plugin compiled to a single JS file, communicates via HTTP        |
-| **Shared**        | `shared/` | Utilities used by the plugin (client config, tags, logging)                     |
-| **Storage**       | Postgres  | pgvector extension for vector embeddings with HNSW indexing                     |
-| **Embeddings**    | External  | Remote OpenAI-compatible API (configurable model and dimensions)                |
-| **AI**            | External  | OpenAI Chat Completions API for memory extraction and profile learning          |
-
-The server and client plugin are fully independent -- the server knows nothing about the plugin, and the plugin has no server-side dependencies. You can run the server standalone, or use the plugin with any compatible memory server.
-
----
-
-## Server Installation
-
-### Prerequisites
-
-- **Docker** (recommended) or **Bun** >= 1.x
-- **PostgreSQL** 16+ with **pgvector** extension (included in Docker bundled setup)
-- **Embedding API**: Any OpenAI-compatible endpoint (e.g., OpenAI, Voyage, Ollama)
-- **Chat API**: OpenAI-compatible Chat Completions endpoint (optional, for auto-capture)
-
-### Option 1: Docker Compose (Bundled Database)
-
-Spins up both the server and a pgvector Postgres container. Good for testing, local development, and simple deployments.
-
-```bash
-# 1. Clone the repository
-git clone https://git.phrk.org/pub/opencode-memnet.git
-cd opencode-memnet
-
-# 2. Create your .env file
-cp .env.example .env
-
-# 3. Edit .env — set at minimum the required variables:
-#    SERVER_API_KEY, EMBEDDING_API_URL, EMBEDDING_MODEL, EMBEDDING_API_KEY
-```
-
-Minimal `.env` for bundled Docker:
-
-```bash
-SERVER_API_KEY=my-secret-key
-EMBEDDING_API_URL=https://api.openai.com/v1
-EMBEDDING_MODEL=text-embedding-3-small
-EMBEDDING_API_KEY=sk-...
-POSTGRES_SSL=false
-```
-
-Optionally enable auto-capture (memory extraction from conversations):
-
-```bash
+# Optional, required only for auto-capture/profile learning.
 MEMORY_MODEL=gpt-4o-mini
 MEMORY_API_URL=https://api.openai.com/v1
 MEMORY_API_KEY=sk-...
 ```
 
-```bash
-# 4. Start all services
-docker compose up -d
-
-# 5. Verify
-curl http://localhost:4747/api/health
-
-# 6. View logs
-docker compose logs -f
-
-# 7. Stop
-docker compose down
-```
-
-> **Note:** The bundled `docker-compose.yml` includes a `db` service running `pgvector/pgvector:pg16`. Data is stored in a Docker volume named `pgdata`. The bundled compose defaults `POSTGRES_SSL` to `false` since the database is local to the Docker network.
-
-> **Warning:** `docker compose down -v` deletes the `pgdata` volume and all stored memories. Use `docker compose down` (without `-v`) to preserve data.
-
-### Option 2: Docker Compose (External Database)
-
-Uses an existing Postgres instance you manage separately (e.g., AWS RDS, Supabase, Neon, self-hosted). Better for production where you already have a managed database.
-
-**Prerequisites:**
-
-- Postgres 16+ with `pgvector` extension installed
-- Database and user created; user is the database owner
-- Run `CREATE EXTENSION IF NOT EXISTS vector` on the target database
+### 3. Start the server
 
 ```bash
-# 1. Clone the repository
-git clone https://git.phrk.org/pub/opencode-memnet.git
-cd opencode-memnet
-
-# 2. Create your .env file
-cp .env.example .env
-
-# 3. Edit .env — set at minimum:
-#    POSTGRES_URL=postgresql://user:password@your-db-host:5432/opencode_mem
-#    POSTGRES_SSL=require
-#    SERVER_API_KEY, EMBEDDING_API_URL, EMBEDDING_MODEL, EMBEDDING_API_KEY
-```
-
-```bash
-# 4. Start the server (no database container)
-docker compose -f docker-compose.external-db.yml up -d
-
-# 5. Verify
-curl http://localhost:4747/api/health
-
-# 6. View logs
-docker compose -f docker-compose.external-db.yml logs -f
-
-# 7. Stop
-docker compose -f docker-compose.external-db.yml down
-```
-
-> **Tip:** With an external database, `POSTGRES_SSL` defaults to `require`. For local dev or non-TLS connections, set it to `false`.
-
-### Option 3: Manual (Bun)
-
-For non-Docker installations, or when running directly on the host.
-
-```bash
-# 1. Clone and install
-git clone https://git.phrk.org/pub/opencode-memnet.git
-cd opencode-memnet
-bun install
-
-# 2. Start PostgreSQL with pgvector
-docker run -d --name pgvector \
-  -e POSTGRES_USER=opencode \
-  -e POSTGRES_PASSWORD=opencode \
-  -e POSTGRES_DB=opencode_mem \
-  -p 5432:5432 \
-  pgvector/pgvector:pg16
-
-# 3. Start the server
-SERVER_API_KEY=my-secret-key \
-POSTGRES_URL=postgresql://opencode:opencode@localhost:5432/opencode_mem \
-POSTGRES_SSL=false \
-EMBEDDING_API_URL="https://api.openai.com/v1" \
-EMBEDDING_MODEL="text-embedding-3-small" \
-EMBEDDING_API_KEY="sk-..." \
-bun run src/server.ts
-```
-
-### Production Considerations
-
-**Reverse proxy and TLS:**
-
-Place the server behind a reverse proxy (nginx, Caddy, Traefik) with TLS termination. Example Caddy configuration:
-
-```
-mem.example.com {
-    reverse_proxy localhost:4747
-}
-```
-
-**Restricting access to localhost:**
-
-By default, the server binds to all interfaces. To restrict to localhost only, set `EXTERNAL_HOST`:
-
-```bash
-EXTERNAL_HOST=127.0.0.1
-```
-
-`HOST_PORT` is always just a port number (e.g., `4747`). The docker-compose port mapping uses `${EXTERNAL_HOST:-localhost}:${HOST_PORT:-4747}:${SERVER_PORT:-4747}`, so setting `EXTERNAL_HOST=127.0.0.1` binds the host-side port to localhost only. Set `EXTERNAL_HOST=0.0.0.0` to bind to all interfaces.
-
-**Backups:**
-
-Back up the PostgreSQL database regularly. With the bundled Docker setup:
-
-```bash
-docker compose exec db pg_dump -U opencode opencode_mem > backup.sql
-```
-
-For external databases, use your provider's backup tooling.
-
-**Upgrade procedure:**
-
-```bash
-cd opencode-memnet
-git pull --ff-only
 docker compose up -d --build
 ```
 
-The server runs database migrations automatically on startup.
+The Compose file starts:
 
-> **Warning:** Never run `docker compose down -v` in production. The `-v` flag deletes the `pgdata` volume and all stored memories permanently.
+- `db`: Postgres 16 with pgvector
+- `server`: opencode-memnet API and WebUI
 
-**CORS:**
-
-Set `WEB_SERVER_ALLOWED_ORIGIN` to your actual domain in production:
-
-```bash
-WEB_SERVER_ALLOWED_ORIGIN=https://mem.example.com
-```
-
----
-
-## Client Plugin Installation
-
-The client plugin is distributed as a Bun package and compiles to a single JS file loaded by OpenCode.
-
-### Option 1: Bun (Recommended)
-
-Install the plugin globally so it is available in all projects:
+Verify:
 
 ```bash
-bun add -g opencode-memnet-plugin
+curl -fsS http://localhost:4747/api/health
 ```
 
-Then create the configuration file (see [Client Configuration File](#client-configuration-file) for all options):
+Open the WebUI:
+
+```text
+http://localhost:4747
+```
+
+Useful server commands:
+
+```bash
+docker compose ps
+docker compose logs -f server
+docker compose restart server
+docker compose down
+```
+
+Do not use `docker compose down -v` unless you intend to delete the database
+volume and all stored memories.
+
+### 4. Build and install the local plugin
+
+From the repo root:
+
+```bash
+bun install
+cd plugin && bun install && cd ..
+bun run build:plugin
+```
+
+Install the built plugin into OpenCode's local plugin directory:
+
+```bash
+mkdir -p ~/.config/opencode/plugins
+ln -sfn "$PWD/plugin/dist/opencode-memnet.js" ~/.config/opencode/plugins/opencode-memnet.js
+```
+
+OpenCode loads local plugins from `~/.config/opencode/plugins/` and project
+`.opencode/plugins/` directories.
+
+### 5. Configure the plugin
+
+Global config:
 
 ```bash
 mkdir -p ~/.config/opencode
-cat > ~/.config/opencode/opencode-memnet.jsonc << 'EOF'
+cat > ~/.config/opencode/opencode-memnet.jsonc <<'JSON'
 {
   "serverUrl": "http://localhost:4747",
-  "apiKey": "my-secret-key",
+  "apiKey": "change-me-admin-key",
+  "profileId": "default",
+  "autoCaptureEnabled": true,
+  "memory": {
+    "defaultScope": "project"
+  }
 }
-EOF
+JSON
 ```
 
-### Option 2: Manual Configuration
-
-Create the config file by hand. The recommended format is `.jsonc` (JSON with comments), but plain `.json` also works.
-
-**Project-level** (takes precedence): `.opencode/opencode-memnet.jsonc` in your project root.
-
-**Global:** `~/.config/opencode/opencode-memnet.jsonc`
-
-Project config overrides global config. See [Client Configuration File](#client-configuration-file) for all fields.
-
----
-
-## Configuration Reference
-
-### Server Environment Variables
-
-This section covers the most commonly used variables. The complete reference with all 38 variables, full descriptions, defaults, and examples is in [.env.example](.env.example).
-
-#### Required Variables
-
-These must be set before the server will start.
-
-| Variable            | Description                                                                                                                                 |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| `SERVER_API_KEY`    | API key for authenticating all `/api/*` requests (Bearer token). Optional if both `DISABLE_WEBUI_AUTH` and `DISABLE_CLIENT_AUTH` are `true` |
-| `POSTGRES_URL`      | PostgreSQL connection string (e.g., `postgresql://user:pass@host:5432/db`)                                                                  |
-| `EMBEDDING_API_URL` | OpenAI-compatible embedding API base URL                                                                                                    |
-| `EMBEDDING_MODEL`   | Embedding model name (e.g., `text-embedding-3-small`)                                                                                       |
-| `EMBEDDING_API_KEY` | API key for the embedding service (falls back to `OPENAI_API_KEY`)                                                                          |
-
-#### Optional Variables
-
-| Variable                    | Default     | Description                                                                                                   |
-| --------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------- |
-| `EXTERNAL_HOST`             | `localhost` | IP/hostname the Docker port binds to. Set to `127.0.0.1` for localhost-only, `0.0.0.0` for all interfaces     |
-| `HOST_PORT`                 | `4747`      | Host-side port number for Docker. Ignored when running outside Docker                                         |
-| `SERVER_PORT`               | `4747`      | Port the server listens on inside the container                                                               |
-| `SERVER_HOST`               | `0.0.0.0`   | Network interface the server binds to inside the container                                                    |
-| `POSTGRES_SSL`              | `require`   | SSL mode. Bundled Docker defaults to `false`; external DB defaults to `require`                               |
-| `POSTGRES_MAX_CONNECTIONS`  | `10`        | Connection pool size                                                                                          |
-| `POSTGRES_VECTOR_TYPE`      | `vector`    | pgvector column type: `vector` or `halfvec`                                                                   |
-| `SIMILARITY_THRESHOLD`      | `0.6`       | Minimum cosine similarity for search results (0.0--1.0)                                                       |
-| `MAX_MEMORIES`              | `10`        | Max memories returned in context injection                                                                    |
-| `INJECT_PROFILE`            | `true`      | Include learned user profile in context injection                                                             |
-| `MEMORY_MODEL`              | --          | Chat model for memory extraction (required for auto-capture)                                                  |
-| `MEMORY_API_URL`            | --          | Chat completions API URL (required for auto-capture)                                                          |
-| `MEMORY_API_KEY`            | --          | API key for chat completions (required for auto-capture)                                                      |
-| `MEMORY_TEMPERATURE`        | `0.3`       | Temperature for memory generation (set to `false` to disable)                                                 |
-| `WEB_SERVER_ALLOWED_ORIGIN` | `*`         | CORS allowed origin                                                                                           |
-| `DISABLE_WEBUI_AUTH`        | `false`     | Disable API key auth for WebUI. **WARNING:** Secure the server by other means (reverse proxy, firewall, etc.) |
-| `DISABLE_CLIENT_AUTH`       | `false`     | Disable API key auth for client plugin. **WARNING:** Secure the server by other means                         |
-| `PROFILE_KEYS_FILE`         | --          | Optional profile-key file. `SERVER_API_KEY` is admin/all-profiles; profile keys are single-profile            |
-| `LOG_LEVEL`                 | `info`      | Console log level: `debug`, `info`, `warn`, `error`. File logs are always verbose                             |
-| `DEBUG`                     | `false`     | Shortcut for `LOG_LEVEL=debug`. Set to `true` or `1` for verbose console output                               |
-
-#### Advanced Variables
-
-| Variable                             | Default       | Description                                                            |
-| ------------------------------------ | ------------- | ---------------------------------------------------------------------- |
-| `POSTGRES_IDLE_TIMEOUT_SECONDS`      | `30`          | Idle connection timeout                                                |
-| `POSTGRES_CONNECT_TIMEOUT_SECONDS`   | `10`          | Connection establishment timeout                                       |
-| `POSTGRES_HNSW_EF_SEARCH`            | `128`         | HNSW index search parameter (higher = better recall, slower)           |
-| `POSTGRES_HNSW_EF_CONSTRUCTION`      | `256`         | HNSW index build parameter (higher = better quality, slower build)     |
-| `EMBEDDING_DIMENSIONS`               | auto          | Override embedding vector dimensions (0 = auto-detect from model name) |
-| `EMBEDDING_MAX_TOKENS_CONTENT`       | `2048`        | Max tokens for content text before embedding                           |
-| `EMBEDDING_MAX_TOKENS_TAGS`          | `256`         | Max tokens for tag text before embedding                               |
-| `EMBEDDING_MAX_TOKENS_QUERY`         | `512`         | Max tokens for search queries before embedding                         |
-| `EMBEDDING_MAX_TOKENS_MIGRATION`     | `512`         | Max tokens for tag migration embeddings                                |
-| `EMBEDDING_TRUNCATION_CONTENT`       | `throw_error` | Truncation strategy for content (`throw_error` or `truncate`)          |
-| `EMBEDDING_TRUNCATION_TAGS`          | `throw_error` | Truncation strategy for tags (`throw_error` or `truncate`)             |
-| `EMBEDDING_TRUNCATION_QUERY`         | `throw_error` | Truncation strategy for queries (`throw_error` or `truncate`)          |
-| `EMBEDDING_TRUNCATION_MIGRATION`     | `throw_error` | Truncation strategy for tag migration (`throw_error` or `truncate`)    |
-| `OPENCODE_PROVIDER`                  | --            | LLM provider for OpenCode integration                                  |
-| `OPENCODE_MODEL`                     | --            | LLM model for OpenCode integration                                     |
-| `AUTO_CAPTURE_MAX_ITERATIONS`        | `5`           | Max auto-capture iterations per session                                |
-| `AUTO_CAPTURE_ITERATION_TIMEOUT`     | `30000`       | Auto-capture timeout in milliseconds                                   |
-| `AUTO_CAPTURE_LANGUAGE`              | `auto`        | Language for generated memories (e.g., `en`, `zh`, `auto`)             |
-| `AI_SESSION_RETENTION_DAYS`          | `7`           | Days to retain AI session data                                         |
-| `AUTO_CLEANUP_RETENTION_DAYS`        | `90`          | Days to retain memories (0 = disable auto-cleanup)                     |
-| `USER_PROFILE_ANALYSIS_INTERVAL`     | `10`          | Sessions between automatic profile analysis                            |
-| `USER_PROFILE_MAX_PREFERENCES`       | `20`          | Max learned preferences per profile                                    |
-| `USER_PROFILE_MAX_PATTERNS`          | `15`          | Max detected patterns per profile                                      |
-| `USER_PROFILE_MAX_WORKFLOWS`         | `10`          | Max identified workflows per profile                                   |
-| `USER_PROFILE_CONFIDENCE_DECAY_DAYS` | `30`          | Days over which confidence scores decay                                |
-| `USER_PROFILE_CHANGELOG_RETENTION`   | `5`           | Profile changelog versions to retain                                   |
-
-> **Tip:** Docker Compose database variables (`POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`) configure the bundled `db` service only and are not read by the server itself. See [.env.example](.env.example) for details.
-
-### Secret Management
-
-API key variables (`EMBEDDING_API_KEY`, `MEMORY_API_KEY`) support special prefixes for secure secret handling:
-
-| Prefix          | Example                             | Behavior                                        |
-| --------------- | ----------------------------------- | ----------------------------------------------- |
-| _(plain value)_ | `sk-abc123...`                      | Used directly                                   |
-| `file://`       | `file:///run/secrets/embedding_key` | Reads the contents of the file                  |
-| `env://`        | `env://MY_EMBEDDING_KEY`            | Reads the value of another environment variable |
-
-This is useful with Docker Secrets, Kubernetes Secrets, or any external secret management system.
+One-liner equivalent:
 
 ```bash
-# Docker Secrets example
-EMBEDDING_API_KEY=file:///run/secrets/embedding_api_key
-MEMORY_API_KEY=file:///run/secrets/memory_api_key
+mkdir -p ~/.config/opencode && printf '%s\n' '{' '  "serverUrl": "http://localhost:4747",' '  "apiKey": "change-me-admin-key",' '  "profileId": "default",' '  "autoCaptureEnabled": true,' '  "memory": { "defaultScope": "project" }' '}' > ~/.config/opencode/opencode-memnet.jsonc
 ```
 
-### Client Configuration File
+Project-local config override:
 
-The client plugin reads from `.jsonc` (recommended) or `.json` files. It checks two locations in order -- project config overrides global config.
+```bash
+mkdir -p .opencode
+cat > .opencode/opencode-memnet.jsonc <<'JSON'
+{
+  "serverUrl": "http://localhost:4747",
+  "apiKey": "change-me-admin-key",
+  "profileId": "work",
+  "memory": {
+    "defaultScope": "project"
+  }
+}
+JSON
+```
 
-**Global:** `~/.config/opencode/opencode-memnet.jsonc`
-**Project:** `.opencode/opencode-memnet.jsonc` (in the project root)
+Restart OpenCode after building or changing plugin config.
 
-Full configuration with defaults:
+## How It Works
+
+### Components
+
+| Component          | Path              | Responsibility                                                       |
+| ------------------ | ----------------- | -------------------------------------------------------------------- |
+| Server             | `src/`            | REST API, WebUI, migrations, storage initialization, background jobs |
+| WebUI              | `src/web/`        | Browser UI for memories, tags, stats, profiles, and jobs             |
+| Plugin             | `plugin/`         | OpenCode hooks/tools, remote API client, auto-capture client         |
+| Shared client code | `shared/`         | Plugin-safe config, tags, privacy, logging helpers                   |
+| Storage            | Postgres/pgvector | Memories, prompts, client records, profiles, vectors                 |
+
+### Request Flow
+
+1. OpenCode loads `~/.config/opencode/plugins/opencode-memnet.js`.
+2. The plugin reads config from:
+   - `~/.config/opencode/opencode-memnet.jsonc`
+   - `~/.config/opencode/opencode-memnet.json`
+   - `.opencode/opencode-memnet.jsonc`
+   - `.opencode/opencode-memnet.json`
+3. Project config overrides global config.
+4. The plugin checks git repository identity:
+   - repository root
+   - `remote.origin.url`
+   - `git user.name`
+   - `git user.email`
+5. The plugin connects to `POST /api/client/connect`.
+6. The server authenticates the request and returns a principal:
+   - admin key: all profiles
+   - profile key: one profile only
+7. The plugin sends memory, prompt, profile, and repo metadata to the server.
+8. The server writes and searches profile/repo-scoped records in Postgres.
+
+### Identity Model
+
+Runtime identity is a clean-start model. Use a clean database for this identity
+model.
+
+- `SERVER_API_KEY` remains the admin/all-profiles key.
+- `PROFILE_KEYS_FILE` can declare profile-scoped API keys.
+- Profile keys are restricted to their configured profileId.
+- Project memory is scoped by `profileId` plus `repoId`.
+- `repoId` is derived from normalized git repository identity.
+- The database stores these scopes in `profile_id` and `repo_id`.
+- Local paths are metadata only. They are not identity.
+
+SERVER_API_KEY remains the admin/all-profiles key. Profile keys are restricted
+to their configured profileId.
+
+Old user-email, nickname, and path-keyed identity models are not migration
+targets.
+
+### Chat Context Workflow
+
+The plugin handles OpenCode `chat.message` events:
+
+1. User sends a message.
+2. Plugin embeds/searches related memory through `POST /api/context/inject`.
+3. Server searches profile/repo-scoped memories.
+4. Server returns a context block.
+5. Plugin prepends that context to the chat message.
+
+Controls:
 
 ```jsonc
 {
-  // Server connection (required)
-  "serverUrl": "http://localhost:4747",
-  "apiKey": "my-secret-key",
-  "profileId": "default",
-
-  // Auto-capture
-  "autoCaptureEnabled": true,
-  "showAutoCaptureToasts": true,
-  "showErrorToasts": true,
-
-  // Chat message context injection
   "chatMessage": {
     "enabled": true,
     "maxMemories": 3,
     "excludeCurrentSession": true,
     "maxAgeDays": null,
-    "injectOn": "first", // "first" = first message only, "always" = every message
+    "injectOn": "first",
   },
-
-  // Custom message injection
-  "customMessage": {
-    "enabled": false,
-    "frequency": "first", // "first" = once per session, "always" = every user message
-    "text": "",
-  },
-
-  // Default memory scope
-  "memory": {
-    "defaultScope": "project", // "project" or "all-projects"
-  },
-
-  // Logging (optional)
-  "logLevel": "info", // "debug", "info", "warn", "error"
 }
 ```
 
-| Field                               | Default                 | Description                                    |
-| ----------------------------------- | ----------------------- | ---------------------------------------------- |
-| `serverUrl`                         | `http://localhost:4747` | Server URL                                     |
-| `apiKey`                            | --                      | API key (required)                             |
-| `autoCaptureEnabled`                | `true`                  | Enable auto-capture from chat sessions         |
-| `showAutoCaptureToasts`             | `true`                  | Show toast on auto-capture                     |
-| `showErrorToasts`                   | `true`                  | Show error toasts                              |
-| `chatMessage.enabled`               | `true`                  | Inject memory context on chat messages         |
-| `chatMessage.maxMemories`           | `3`                     | Max memories in context injection              |
-| `chatMessage.excludeCurrentSession` | `true`                  | Exclude current session from context           |
-| `chatMessage.maxAgeDays`            | --                      | Max age in days for context memories           |
-| `chatMessage.injectOn`              | `"first"`               | When to inject: `"first"` or `"always"`        |
-| `customMessage.enabled`             | `false`                 | Inject a configured custom message             |
-| `customMessage.frequency`           | `"first"`               | When to inject: `"first"` or `"always"`        |
-| `customMessage.text`                | `""`                    | Custom text sent to the model                  |
-| `memory.defaultScope`               | `"project"`             | Default scope: `"project"` or `"all-projects"` |
-| `profileId`                         | `"default"`             | Static profile identity sent to the server     |
-| `logLevel`                          | `info`                  | Log level: `debug`, `info`, `warn`, `error`    |
+### Auto-Capture Workflow
 
----
+The plugin handles OpenCode session events:
 
-## Strict Identity
+1. Session becomes idle.
+2. Plugin sends conversation data to `POST /api/auto-capture`.
+3. Server asks the configured chat model to extract durable memories.
+4. Server stores accepted memories with embeddings.
+5. Profile learning can update preferences, patterns, and workflows.
 
-This release uses a clean-start identity model. Existing databases from earlier
-identity schemes must be recreated before running this version; old `user_email`,
-nickname, and path-keyed project identity columns are not migrated forward.
+Auto-capture requires:
 
-Runtime identity is explicit:
+```env
+MEMORY_MODEL=...
+MEMORY_API_URL=...
+MEMORY_API_KEY=...
+```
 
-- `SERVER_API_KEY` is the admin/all-profiles credential.
-- `PROFILE_KEYS_FILE` can provide single-profile client keys. A profile key is
-  tied to one `profile_id`; the WebUI profile selector is locked to that profile.
-- Project memory is scoped by `profile_id` plus `repo_id`.
-- `repo_id` is derived from normalized git repository identity. The plugin must
-  run in a git repository and send repo URL, git user name, and git user email.
-- Local project paths are stored only as display/debug metadata, not identity.
+Disable auto-capture client-side:
 
-### Profile Key File
+```jsonc
+{
+  "autoCaptureEnabled": false,
+}
+```
 
-SERVER_API_KEY remains the admin/all-profiles key. `PROFILE_KEYS_FILE` points to a JSONC file of profile-scoped keys:
+### Memory Tool Workflow
+
+The plugin exposes a `memory` tool to OpenCode.
+
+Supported modes:
+
+- `help`: show tool usage
+- `add`: store a memory manually
+- `search`: search memories
+- `profile`: show learned profile
+- `list`: list recent memories
+- `forget`: delete a memory by ID
+
+Example tool arguments:
+
+```json
+{
+  "mode": "search",
+  "query": "database migration",
+  "scope": "project",
+  "limit": 5
+}
+```
+
+Scopes:
+
+- `project`: current repository only
+- `all-projects`: current profile across repositories
+
+### WebUI Workflow
+
+The WebUI is served by the server at `/`.
+
+Use it to:
+
+- list/search memories
+- add/edit/delete memories
+- pin/unpin memories
+- inspect learned profiles
+- inspect profile changelog snapshots
+- view tags and stats
+- run maintenance jobs
+
+Authentication behavior:
+
+- Admin key: can list and switch profiles.
+- Profile key: profile selector is locked to the key's profile.
+- `DISABLE_WEBUI_AUTH=true`: browser routes act as admin/all-profiles.
+
+## Server Configuration
+
+### Required `.env` Values
+
+| Variable            | Required                                 | Description                               |
+| ------------------- | ---------------------------------------- | ----------------------------------------- |
+| `SERVER_API_KEY`    | yes, unless both auth modes are disabled | Admin/all-profiles bearer token           |
+| `POSTGRES_PASSWORD` | yes for `docker-compose.yml`             | Password for the bundled Compose database |
+| `EMBEDDING_API_URL` | yes                                      | OpenAI-compatible embedding API base URL  |
+| `EMBEDDING_MODEL`   | yes                                      | Embedding model name                      |
+| `EMBEDDING_API_KEY` | yes                                      | Embedding API key                         |
+
+### Common `.env` Values
+
+| Variable                    | Default            | Description                           |
+| --------------------------- | ------------------ | ------------------------------------- |
+| `HOST_PORT`                 | `4747`             | Host port for the server              |
+| `EXTERNAL_HOST`             | `localhost`        | Host bind address                     |
+| `SERVER_PORT`               | `4747`             | Port inside the server container      |
+| `SERVER_HOST`               | `0.0.0.0`          | Bind address inside the container     |
+| `POSTGRES_USER`             | `opencode`         | Bundled database user                 |
+| `POSTGRES_DB`               | `opencode_mem`     | Bundled database name                 |
+| `POSTGRES_SSL`              | `false` in Compose | SSL mode for database connection      |
+| `DISABLE_WEBUI_AUTH`        | `false`            | Disable auth for browser/WebUI routes |
+| `DISABLE_CLIENT_AUTH`       | `false`            | Disable auth for plugin/client routes |
+| `WEB_SERVER_ALLOWED_ORIGIN` | `*`                | CORS `Access-Control-Allow-Origin`    |
+| `LOG_LEVEL`                 | `info`             | `debug`, `info`, `warn`, or `error`   |
+
+### Profile Keys
+
+`PROFILE_KEYS_FILE` points to a JSONC file with profile-scoped API keys.
+
+Example:
 
 ```jsonc
 {
@@ -534,271 +348,354 @@ SERVER_API_KEY remains the admin/all-profiles key. `PROFILE_KEYS_FILE` points to
 }
 ```
 
-Profile keys are restricted to their configured profileId. A profile-key request
-may omit `profileId`; the server injects it. If a profile-key request supplies
-another `profileId`, the server returns `403`.
+Rules:
 
-Use `SERVER_API_KEY` for admin WebUI sessions that need to list or switch
-profiles. Use a profile key for one profile's plugin or WebUI session. Profile
-key `apiKey` values support plain values, `env://NAME`, and
-`file:///path/to/key` through the same secret indirection used by other server
-secrets.
+- `profiles` must be an array.
+- `profileId` is required and unique.
+- `apiKey` is required and unique after secret resolution.
+- `displayName` is optional.
+- Supported key indirection:
+  - plain value
+  - `env://NAME`
+  - `file:///absolute/path`
+- Profile API keys must not equal `SERVER_API_KEY`.
+- Profile keys cannot read or write other profiles.
 
----
+Example `.env`:
 
-## API Reference
-
-All `/api/*` endpoints (except health) require authentication via the `Authorization` header, unless authentication is disabled via `DISABLE_WEBUI_AUTH` and/or `DISABLE_CLIENT_AUTH`:
-
-```
-Authorization: Bearer <SERVER_API_KEY>
-```
-
-When `DISABLE_WEBUI_AUTH=true` and `DISABLE_CLIENT_AUTH=true`, no API key is needed and all endpoints are accessible without authentication. **Only use this when the server is secured by other means** (reverse proxy, firewall, VPN, network isolation).
-
-### Health
-
-| Method | Path          | Auth | Description                                                  |
-| ------ | ------------- | ---- | ------------------------------------------------------------ |
-| `GET`  | `/api/health` | No   | Server health check (db status, embedding readiness, uptime) |
-
-```bash
-curl http://localhost:4747/api/health
+```env
+PROFILE_KEYS_FILE=/run/secrets/opencode-memnet-profile-keys.jsonc
+OPENCODE_MEMNET_PROFILE_KEY_PHRKR=profile-secret
 ```
 
-### Memories
-
-| Method   | Path                        | Description                                                                                           |
-| -------- | --------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `GET`    | `/api/memories`             | List memories (query: `?tag=`, `?page=`, `?pageSize=`, `?profileId=`, `?repoId=`, `?includePrompts=`) |
-| `POST`   | `/api/memories`             | Add a memory                                                                                          |
-| `PUT`    | `/api/memories/:id`         | Update a memory                                                                                       |
-| `DELETE` | `/api/memories/:id`         | Delete a memory                                                                                       |
-| `POST`   | `/api/memories/bulk-delete` | Bulk delete memories                                                                                  |
-| `POST`   | `/api/memories/:id/pin`     | Pin a memory                                                                                          |
-| `POST`   | `/api/memories/:id/unpin`   | Unpin a memory                                                                                        |
-
-### Search and Context
-
-| Method | Path                  | Description                                                                      |
-| ------ | --------------------- | -------------------------------------------------------------------------------- |
-| `GET`  | `/api/search`         | Semantic search (query: `?q=`, `?tag=`, `?pageSize=`, `?profileId=`, `?repoId=`) |
-| `POST` | `/api/context/inject` | Context injection for chat messages                                              |
-| `POST` | `/api/auto-capture`   | Server-side auto-capture from conversation data                                  |
-
-### User Profiles
-
-| Method | Path                          | Description                               |
-| ------ | ----------------------------- | ----------------------------------------- |
-| `GET`  | `/api/user-profile`           | Get active profile (query: `?profileId=`) |
-| `GET`  | `/api/user-profiles`          | List all active profiles                  |
-| `POST` | `/api/user-profile/learn`     | Trigger profile learning                  |
-| `POST` | `/api/user-profile/refresh`   | Refresh profile data                      |
-| `GET`  | `/api/user-profile/changelog` | Profile version history                   |
-| `GET`  | `/api/user-profile/snapshot`  | Profile snapshot at a specific version    |
-
-### Tags and Stats
-
-| Method | Path         | Description                                  |
-| ------ | ------------ | -------------------------------------------- |
-| `GET`  | `/api/tags`  | List distinct project tags                   |
-| `GET`  | `/api/stats` | Memory statistics (total, by scope, by type) |
-
----
-
-## WebUI
-
-A management interface served at `/` with:
-
-- **Memory list** -- view, search, edit, delete, and bulk-delete memories
-- **Add memory form** -- create new memories with tags and type classification
-- **User profile viewer** -- preferences, patterns, workflows, and changelog history
-- **Profile switcher** -- dropdown to manage multiple user profiles from one UI
-- **Settings panel** -- gear icon for API key and profile selection
-- **Tag filtering** -- filter memories by project tag
-- **Pagination** -- browse large memory sets
-- **i18n** -- English and Chinese language support
-- **Migration tools** -- tag migration and dimension migration workflows
-
-Open `http://localhost:4747` in your browser. If authentication is enabled (default), enter your `SERVER_API_KEY` in the settings panel (gear icon). If `DISABLE_WEBUI_AUTH=true`, the WebUI loads automatically without requiring an API key.
-
----
-
-## User Profiles
-
-Profiles are learned automatically from chat sessions over time:
-
-- **Preferences** -- coding style, tool choices, architectural preferences (with confidence scores)
-- **Patterns** -- repeated behaviors such as TDD, commit conventions, review habits (with frequency counts)
-- **Workflows** -- multi-step processes the user follows
-- **Changelog** -- versioned history of profile evolution
-
-Profiles are keyed by explicit `profile_id`. Project memories and prompts are
-scoped by `profile_id` and `repo_id`; local paths remain display/debug metadata
-only.
-
----
-
-## Development
-
-### Setup and Build
-
-```bash
-# Install dependencies (server + plugin)
-bun install
-cd plugin && bun install && cd ..
-
-# Build everything
-bun run build:all
-
-# Build server only
-bun run build
-
-# Build plugin only
-bun run build:plugin
-```
-
-### Project Structure
-
-```
-opencode-memnet/
-├── shared/                    # Shared utilities (used by plugin only)
-│   └── client-config.ts       # Client config loading and types
-├── plugin/                    # Client plugin -- compiles independently
-│   ├── src/                   # Plugin source
-│   └── dist/                  # Bundled output (single .js file)
-├── src/                       # Server source
-│   ├── server.ts              # Server entry point
-│   ├── server-config.ts       # Server config validation
-│   ├── services/              # Server services (storage, AI, etc.)
-│   │   └── storage/
-│   │       └── postgres/
-│   │           └── migrations.ts  # Database schema migrations
-│   └── web/                   # WebUI static files
-├── scripts/                   # Install scripts
-│   ├── install-server.sh      # Server installer (curl | bash)
-│   └── install-client.sh      # Client config installer
-├── Dockerfile                 # Server Docker build (oven/bun)
-├── docker-compose.yml         # Bundled server + database
-├── docker-compose.external-db.yml  # Server with external database
-└── package.json
-```
-
-### Testing and Linting
-
-```bash
-# Run tests
-bun test
-
-# Type-check everything
-bun run typecheck:all
-bun run typecheck            # Server only
-bun run typecheck:plugin     # Plugin only
-
-# Format code
-bun run format               # Auto-format with Prettier
-bun run format:check         # Check formatting without writing
-
-# Development server with hot reload
-bun run dev:server
-```
-
-### Plugin Bundle
-
-The client plugin compiles to a single JS file (`plugin/dist/opencode-memnet.js`) that can be loaded directly by OpenCode without any server-side dependencies.
-
----
-
-## Troubleshooting
-
-### Server will not start -- "POSTGRES_URL is required"
-
-The `POSTGRES_URL` environment variable is empty or not set. For the bundled Docker setup, the compose file provides a default. For external databases, you must set it explicitly:
-
-```bash
-POSTGRES_URL=postgresql://user:password@your-host:5432/opencode_mem
-```
-
-### Server will not start -- "EMBEDDING_API_KEY is required"
-
-Set `EMBEDDING_API_KEY` to your API key, or set `OPENAI_API_KEY` as a fallback. The server will not start without at least one of these.
-
-### "SSL required" or "SSL error" connecting to Postgres
-
-The default `POSTGRES_SSL` value is `require`. For local Docker development (bundled database), set it to `false`:
-
-```bash
-POSTGRES_SSL=false
-```
-
-The bundled `docker-compose.yml` handles this automatically. If you see this error with an external database, verify your database supports SSL or set the value accordingly.
-
-### Health check returns an error
-
-```bash
-curl http://localhost:4747/api/health
-```
-
-If this fails:
-
-1. Check the container is running: `docker compose ps`
-2. Check logs: `docker compose logs -f`
-3. Verify the port is not in use: `ss -tlnp | grep 4747`
-4. If using `EXTERNAL_HOST=127.0.0.1`, ensure you are curling from the same machine
-
-### Client plugin does not activate
-
-1. Verify the config file exists at `~/.config/opencode/opencode-memnet.jsonc` (global) or `.opencode/opencode-memnet.jsonc` (project)
-2. Verify `apiKey` and `serverUrl` are set and correct
-3. Verify the server is reachable from the client machine: `curl http://your-server:4747/api/health`
-4. Check that the plugin is installed: `bun pm ls -g` or `npm ls -g opencode-memnet-plugin`
-
-### "Cannot connect to server" from the plugin
-
-1. Check that the server is running: `curl http://your-server:4747/api/health`
-2. If the server is on a remote machine, ensure the port is open and `EXTERNAL_HOST` allows external access (use `EXTERNAL_HOST=0.0.0.0` or a specific IP, not `127.0.0.1`)
-3. Verify `OPENCODE_MEM_SERVER_URL` or `serverUrl` in the config matches the actual server address
-
-### Docker compose build fails
-
-Ensure you are using Docker with BuildKit support. The Dockerfile uses multi-stage builds:
-
-```bash
-docker compose build --no-cache
-```
-
-If Bun install fails, check your network connection and any proxy settings.
-
-### Enable debug logging
-
-For more visibility into server or plugin operations:
-
-**Server** — set in `.env` or Docker environment:
-
-```bash
-LOG_LEVEL=debug
-# or shorthand:
-DEBUG=true
-```
-
-**Plugin** — add to `opencode-memnet.jsonc`:
+Plugin config with a profile key can omit `profileId`:
 
 ```jsonc
 {
-  "logLevel": "debug",
+  "serverUrl": "http://localhost:4747",
+  "apiKey": "profile-secret",
 }
 ```
 
-Debug output includes hook invocations, tool calls, context injection details, and error stack traces. File logs (`~/.opencode-memnet/opencode-memnet.log`) always capture all levels regardless of the console setting.
+The server returns the authenticated profile principal during client connect, and
+the plugin uses that profile as the effective profile.
 
-### Memories are not being created
+## Plugin Configuration
 
-1. Verify auto-capture is enabled: `MEMORY_MODEL`, `MEMORY_API_URL`, and `MEMORY_API_KEY` must all be set
-2. Check the server logs for errors from the memory extraction LLM calls
-3. Verify the embedding API is reachable and the API key is valid
-4. Check that the client plugin has `autoCaptureEnabled: true` in its config
+Config files are JSONC or JSON.
 
----
+Lookup order:
+
+1. Global `~/.config/opencode/opencode-memnet.jsonc`
+2. Global `~/.config/opencode/opencode-memnet.json`
+3. Project `.opencode/opencode-memnet.jsonc`
+4. Project `.opencode/opencode-memnet.json`
+
+Project config overrides global config.
+
+Full example:
+
+```jsonc
+{
+  "serverUrl": "http://localhost:4747",
+  "apiKey": "change-me-admin-key",
+  "profileId": "default",
+  "autoCaptureEnabled": true,
+  "showAutoCaptureToasts": true,
+  "showErrorToasts": true,
+  "chatMessage": {
+    "enabled": true,
+    "maxMemories": 3,
+    "excludeCurrentSession": true,
+    "maxAgeDays": null,
+    "injectOn": "first",
+  },
+  "customMessage": {
+    "enabled": false,
+    "frequency": "first",
+    "text": "",
+  },
+  "memory": {
+    "defaultScope": "project",
+  },
+  "logLevel": "info",
+}
+```
+
+Fields:
+
+| Field                               | Description                                                                            |
+| ----------------------------------- | -------------------------------------------------------------------------------------- |
+| `serverUrl`                         | Server URL. Required.                                                                  |
+| `apiKey`                            | Server API key or profile key. Required unless client auth is disabled.                |
+| `profileId`                         | Admin-key profile ID. Optional for profile keys. Defaults to `default` for admin keys. |
+| `autoCaptureEnabled`                | Enable idle-session auto-capture.                                                      |
+| `showAutoCaptureToasts`             | Show auto-capture status toasts.                                                       |
+| `showErrorToasts`                   | Show plugin error toasts.                                                              |
+| `chatMessage.enabled`               | Enable memory context injection.                                                       |
+| `chatMessage.maxMemories`           | Max memories in injected context.                                                      |
+| `chatMessage.excludeCurrentSession` | Exclude current session from context search.                                           |
+| `chatMessage.maxAgeDays`            | Optional age limit for context memories.                                               |
+| `chatMessage.injectOn`              | `first` or `always`.                                                                   |
+| `customMessage.enabled`             | Inject configured custom text into chat messages.                                      |
+| `customMessage.frequency`           | `first` or `always`.                                                                   |
+| `customMessage.text`                | Custom text to inject.                                                                 |
+| `memory.defaultScope`               | `project` or `all-projects`.                                                           |
+| `logLevel`                          | `debug`, `info`, `warn`, or `error`.                                                   |
+
+## Operations
+
+### Start
+
+```bash
+docker compose up -d --build
+```
+
+### Stop
+
+```bash
+docker compose down
+```
+
+### Logs
+
+```bash
+docker compose logs -f server
+docker compose logs -f db
+```
+
+### Health
+
+```bash
+curl -fsS http://localhost:4747/api/health
+```
+
+### Backup
+
+```bash
+docker compose exec db pg_dump -U "${POSTGRES_USER:-opencode}" "${POSTGRES_DB:-opencode_mem}" > opencode-memnet.sql
+```
+
+### Restore
+
+Stop the server first, then restore into the running `db` service:
+
+```bash
+docker compose stop server
+cat opencode-memnet.sql | docker compose exec -T db psql -U "${POSTGRES_USER:-opencode}" "${POSTGRES_DB:-opencode_mem}"
+docker compose start server
+```
+
+### Upgrade
+
+```bash
+git pull --ff-only
+bun install
+cd plugin && bun install && cd ..
+bun run build:plugin
+docker compose up -d --build
+```
+
+Restart OpenCode after rebuilding the plugin.
+
+## API Summary
+
+All API routes except public health routes require authentication unless disabled
+by `DISABLE_WEBUI_AUTH` or `DISABLE_CLIENT_AUTH`.
+
+Header:
+
+```http
+Authorization: Bearer <SERVER_API_KEY_OR_PROFILE_KEY>
+```
+
+Common routes:
+
+| Method   | Path                          | Description                    |
+| -------- | ----------------------------- | ------------------------------ |
+| `GET`    | `/api/health`                 | Public health check            |
+| `GET`    | `/api/health/details`         | Detailed health                |
+| `GET`    | `/api/tags`                   | Project tags                   |
+| `GET`    | `/api/stats`                  | Memory stats                   |
+| `GET`    | `/api/memories`               | List memories                  |
+| `POST`   | `/api/memories`               | Add memory                     |
+| `PUT`    | `/api/memories/:id`           | Update memory                  |
+| `DELETE` | `/api/memories/:id`           | Delete memory                  |
+| `POST`   | `/api/memories/bulk-delete`   | Bulk delete                    |
+| `GET`    | `/api/search`                 | Search memories/prompts        |
+| `POST`   | `/api/context/inject`         | Build chat context             |
+| `POST`   | `/api/auto-capture`           | Capture memory from a session  |
+| `GET`    | `/api/user-profile`           | Read profile                   |
+| `GET`    | `/api/user-profiles`          | List visible profiles          |
+| `POST`   | `/api/user-profile/learn`     | Trigger profile learning       |
+| `POST`   | `/api/user-profile/refresh`   | Refresh profile                |
+| `GET`    | `/api/user-profile/changelog` | Profile changelog              |
+| `GET`    | `/api/user-profile/snapshot`  | Profile snapshot               |
+| `POST`   | `/api/client/connect`         | Register/connect plugin client |
+| `GET`    | `/api/client/stats`           | Plugin client stats            |
+
+Profile-key requests are scoped server-side. A profile key may omit `profileId`;
+the server injects the authenticated profile. A profile key that supplies another
+`profileId` receives `403`.
+
+## Development
+
+### Install Dependencies
+
+```bash
+bun install
+cd plugin && bun install && cd ..
+```
+
+### Build
+
+```bash
+bun run build
+bun run build:plugin
+bun run build:all
+```
+
+### Typecheck
+
+```bash
+bun run typecheck
+bun run typecheck:plugin
+bun run typecheck:all
+```
+
+### Test
+
+```bash
+bun test
+bun run test
+bun test tests/profile-auth.test.ts
+```
+
+### Format
+
+```bash
+bun run format
+bun run format:check
+```
+
+## Project Layout
+
+```text
+.
+├── docker-compose.yml
+├── Dockerfile
+├── src/
+│   ├── server.ts
+│   ├── server-config.ts
+│   ├── services/
+│   └── web/
+├── plugin/
+│   ├── build.ts
+│   ├── src/
+│   └── dist/
+├── shared/
+├── tests/
+└── scripts/
+```
+
+## Troubleshooting
+
+### Server does not start
+
+Check required environment variables:
+
+```bash
+docker compose config
+docker compose logs server
+```
+
+Most startup failures are missing:
+
+- `POSTGRES_PASSWORD`
+- `SERVER_API_KEY`
+- `EMBEDDING_API_URL`
+- `EMBEDDING_MODEL`
+- `EMBEDDING_API_KEY`
+
+### Health check fails
+
+```bash
+docker compose ps
+docker compose logs db
+docker compose logs server
+```
+
+Confirm the port:
+
+```bash
+docker compose port server 4747
+```
+
+### Plugin does not load
+
+Check the local plugin file:
+
+```bash
+ls -l ~/.config/opencode/plugins/opencode-memnet.js
+```
+
+Rebuild and relink:
+
+```bash
+bun run build:plugin
+ln -sfn "$PWD/plugin/dist/opencode-memnet.js" ~/.config/opencode/plugins/opencode-memnet.js
+```
+
+Restart OpenCode.
+
+### Plugin connects but memory is disabled
+
+The plugin requires a valid git repository identity for project memory.
+
+Check:
+
+```bash
+git rev-parse --show-toplevel
+git remote get-url origin
+git config user.name
+git config user.email
+```
+
+Set missing values:
+
+```bash
+git config user.name "Your Name"
+git config user.email "you@example.com"
+```
+
+Restart OpenCode after changing git identity.
+
+### Auth failures
+
+Admin key:
+
+```bash
+curl -fsS -H "Authorization: Bearer $SERVER_API_KEY" http://localhost:4747/api/user-profiles
+```
+
+Profile key:
+
+```bash
+curl -fsS -H "Authorization: Bearer profile-secret" http://localhost:4747/api/user-profiles
+```
+
+Expected profile-key behavior: only the configured profile is returned.
+
+### Data reset
+
+This deletes all stored memories:
+
+```bash
+docker compose down -v
+docker compose up -d --build
+```
+
+Use only when you intentionally want a clean database.
 
 ## License
 

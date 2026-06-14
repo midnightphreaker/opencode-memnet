@@ -37,6 +37,7 @@ services:
       SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
       # ── Security ──
       SERVER_API_KEY: ${SERVER_API_KEY:-}
+      NEWUSER_API_KEY: ${NEWUSER_API_KEY:-}
       PROFILE_KEYS_FILE: ${PROFILE_KEYS_FILE:-}
       WEB_SERVER_ALLOWED_ORIGIN: ${WEB_SERVER_ALLOWED_ORIGIN:-*}
       # ── Logging ──

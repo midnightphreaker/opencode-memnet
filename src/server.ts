@@ -59,6 +59,7 @@ async function main(): Promise<void> {
       config.serverApiKey,
       {
         configuredProfiles: config.configuredProfiles,
+        newUserApiKey: config.newUserApiKey,
       }
     );
 

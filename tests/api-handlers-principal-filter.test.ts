@@ -28,11 +28,20 @@ const clientRepo = {
   initialize: async () => {},
 };
 
+const profileApiKeyRepo = {
+  initialize: async () => {},
+  findProfileByApiKey: async () => null,
+  hasKeyForProfile: async () => false,
+  createKeyForProfile: async () => true,
+  touchLastUsed: async () => {},
+};
+
 mock.module("../src/services/storage/factory.js", () => ({
   createMemoryRepository: () => memoryRepo,
   createUserPromptRepository: () => promptRepo,
   createUserProfileRepository: () => profileRepo,
   createClientRepository: () => clientRepo,
+  createProfileApiKeyRepository: () => profileApiKeyRepo,
   createTagRegistry: () => ({}),
 }));
 

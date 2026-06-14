@@ -59,6 +59,13 @@ mock.module("../src/services/storage/factory.js", () => ({
   createUserPromptRepository: () => promptRepo,
   createUserProfileRepository: () => ({ initialize: async () => {} }),
   createClientRepository: () => ({ initialize: async () => {} }),
+  createProfileApiKeyRepository: () => ({
+    initialize: async () => {},
+    findProfileByApiKey: async () => null,
+    hasKeyForProfile: async () => false,
+    createKeyForProfile: async () => true,
+    touchLastUsed: async () => {},
+  }),
   createTagRegistry: () => ({}),
 }));
 

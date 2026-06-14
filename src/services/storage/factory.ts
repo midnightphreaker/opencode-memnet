@@ -26,6 +26,7 @@ import type {
   UserProfileRow,
   UserPromptRepository,
   UserPromptRow,
+  ProfileApiKeyRepository,
 } from "./types.js";
 
 // ── Singleton instances (lazily created, cached for the process lifetime) ──
@@ -35,6 +36,7 @@ let promptRepo: UserPromptRepository | null = null;
 let profileRepo: UserProfileRepository | null = null;
 let sessionRepo: AISessionRepository | null = null;
 let clientRepo: ClientRepository | null = null;
+let profileApiKeyRepo: ProfileApiKeyRepository | null = null;
 let tagRegistry: PostgresTagRegistry | null = null;
 
 export function createMemoryRepository(): MemoryRepository {
@@ -67,6 +69,12 @@ export function createClientRepository(): ClientRepository {
   return clientRepo;
 }
 
+export function createProfileApiKeyRepository(): ProfileApiKeyRepository {
+  if (profileApiKeyRepo) return profileApiKeyRepo;
+  profileApiKeyRepo = new PostgresProfileApiKeyRepositoryLazy();
+  return profileApiKeyRepo;
+}
+
 export function createTagRegistry(): PostgresTagRegistry {
   if (tagRegistry) return tagRegistry;
   tagRegistry = new PostgresTagRegistry();
@@ -88,12 +96,14 @@ export async function initializeStorage(): Promise<{
   const profile = createUserProfileRepository();
   const session = createAISessionRepository();
   const client = createClientRepository();
+  const profileApiKey = createProfileApiKeyRepository();
 
   await mem.initialize();
   await prompt.initialize();
   await profile.initialize();
   await session.initialize();
   await client.initialize();
+  await profileApiKey.initialize();
 
   return {
     memoryRepo: mem,
@@ -127,6 +137,10 @@ export async function closeStorage(): Promise<void> {
   if (clientRepo) {
     await clientRepo.close();
     clientRepo = null;
+  }
+  if (profileApiKeyRepo) {
+    await profileApiKeyRepo.close();
+    profileApiKeyRepo = null;
   }
 }
 
@@ -503,5 +517,44 @@ class PostgresClientRepositoryLazy implements ClientRepository {
     totalPrompts: number;
   }> {
     return (await this.repo()).getClientStats(id);
+  }
+}
+
+class PostgresProfileApiKeyRepositoryLazy implements ProfileApiKeyRepository {
+  private target: Promise<ProfileApiKeyRepository> | null = null;
+
+  private async repo(): Promise<ProfileApiKeyRepository> {
+    if (!this.target) {
+      this.target = import("./postgres/profile-api-key-repository.js")
+        .then(({ PostgresProfileApiKeyRepository }) => new PostgresProfileApiKeyRepository())
+        .catch((err) => {
+          this.target = null;
+          throw err;
+        });
+    }
+    return this.target;
+  }
+
+  async initialize(): Promise<void> {
+    await (await this.repo()).initialize();
+  }
+  async close(): Promise<void> {
+    await (await this.repo()).close();
+  }
+  async hasKeyForProfile(profileId: string): Promise<boolean> {
+    return (await this.repo()).hasKeyForProfile(profileId);
+  }
+  async createKeyForProfile(
+    profileId: string,
+    apiKey: string,
+    createdByClientId?: string
+  ): Promise<boolean> {
+    return (await this.repo()).createKeyForProfile(profileId, apiKey, createdByClientId);
+  }
+  async findProfileByApiKey(apiKey: string): Promise<{ profileId: string } | null> {
+    return (await this.repo()).findProfileByApiKey(apiKey);
+  }
+  async touchLastUsed(profileId: string): Promise<void> {
+    await (await this.repo()).touchLastUsed(profileId);
   }
 }

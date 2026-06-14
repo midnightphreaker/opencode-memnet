@@ -433,6 +433,26 @@ export const migrations: Migration[] = [
       `;
     },
   },
+  {
+    version: 14,
+    description: "Create generated profile API key table",
+    transactional: true,
+    up: async (sql) => {
+      await sql`
+        CREATE TABLE IF NOT EXISTS profile_api_keys (
+          profile_id           TEXT PRIMARY KEY,
+          api_key_hash         TEXT NOT NULL UNIQUE,
+          created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          created_by_client_id TEXT,
+          last_used_at         TIMESTAMPTZ
+        )
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_profile_api_keys_last_used
+        ON profile_api_keys (last_used_at)
+      `;
+    },
+  },
 ];
 
 // ── Runner ──

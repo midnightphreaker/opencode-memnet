@@ -11,7 +11,8 @@ export interface ConfiguredProfile {
 
 export type Principal =
   | { kind: "admin" }
-  | { kind: "profile"; profileId: string; displayName?: string };
+  | { kind: "profile"; profileId: string; displayName?: string }
+  | { kind: "newuser" };
 
 export class UnauthorizedError extends Error {
   readonly status = 401;
@@ -120,6 +121,18 @@ export function profileKeyMatchesServerKey(
   return matches;
 }
 
+export function profileKeyMatchesApiKey(
+  profiles: readonly ConfiguredProfile[] | undefined,
+  apiKey: string
+): boolean {
+  if (!apiKey) return false;
+  let matches = false;
+  for (const profile of profiles ?? []) {
+    matches = timingSafeEqualString(profile.apiKey, apiKey) || matches;
+  }
+  return matches;
+}
+
 export function requireProfileIdForPrincipal(
   principal: Principal,
   requestedProfileId: string | undefined,
@@ -135,6 +148,10 @@ export function requireProfileIdForPrincipal(
     return profileId ?? "";
   }
 
+  if (principal.kind === "newuser") {
+    throw new ForbiddenError("NEWUSER_API_KEY requires profile enrollment");
+  }
+
   if (!requested) return principal.profileId;
   if (requested === principal.profileId) return requested;
   throw new ForbiddenError("Profile key cannot access another profile");
@@ -143,7 +160,7 @@ export function requireProfileIdForPrincipal(
 export function principalResponse(
   principal: Principal
 ): { kind: "admin" } | { kind: "profile"; profileId: string; displayName?: string } {
-  return principal.kind === "admin"
+  return principal.kind === "admin" || principal.kind === "newuser"
     ? { kind: "admin" }
     : principal.displayName
       ? { kind: "profile", profileId: principal.profileId, displayName: principal.displayName }

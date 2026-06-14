@@ -92,6 +92,14 @@ const clientRepo = {
   initialize: async () => {},
 };
 
+const profileApiKeyRepo = {
+  initialize: async () => {},
+  findProfileByApiKey: async () => null,
+  hasKeyForProfile: async () => false,
+  createKeyForProfile: async () => true,
+  touchLastUsed: async () => {},
+};
+
 mock.module("../src/services/embedding.js", () => ({
   embeddingService: {
     warmup: async () => {},
@@ -104,6 +112,7 @@ mock.module("../src/services/storage/factory.js", () => ({
   createUserPromptRepository: () => promptRepo,
   createUserProfileRepository: () => profileRepo,
   createClientRepository: () => clientRepo,
+  createProfileApiKeyRepository: () => profileApiKeyRepo,
   createTagRegistry: () => ({
     unlinkMemoryTags: async () => {},
     linkMemoryTags: async () => {},

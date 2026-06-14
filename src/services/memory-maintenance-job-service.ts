@@ -334,7 +334,11 @@ async function executeNormalizeTagsJob(job: MemoryMaintenanceJob): Promise<void>
 
   log("job-service: starting tag normalization backfill");
 
-  const result = await registry.backfillFromExistingTags(100);
+  const result = await registry.backfillFromExistingTags(
+    job.scope.kind === "profile"
+      ? { batchSize: 100, profileId: job.scope.profileId }
+      : { batchSize: 100 }
+  );
 
   job.processedItems = result.processed;
   job.totalItems = result.processed;

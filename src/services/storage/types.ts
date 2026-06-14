@@ -156,13 +156,22 @@ export interface MemoryRepository {
    * Returns memories whose `updatedAt` is older than `cutoffTime`.
    * Used by cleanup-service to identify stale memories.
    */
-  listOlderThan(cutoffTime: number, limit?: number, offset?: number): Promise<MemoryRow[]>;
+  listOlderThan(args: {
+    cutoffTime: number;
+    limit?: number;
+    offset?: number;
+    profileId?: string;
+  }): Promise<MemoryRow[]>;
 
   /**
    * Returns all memory records including their raw Float32Array vectors.
    * Used by deduplication-service for pairwise similarity checks.
    */
-  getAllWithVectors(limit?: number, offset?: number): Promise<MemoryRecord[]>;
+  getAllWithVectors(args?: {
+    limit?: number;
+    offset?: number;
+    profileId?: string;
+  }): Promise<MemoryRecord[]>;
 
   /**
    * Count project memories with NULL or empty tags column.
@@ -255,7 +264,10 @@ export interface UserPromptRepository {
   getPromptsForUserLearning(args: { profileId: string; limit: number }): Promise<UserPromptRow[]>;
   markAsUserLearningCaptured(promptId: string): Promise<void>;
   markMultipleAsUserLearningCaptured(promptIds: string[]): Promise<void>;
-  deleteOldPrompts(cutoffTime: number): Promise<{ deleted: number; linkedMemoryIds: string[] }>;
+  deleteOldPrompts(args: {
+    cutoffTime: number;
+    profileId?: string;
+  }): Promise<{ deleted: number; linkedMemoryIds: string[] }>;
   linkMemoryToPrompt(promptId: string, memoryId: string): Promise<void>;
   getPromptById(promptId: string): Promise<UserPromptRow | null>;
   getCapturedPrompts(args: { profileId: string; repoId?: string }): Promise<UserPromptRow[]>;

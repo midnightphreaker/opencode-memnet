@@ -10,6 +10,7 @@ const mockState: {
   resolveCleanup: () => void;
   resolveDeduplicate: () => void;
   resolveNormalize: () => void;
+  normalizeArgs: unknown[];
 } = {
   cleanupDelay: Promise.resolve(),
   deduplicateDelay: Promise.resolve(),
@@ -17,6 +18,7 @@ const mockState: {
   resolveCleanup: () => {},
   resolveDeduplicate: () => {},
   resolveNormalize: () => {},
+  normalizeArgs: [],
 };
 
 function resetMockState(): void {
@@ -29,6 +31,7 @@ function resetMockState(): void {
   mockState.normalizeDelay = new Promise<void>((resolve) => {
     mockState.resolveNormalize = resolve;
   });
+  mockState.normalizeArgs = [];
 }
 
 mock.module("../src/services/api-handlers.js", () => ({
@@ -70,7 +73,8 @@ mock.module("../src/services/tag-migration-service.js", () => ({
 
 mock.module("../src/services/storage/factory.js", () => ({
   createTagRegistry: () => ({
-    backfillFromExistingTags: async () => {
+    backfillFromExistingTags: async (...args: unknown[]) => {
+      mockState.normalizeArgs.push(args);
       await mockState.normalizeDelay;
       return {
         processed: 5,
@@ -292,6 +296,16 @@ describe("memory-maintenance-job-service", () => {
       const result = enqueueJob("normalize_memory_tags", allScope);
       expect(result.success).toBe(true);
       expect(result.data!.type).toBe("normalize_memory_tags");
+    });
+
+    it("passes profile scope to tag normalization backfill", async () => {
+      const result = enqueueJob("normalize_memory_tags", profileScope);
+      expect(result.success).toBe(true);
+
+      await tick();
+      expect(mockState.normalizeArgs[0]).toEqual([{ batchSize: 100, profileId: "phrkr" }]);
+
+      mockState.resolveNormalize();
     });
 
     it("should reject duplicate normalize_memory_tags while running", async () => {

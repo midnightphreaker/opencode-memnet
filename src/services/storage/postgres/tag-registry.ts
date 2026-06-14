@@ -431,13 +431,17 @@ export class PostgresTagRegistry {
    * Backfill canonical tags from existing memories' tags TEXT column.
    * Processes memories in batches. Idempotent.
    */
-  async backfillFromExistingTags(batchSize = 100): Promise<{
+  async backfillFromExistingTags(
+    args: number | { batchSize?: number; profileId?: string } = 100
+  ): Promise<{
     processed: number;
     created: number;
     linked: number;
     aliases: number;
   }> {
     const sql = this.sql();
+    const batchSize = typeof args === "number" ? args : (args.batchSize ?? 100);
+    const profileIdFilter = typeof args === "number" ? "" : (args.profileId ?? "");
     let processed = 0;
     let created = 0;
     let linked = 0;
@@ -449,6 +453,7 @@ export class PostgresTagRegistry {
       const rows = await sql`
         SELECT id, tags FROM memories
         WHERE tags IS NOT NULL AND tags != ''
+          AND (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
         ORDER BY id
         LIMIT ${batchSize} OFFSET ${offset}
       `;

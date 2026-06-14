@@ -19,14 +19,16 @@ services:
   server:
     build: .
     # Port mapping: EXTERNAL_HOST:HOST_PORT:SERVER_PORT
-    # EXTERNAL_HOST = IP/hostname on the host machine to bind to (default: localhost)
+    # EXTERNAL_HOST = IP address on the host machine to bind to (default: 127.0.0.1)
     #                 Set to 0.0.0.0 to expose on all interfaces (e.g. for LAN access)
     # HOST_PORT    = port on the host machine (default: 4747)
     # SERVER_PORT  = port inside the container (default: 4747)
-    # Example: "localhost:8080:4747" → access via http://localhost:8080
+    # Example: "127.0.0.1:8080:4747" → access via http://localhost:8080
     # Example: "0.0.0.0:4747:4747"  → access from any machine on the network
     ports:
-      - "${EXTERNAL_HOST:-localhost}:${HOST_PORT:-4747}:${SERVER_PORT:-4747}"
+      - "${EXTERNAL_HOST:-127.0.0.1}:${HOST_PORT:-4747}:${SERVER_PORT:-4747}"
+    volumes:
+      - ./secrets:/run/secrets:ro
     environment:
       # ── Server ──
       # SERVER_HOST = IP the server binds to INSIDE the container (0.0.0.0 = all interfaces)
@@ -35,8 +37,6 @@ services:
       SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
       # ── Security ──
       SERVER_API_KEY: ${SERVER_API_KEY:-}
-      DISABLE_WEBUI_AUTH: ${DISABLE_WEBUI_AUTH:-false}
-      DISABLE_CLIENT_AUTH: ${DISABLE_CLIENT_AUTH:-false}
       PROFILE_KEYS_FILE: ${PROFILE_KEYS_FILE:-}
       WEB_SERVER_ALLOWED_ORIGIN: ${WEB_SERVER_ALLOWED_ORIGIN:-*}
       # ── Logging ──

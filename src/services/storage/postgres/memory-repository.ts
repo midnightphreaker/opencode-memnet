@@ -608,22 +608,38 @@ export class PostgresMemoryRepository implements MemoryRepository {
     await sql`UPDATE memories SET is_pinned = false WHERE id = ${memoryId}`;
   }
 
-  async listOlderThan(cutoffTime: number, limit?: number, offset?: number): Promise<MemoryRow[]> {
+  async listOlderThan(args: {
+    cutoffTime: number;
+    limit?: number;
+    offset?: number;
+    profileId?: string;
+  }): Promise<MemoryRow[]> {
     const sql = getPostgresClient();
+    const profileIdFilter = args.profileId ?? "";
     const rows = await sql`
       SELECT * FROM memories
-      WHERE updated_at < ${cutoffTime}
+      WHERE updated_at < ${args.cutoffTime}
+        AND (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
       ORDER BY updated_at ASC
-      LIMIT ${limit ?? 1000} OFFSET ${offset ?? 0}
+      LIMIT ${args.limit ?? 1000} OFFSET ${args.offset ?? 0}
     `;
     return rows.map(rowToMemoryRow);
   }
 
-  async getAllWithVectors(limit?: number, offset?: number): Promise<MemoryRecord[]> {
+  async getAllWithVectors(
+    args: {
+      limit?: number;
+      offset?: number;
+      profileId?: string;
+    } = {}
+  ): Promise<MemoryRecord[]> {
     const sql = getPostgresClient();
+    const profileIdFilter = args.profileId ?? "";
     const rows = await sql`
-      SELECT * FROM memories ORDER BY created_at ASC
-      LIMIT ${limit ?? 1000} OFFSET ${offset ?? 0}
+      SELECT * FROM memories
+      WHERE (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
+      ORDER BY created_at ASC
+      LIMIT ${args.limit ?? 1000} OFFSET ${args.offset ?? 0}
     `;
     return rows.map(rowToMemoryRecord);
   }

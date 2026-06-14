@@ -95,8 +95,6 @@ interface OpenCodeMemConfig {
     maxAgeDays?: number;
     injectOn?: "first" | "always";
   };
-  disableWebuiAuth?: boolean;
-  disableClientAuth?: boolean;
   server?: {
     apiKey?: string;
   };
@@ -120,8 +118,6 @@ const DEFAULTS: Required<
     | "userEmailOverride"
     | "userNameOverride"
     | "webServerAllowedOrigin"
-    | "disableWebuiAuth"
-    | "disableClientAuth"
     | "server"
   >
 > & {
@@ -140,8 +136,6 @@ const DEFAULTS: Required<
   userEmailOverride?: string;
   userNameOverride?: string;
   webServerAllowedOrigin?: string;
-  disableWebuiAuth?: boolean;
-  disableClientAuth?: boolean;
   server?: { apiKey?: string };
   memory?: {
     defaultScope?: "project" | "all-projects";
@@ -206,8 +200,6 @@ const DEFAULTS: Required<
     maxAgeDays: undefined,
     injectOn: "first",
   },
-  disableWebuiAuth: false,
-  disableClientAuth: false,
   server: {},
 };
 
@@ -648,8 +640,6 @@ function buildConfig(fileConfig: OpenCodeMemConfig) {
         | "first"
         | "always",
     },
-    disableWebuiAuth: fileConfig.disableWebuiAuth ?? DEFAULTS.disableWebuiAuth,
-    disableClientAuth: fileConfig.disableClientAuth ?? DEFAULTS.disableClientAuth,
     server: {
       apiKey: fileConfig.server?.apiKey ?? DEFAULTS.server?.apiKey,
     },

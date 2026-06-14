@@ -94,4 +94,22 @@ describe("profile key config", () => {
 
     expect(() => validateServerConfig(config)).not.toThrow();
   });
+
+  it("requires SERVER_API_KEY even when legacy auth-disable flags are set", () => {
+    const errors = validateServerConfig(
+      makeConfig({
+        serverApiKey: "",
+        disableWebuiAuth: true,
+        disableClientAuth: true,
+      })
+    );
+
+    expect(errors).toContain("SERVER_API_KEY is required");
+    expect(errors).toContain(
+      "DISABLE_WEBUI_AUTH has been removed; use SERVER_API_KEY or profile keys"
+    );
+    expect(errors).toContain(
+      "DISABLE_CLIENT_AUTH has been removed; use SERVER_API_KEY or profile keys"
+    );
+  });
 });

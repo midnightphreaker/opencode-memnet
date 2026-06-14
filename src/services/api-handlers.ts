@@ -1697,12 +1697,19 @@ export async function handleCleanup(args: { scope: JobScope; skipGuard?: boolean
 
     const retentionDays = CONFIG.autoCleanupRetentionDays ?? 90;
     const cutoff = Date.now() - retentionDays * 86_400_000;
+    const profileId = args.scope.kind === "profile" ? args.scope.profileId : undefined;
 
     // Step 1: Delete old prompts & collect linked memory IDs (informational)
-    const promptResult = await promptRepo.deleteOldPrompts(cutoff);
+    const promptResult = await promptRepo.deleteOldPrompts(
+      profileId ? { cutoffTime: cutoff, profileId } : { cutoffTime: cutoff }
+    );
 
     // Step 2: Fetch stale memories (single batch of 1000; known limitation — see SPEC §3.4)
-    const oldMemories = await memoryRepo.listOlderThan(cutoff, 1000, 0);
+    const oldMemories = await memoryRepo.listOlderThan(
+      profileId
+        ? { cutoffTime: cutoff, limit: 1000, offset: 0, profileId }
+        : { cutoffTime: cutoff, limit: 1000, offset: 0 }
+    );
 
     // Step 3: Iterate, protect, delete, tally
     let deletedMemories = 0;
@@ -1710,6 +1717,8 @@ export async function handleCleanup(args: { scope: JobScope; skipGuard?: boolean
     let deletedProject = 0;
 
     for (const mem of oldMemories) {
+      if (profileId && mem.profileId !== profileId) continue;
+
       // Protection P1: pinned memories are never deleted
       if (mem.isPinned) continue;
 
@@ -1766,7 +1775,8 @@ export async function handleDeduplicate(args: { scope: JobScope; skipGuard?: boo
     // Load all memories with embedding vectors.
     // getAllWithVectors() is explicitly designed for pairwise similarity checks
     // (see types.ts:143 comment).
-    const memories = await memoryRepo.getAllWithVectors();
+    const profileId = args.scope.kind === "profile" ? args.scope.profileId : undefined;
+    const memories = await memoryRepo.getAllWithVectors(profileId ? { profileId } : undefined);
 
     if (memories.length === 0) {
       return {
@@ -1786,6 +1796,7 @@ export async function handleDeduplicate(args: { scope: JobScope; skipGuard?: boo
     // different groups must NEVER be compared or merged.
     const groups = new Map<string, MemoryRecord[]>();
     for (const mem of memories) {
+      if (profileId && mem.profileId !== profileId) continue;
       const key = mem.containerTag;
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key)!.push(mem);

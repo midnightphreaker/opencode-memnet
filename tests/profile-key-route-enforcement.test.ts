@@ -65,10 +65,8 @@ describe("profile key route enforcement", () => {
       }),
       "/api/client/connect"
     );
-    expect(clientConnectResult).toEqual({
-      principal: { kind: "admin" },
-      authDisabled: true,
-    });
+    expect(clientConnectResult).toBeInstanceOf(Response);
+    expect((clientConnectResult as Response).status).toBe(401);
 
     const clientStatsResult = server.authenticateApiRequest(
       new Request("http://localhost/api/client/stats", {
@@ -77,10 +75,8 @@ describe("profile key route enforcement", () => {
       }),
       "/api/client/stats"
     );
-    expect(clientStatsResult).toEqual({
-      principal: { kind: "admin" },
-      authDisabled: true,
-    });
+    expect(clientStatsResult).toBeInstanceOf(Response);
+    expect((clientStatsResult as Response).status).toBe(401);
 
     const badBearerResult = server.authenticateApiRequest(
       new Request("http://localhost/api/client/connect", {

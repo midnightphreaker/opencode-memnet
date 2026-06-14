@@ -74,7 +74,9 @@ export interface ServerConfig {
   userProfileChangelogRetentionCount: number;
   autoCleanupRetentionDays: number;
   webServerAllowedOrigin: string;
+  /** @deprecated Removed. API routes always require SERVER_API_KEY or a profile key. */
   disableWebuiAuth: boolean;
+  /** @deprecated Removed. API routes always require SERVER_API_KEY or a profile key. */
   disableClientAuth: boolean;
   profileKeysFile?: string;
   configuredProfiles: ConfiguredProfile[];
@@ -197,13 +199,15 @@ export function validateServerConfig(config: ServerConfig): string[] {
   if (!config.embeddingModel) errors.push("EMBEDDING_MODEL is required");
   if (!config.embeddingApiKey) errors.push("EMBEDDING_API_KEY is required (or OPENAI_API_KEY)");
   if (!config.serverApiKey) {
-    if (!config.disableWebuiAuth || !config.disableClientAuth) {
-      errors.push(
-        "SERVER_API_KEY is required (unless both DISABLE_WEBUI_AUTH and DISABLE_CLIENT_AUTH are true)"
-      );
-    }
+    errors.push("SERVER_API_KEY is required");
   }
-  if (!config.disableClientAuth && config.profileKeysFile && configuredProfiles.length === 0) {
+  if (config.disableWebuiAuth) {
+    errors.push("DISABLE_WEBUI_AUTH has been removed; use SERVER_API_KEY or profile keys");
+  }
+  if (config.disableClientAuth) {
+    errors.push("DISABLE_CLIENT_AUTH has been removed; use SERVER_API_KEY or profile keys");
+  }
+  if (config.profileKeysFile && configuredProfiles.length === 0) {
     errors.push("PROFILE_KEYS_FILE must contain at least one profile key");
   }
   if (profileKeyMatchesServerKey(configuredProfiles, config.serverApiKey)) {

@@ -78,8 +78,6 @@ export class WebServer {
     config: WebServerConfig,
     apiKey: string,
     options?: {
-      disableWebuiAuth?: boolean;
-      disableClientAuth?: boolean;
       configuredProfiles?: ConfiguredProfile[];
     }
   ) {
@@ -173,10 +171,10 @@ export class WebServer {
 
   private authenticateApiRequest(req: Request, path: string): AuthResult | Response {
     if (path === "/api/health") {
-      return { principal: { kind: "admin" }, authDisabled: true };
+      return { principal: { kind: "admin" } };
     }
     if (!path.startsWith("/api/")) {
-      return { principal: { kind: "admin" }, authDisabled: true };
+      return { principal: { kind: "admin" } };
     }
     if (!this.auth) {
       return this.jsonResponse({ success: false, error: "Authentication is not configured" }, 401);
@@ -738,8 +736,6 @@ export async function startWebServer(
   config: WebServerConfig,
   apiKey: string,
   options?: {
-    disableWebuiAuth?: boolean;
-    disableClientAuth?: boolean;
     configuredProfiles?: ConfiguredProfile[];
   }
 ): Promise<WebServer> {

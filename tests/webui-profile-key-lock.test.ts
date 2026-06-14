@@ -27,8 +27,12 @@ describe("WebUI profile key lock", () => {
   });
 
   it("loads profile principal metadata before the initial authenticated data load", () => {
-    expect(app).toContain(
-      "if (state.authKey && !state.authDisabled) await populateProfileDropdown();"
-    );
+    expect(app).toContain("if (state.authKey) await populateProfileDropdown();");
+  });
+
+  it("does not support keyless auth-disabled WebUI state", () => {
+    expect(app).not.toContain("authDisabled");
+    expect(app).not.toContain("(auth disabled)");
+    expect(app).not.toContain("Auth disabled");
   });
 });

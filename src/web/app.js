@@ -29,7 +29,6 @@ const state = {
   panelViewProfileId: "",
   principal: null,
   profileLocked: false,
-  authDisabled: false,
   lastJobStatus: {
     activity: { active: false, text: "Idle", queuedCount: 0 },
     current: null,
@@ -632,10 +631,9 @@ function editMemory(id) {
   });
   editTagSelect.value = memory.containerTag || "";
 
-  // Hide project tag dropdown when auth is enabled (not disabled)
   const editTagGroup = editTagSelect.closest(".form-group");
   if (editTagGroup) {
-    editTagGroup.style.display = state.authDisabled ? "" : "none";
+    editTagGroup.style.display = "none";
   }
 
   document.getElementById("edit-modal").classList.remove("hidden");
@@ -667,14 +665,6 @@ async function saveEdit(e) {
   }
   if (tags.length > 0) {
     body.tags = tags;
-  }
-
-  // Only send containerTag when auth is disabled
-  if (state.authDisabled) {
-    const containerTag = document.getElementById("edit-tag").value;
-    if (containerTag) {
-      body.containerTag = containerTag;
-    }
   }
 
   const result = await fetchAPI(`/api/memories/${id}`, {
@@ -1410,7 +1400,7 @@ async function refreshProfile() {
 // ── Profile sheet ──
 function openProfileSheet() {
   document.getElementById("profile-sheet").classList.add("sheet-open");
-  if (state.authDisabled || state.principal?.kind === "admin") {
+  if (state.principal?.kind === "admin") {
     loadProfilePanelSelector();
   } else {
     document.getElementById("profile-selector-row").style.display = "none";
@@ -1582,7 +1572,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   // ── Settings panel ──
 
   async function populateProfileDropdown() {
-    if (!state.authKey && !state.authDisabled) return;
+    if (!state.authKey) return;
     try {
       const data = await fetchAPI("/api/user-profiles");
       if (data.success) {
@@ -1625,11 +1615,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     const panel = document.getElementById("settings-panel");
     panel.classList.toggle("hidden");
     if (!panel.classList.contains("hidden")) {
-      if (!state.authDisabled) {
-        document.getElementById("settings-apikey").value = state.authKey;
-        document.getElementById("settings-apikey").focus();
-      }
-      if (state.authKey || state.authDisabled) await populateProfileDropdown();
+      document.getElementById("settings-apikey").value = state.authKey;
+      document.getElementById("settings-apikey").focus();
+      if (state.authKey) await populateProfileDropdown();
       if (state.activeProfileId && state.memories.length === 0) {
         loadMemories();
         loadStats();
@@ -1660,11 +1648,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     loadStats();
   });
   document.getElementById("settings-save").addEventListener("click", async () => {
-    if (!state.authDisabled) {
-      const key = document.getElementById("settings-apikey").value.trim();
-      state.authKey = key;
-      localStorage.setItem("opencode-memnet-apikey", key);
-    }
+    const key = document.getElementById("settings-apikey").value.trim();
+    state.authKey = key;
+    localStorage.setItem("opencode-memnet-apikey", key);
 
     // Try to load profiles and set the default
     await populateProfileDropdown();
@@ -1686,32 +1672,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  // Check if auth is disabled by testing an authenticated endpoint without credentials
-  try {
-    const testRes = await fetch("/api/tags", {
-      headers: { "X-Client-ID": getWebClientId() },
-    });
-    if (testRes.ok) {
-      state.authDisabled = true;
-      console.log("Auth disabled — loading data without API key");
-      document.getElementById("settings-apikey").value = "(auth disabled)";
-      document.getElementById("settings-apikey").readOnly = true;
-      document.getElementById("settings-profile").disabled = false;
-      // Auto-load profiles since we have access
-      populateProfileDropdown();
-      // Hide auth-related fields when auth is disabled.
-      document.getElementById("settings-apikey").closest(".settings-field").style.display = "none";
-      document.getElementById("settings-profile").closest(".settings-field").style.display = "none";
-      // When auth is disabled, update title and hide localStorage note
-      document.querySelector('#settings-panel h3[data-i18n="settings-title"]').textContent =
-        "Settings";
-      document.querySelector(".settings-note").style.display = "none";
-    }
-  } catch (e) {
-    console.warn("Auth check failed:", e);
-  }
-
-  if (state.authKey && !state.authDisabled) await populateProfileDropdown();
+  if (state.authKey) await populateProfileDropdown();
 
   await loadTags();
   await loadMemories();

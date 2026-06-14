@@ -58,8 +58,6 @@ async function main(): Promise<void> {
       },
       config.serverApiKey,
       {
-        disableWebuiAuth: config.disableWebuiAuth,
-        disableClientAuth: config.disableClientAuth,
         configuredProfiles: config.configuredProfiles,
       }
     );
@@ -68,21 +66,10 @@ async function main(): Promise<void> {
     logInfo(`WebUI: http://${config.host}:${config.port}/`);
     logInfo(`Health: http://${config.host}:${config.port}/api/health`);
 
-    if (config.disableWebuiAuth) {
-      logWarn("DISABLE_WEBUI_AUTH is enabled — WebUI does not require API key authentication");
-    }
-    if (config.disableClientAuth) {
-      logWarn(
-        "DISABLE_CLIENT_AUTH is enabled — client API does not require API key authentication"
-      );
-    }
-
     logInfo("Server ready", {
       port: config.port,
       host: config.host,
       auth: config.serverApiKey ? "enabled" : "disabled",
-      webuiAuth: config.disableWebuiAuth ? "disabled" : "enabled",
-      clientAuth: config.disableClientAuth ? "disabled" : "enabled",
     });
 
     // Start background tag migration (perpetual loop)

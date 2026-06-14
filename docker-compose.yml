@@ -12,7 +12,8 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-opencode} -d ${POSTGRES_DB:-opencode_mem}"]
+      test:
+        ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-opencode} -d ${POSTGRES_DB:-opencode_mem}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -23,13 +24,13 @@ services:
     container_name: DO-NOT-TOUCH-OCM-server
     restart: unless-stopped
     ports:
-      - "${EXTERNAL_HOST:-localhost}:${HOST_PORT:-4747}:${SERVER_PORT:-4747}"
+      - "${EXTERNAL_HOST:-127.0.0.1}:${HOST_PORT:-4747}:${SERVER_PORT:-4747}"
+    volumes:
+      - ./secrets:/run/secrets:ro
     environment:
       SERVER_PORT: ${SERVER_PORT:-4747}
       SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
       SERVER_API_KEY: ${SERVER_API_KEY:-}
-      DISABLE_WEBUI_AUTH: ${DISABLE_WEBUI_AUTH:-false}
-      DISABLE_CLIENT_AUTH: ${DISABLE_CLIENT_AUTH:-false}
       PROFILE_KEYS_FILE: ${PROFILE_KEYS_FILE:-}
       WEB_SERVER_ALLOWED_ORIGIN: ${WEB_SERVER_ALLOWED_ORIGIN:-*}
       LOG_LEVEL: ${LOG_LEVEL:-info}

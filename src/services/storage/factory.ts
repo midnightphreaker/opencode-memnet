@@ -204,11 +204,15 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
   async unpin(memoryId: string): Promise<void> {
     await (await this.repo()).unpin(memoryId);
   }
-  async listOlderThan(cutoffTime: number, limit?: number, offset?: number): Promise<MemoryRow[]> {
-    return (await this.repo()).listOlderThan(cutoffTime, limit, offset);
+  async listOlderThan(
+    args: Parameters<MemoryRepository["listOlderThan"]>[0]
+  ): Promise<MemoryRow[]> {
+    return (await this.repo()).listOlderThan(args);
   }
-  async getAllWithVectors(limit?: number, offset?: number): Promise<MemoryRecord[]> {
-    return (await this.repo()).getAllWithVectors(limit, offset);
+  async getAllWithVectors(
+    args?: Parameters<MemoryRepository["getAllWithVectors"]>[0]
+  ): Promise<MemoryRecord[]> {
+    return (await this.repo()).getAllWithVectors(args);
   }
   async countUntagged(): Promise<number> {
     return (await this.repo()).countUntagged();
@@ -304,9 +308,9 @@ class PostgresUserPromptRepositoryLazy implements UserPromptRepository {
     await (await this.repo()).markMultipleAsUserLearningCaptured(promptIds);
   }
   async deleteOldPrompts(
-    cutoffTime: number
+    args: Parameters<UserPromptRepository["deleteOldPrompts"]>[0]
   ): Promise<{ deleted: number; linkedMemoryIds: string[] }> {
-    return (await this.repo()).deleteOldPrompts(cutoffTime);
+    return (await this.repo()).deleteOldPrompts(args);
   }
   async linkMemoryToPrompt(promptId: string, memoryId: string): Promise<void> {
     await (await this.repo()).linkMemoryToPrompt(promptId, memoryId);

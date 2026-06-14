@@ -263,6 +263,33 @@ OPENCODE_MEMNET_PROFILE_KEY_DEFAULT=change-me-profile-key
 Compose mounts `./secrets` at `/run/secrets` read-only. `secrets/.gitignore` keeps secret files out
 of git.
 
+### 2a. Bootstrap Profile Enrollment
+
+`NEWUSER_API_KEY` is a one-step enrollment key for creating a profile API key from the plugin.
+Configure the plugin with `apiKey` set to `NEWUSER_API_KEY` and a non-empty `profileId`. On the
+first successful `POST /api/client/connect`, the server generates a persistent profile key, stores
+only its SHA-256 hash, returns the key once, and the plugin rewrites the same config file that
+provided the bootstrap `apiKey`.
+
+Enrollment is allowed only when the requested profile has no static key in `PROFILE_KEYS_FILE` and
+no generated key in Postgres. After enrollment, configure clients with the generated profile key
+instead of `NEWUSER_API_KEY`.
+
+If `NEWUSER_API_KEY` is empty, the server generates a temporary startup key and writes it to:
+
+```text
+/tmp/opencode-memnet-newuser-api-key
+```
+
+For Docker Compose, read it inside the server container:
+
+```bash
+docker compose exec server cat /tmp/opencode-memnet-newuser-api-key
+```
+
+The generated bootstrap key is invalid after the next server restart. The key value is never printed
+in logs.
+
 ### 3. Start With The Bundled Database
 
 ```bash
@@ -343,6 +370,7 @@ Secret values for `POSTGRES_URL`, `EMBEDDING_API_KEY`, and `MEMORY_API_KEY` supp
 | Variable                             | Required | Default                                  | Description                                                                              |
 | ------------------------------------ | -------- | ---------------------------------------- | ---------------------------------------------------------------------------------------- |
 | `SERVER_API_KEY`                     | yes      | empty                                    | Admin bearer token for all non-health API routes and all profiles.                       |
+| `NEWUSER_API_KEY`                    | no       | generated at startup                     | Bootstrap key accepted only by `POST /api/client/connect` for first profile enrollment.  |
 | `PROFILE_KEYS_FILE`                  | no       | empty                                    | JSONC file containing profile-scoped API keys.                                           |
 | `WEB_SERVER_ALLOWED_ORIGIN`          | no       | `*`                                      | CORS `Access-Control-Allow-Origin` value.                                                |
 | `SERVER_HOST`                        | no       | `0.0.0.0`                                | Interface the server binds to inside Docker or direct Bun runtime.                       |
@@ -516,26 +544,39 @@ Minimal profile-key config:
 When `apiKey` is a profile key, the server returns the effective `profileId`; the plugin does not
 need `profileId` in config.
 
+Minimal bootstrap enrollment config:
+
+```jsonc
+{
+  "serverUrl": "http://localhost:4747",
+  "apiKey": "NEWUSER_API_KEY",
+  "profileId": "default",
+}
+```
+
+After enrollment succeeds, the plugin replaces `apiKey` in the config file that supplied it with the
+generated profile key. The generated key is not logged or shown in a toast.
+
 ### Plugin Config Options
 
-| JSONC field                         | Required | Default                 | Allowed values                   | Description                                                             |
-| ----------------------------------- | -------- | ----------------------- | -------------------------------- | ----------------------------------------------------------------------- |
-| `serverUrl`                         | yes      | `http://localhost:4747` | URL string                       | Base URL of the opencode-memnet server.                                 |
-| `apiKey`                            | yes      | empty                   | string                           | `SERVER_API_KEY` or a profile key. Missing/empty makes the plugin noop. |
-| `profileId`                         | no       | `default` for admin key | string                           | Profile to use with `SERVER_API_KEY`. Ignored for profile keys.         |
-| `autoCaptureEnabled`                | no       | `true`                  | boolean                          | Enables `session.idle` auto-capture requests to the server.             |
-| `showAutoCaptureToasts`             | no       | `true`                  | boolean                          | Shows success toasts when auto-capture stores memory.                   |
-| `showErrorToasts`                   | no       | `true`                  | boolean                          | Reserved for surfacing plugin errors through OpenCode toasts.           |
-| `chatMessage.enabled`               | no       | `true`                  | boolean                          | Enables memory context injection for chat messages.                     |
-| `chatMessage.maxMemories`           | no       | `3`                     | number                           | Maximum memories requested for one injected context block.              |
-| `chatMessage.excludeCurrentSession` | no       | `true`                  | boolean                          | Excludes current session memories from context search.                  |
-| `chatMessage.maxAgeDays`            | no       | unset                   | number or `null`                 | Maximum age for memories used in context injection.                     |
-| `chatMessage.injectOn`              | no       | `first`                 | `first`, `always`                | Injection frequency for chat messages.                                  |
-| `customMessage.enabled`             | no       | `false`                 | boolean                          | Enables injection of static custom text into chat messages.             |
-| `customMessage.frequency`           | no       | `first`                 | `first`, `always`                | Injection frequency for `customMessage.text`.                           |
-| `customMessage.text`                | no       | empty                   | string                           | Static custom text to add to chat messages when enabled.                |
-| `memory.defaultScope`               | no       | `project`               | `project`, `all-projects`        | Default scope for the memory tool's `search` and `list` modes.          |
-| `logLevel`                          | no       | env/default logger      | `debug`, `info`, `warn`, `error` | Plugin/shared logger level.                                             |
+| JSONC field                         | Required | Default                 | Allowed values                   | Description                                                                                                |
+| ----------------------------------- | -------- | ----------------------- | -------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `serverUrl`                         | yes      | `http://localhost:4747` | URL string                       | Base URL of the opencode-memnet server.                                                                    |
+| `apiKey`                            | yes      | empty                   | string                           | `SERVER_API_KEY`, a profile key, or `NEWUSER_API_KEY` for enrollment. Missing/empty makes the plugin noop. |
+| `profileId`                         | no       | `default` for admin key | string                           | Profile to use with `SERVER_API_KEY`; required with `NEWUSER_API_KEY`; ignored for profile keys.           |
+| `autoCaptureEnabled`                | no       | `true`                  | boolean                          | Enables `session.idle` auto-capture requests to the server.                                                |
+| `showAutoCaptureToasts`             | no       | `true`                  | boolean                          | Shows success toasts when auto-capture stores memory.                                                      |
+| `showErrorToasts`                   | no       | `true`                  | boolean                          | Reserved for surfacing plugin errors through OpenCode toasts.                                              |
+| `chatMessage.enabled`               | no       | `true`                  | boolean                          | Enables memory context injection for chat messages.                                                        |
+| `chatMessage.maxMemories`           | no       | `3`                     | number                           | Maximum memories requested for one injected context block.                                                 |
+| `chatMessage.excludeCurrentSession` | no       | `true`                  | boolean                          | Excludes current session memories from context search.                                                     |
+| `chatMessage.maxAgeDays`            | no       | unset                   | number or `null`                 | Maximum age for memories used in context injection.                                                        |
+| `chatMessage.injectOn`              | no       | `first`                 | `first`, `always`                | Injection frequency for chat messages.                                                                     |
+| `customMessage.enabled`             | no       | `false`                 | boolean                          | Enables injection of static custom text into chat messages.                                                |
+| `customMessage.frequency`           | no       | `first`                 | `first`, `always`                | Injection frequency for `customMessage.text`.                                                              |
+| `customMessage.text`                | no       | empty                   | string                           | Static custom text to add to chat messages when enabled.                                                   |
+| `memory.defaultScope`               | no       | `project`               | `project`, `all-projects`        | Default scope for the memory tool's `search` and `list` modes.                                             |
+| `logLevel`                          | no       | env/default logger      | `debug`, `info`, `warn`, `error` | Plugin/shared logger level.                                                                                |
 
 ### Plugin Behavior Notes
 
@@ -648,6 +689,7 @@ docker compose logs server
 Common missing values:
 
 - `SERVER_API_KEY`
+- `NEWUSER_API_KEY` if using bootstrap enrollment
 - `POSTGRES_PASSWORD` when using bundled database Compose
 - `POSTGRES_URL` when using external database Compose
 - `EMBEDDING_API_URL`
@@ -692,6 +734,17 @@ For Docker Compose, the host file must be under `./secrets` and the server must 
 ```env
 PROFILE_KEYS_FILE=/run/secrets/opencode-memnet-profile-keys.jsonc
 ```
+
+### Bootstrap Enrollment Key In Docker
+
+When `NEWUSER_API_KEY` is blank, the server writes a temporary key inside the container:
+
+```bash
+docker compose exec server cat /tmp/opencode-memnet-newuser-api-key
+```
+
+Use that value as the plugin `apiKey` with a `profileId` for the first connection. The plugin
+rewrites the config to the generated profile key after enrollment.
 
 ### Auto-Capture Does Not Store Memories
 

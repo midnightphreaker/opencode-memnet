@@ -1,5 +1,6 @@
 // plugin/src/services/remote-client.ts
 import { CLIENT_CONFIG } from "../../../shared/client-config.js";
+import { rewriteClientApiKeySource } from "../../../shared/client-config.js";
 import { log, logDebug, logWarn } from "../../../shared/logger.js";
 
 const DEFAULT_TIMEOUT = 30_000;
@@ -18,7 +19,7 @@ interface RequestOptions {
 
 export class RemoteMemoryClient {
   private readonly baseUrl: string;
-  private readonly apiKey: string;
+  private apiKey: string;
   private readonly clientId: string;
   private readonly timeout: number;
 
@@ -306,9 +307,37 @@ export class RemoteMemoryClient {
       welcomeBack: boolean;
       stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
       principal: { kind: "admin" } | { kind: "profile"; profileId: string; displayName?: string };
+      enrollment?: { profileId: string; apiKey: string };
     }>
   > {
-    return this.request("POST", "/api/client/connect", { clientId, metadata });
+    const result = await this.request<{
+      firstTime: boolean;
+      daysSinceLastSeen: number | null;
+      welcomeBack: boolean;
+      stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
+      principal: { kind: "admin" } | { kind: "profile"; profileId: string; displayName?: string };
+      enrollment?: { profileId: string; apiKey: string };
+    }>("POST", "/api/client/connect", {
+      clientId,
+      profileId: CLIENT_CONFIG.profileId,
+      metadata,
+    });
+    if (result.success && result.data?.enrollment?.apiKey) {
+      this.setApiKey(result.data.enrollment.apiKey);
+      try {
+        await rewriteClientApiKeySource(result.data.enrollment.apiKey);
+      } catch (error) {
+        logWarn("Failed to persist enrolled profile API key", {
+          profileId: result.data.enrollment.profileId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return result;
+  }
+
+  setApiKey(apiKey: string): void {
+    this.apiKey = apiKey;
   }
   async getClientStats(clientId: string): Promise<
     ApiResponse<{

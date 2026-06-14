@@ -5,7 +5,7 @@ import { WebServer } from "../src/services/web-server.js";
 
 const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf-8");
 type AuthHelper = {
-  authenticateApiRequest(req: Request, path: string): unknown;
+  authenticateApiRequest(req: Request, path: string): Promise<unknown>;
 };
 
 describe("profile key route enforcement", () => {
@@ -24,7 +24,7 @@ describe("profile key route enforcement", () => {
   });
 
   it("keeps the request principal from auth and passes it to scoped routes", () => {
-    expect(webServer).toContain("const authContext = this.authenticateApiRequest(req, path)");
+    expect(webServer).toContain("const authContext = await this.authenticateApiRequest(req, path)");
     expect(webServer).toContain("const principal = authContext.principal");
   });
 
@@ -49,7 +49,7 @@ describe("profile key route enforcement", () => {
       disableClientAuth: true,
     }) as unknown as AuthHelper;
 
-    const sharedRouteResult = server.authenticateApiRequest(
+    const sharedRouteResult = await server.authenticateApiRequest(
       new Request("http://localhost/api/memories", {
         headers: { "X-Opencode-Memnet-Client": "plugin" },
       }),
@@ -58,7 +58,7 @@ describe("profile key route enforcement", () => {
     expect(sharedRouteResult).toBeInstanceOf(Response);
     expect((sharedRouteResult as Response).status).toBe(401);
 
-    const clientConnectResult = server.authenticateApiRequest(
+    const clientConnectResult = await server.authenticateApiRequest(
       new Request("http://localhost/api/client/connect", {
         method: "POST",
         headers: { "X-Opencode-Memnet-Client": "plugin" },
@@ -68,7 +68,7 @@ describe("profile key route enforcement", () => {
     expect(clientConnectResult).toBeInstanceOf(Response);
     expect((clientConnectResult as Response).status).toBe(401);
 
-    const clientStatsResult = server.authenticateApiRequest(
+    const clientStatsResult = await server.authenticateApiRequest(
       new Request("http://localhost/api/client/stats", {
         method: "GET",
         headers: { "X-Opencode-Memnet-Client": "plugin" },
@@ -78,7 +78,7 @@ describe("profile key route enforcement", () => {
     expect(clientStatsResult).toBeInstanceOf(Response);
     expect((clientStatsResult as Response).status).toBe(401);
 
-    const badBearerResult = server.authenticateApiRequest(
+    const badBearerResult = await server.authenticateApiRequest(
       new Request("http://localhost/api/client/connect", {
         method: "POST",
         headers: {

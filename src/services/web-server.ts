@@ -6,6 +6,7 @@ import { AuthMiddleware } from "./auth.js";
 import type { AuthResult, RouteKind } from "./auth.js";
 import type { ConfiguredProfile, Principal } from "./profile-auth.js";
 import { principalResponse, requireProfileIdForPrincipal } from "./profile-auth.js";
+import { createProfileApiKeyRepository } from "./storage/factory.js";
 import {
   handleListTags,
   handleListMemories,
@@ -79,6 +80,7 @@ export class WebServer {
     apiKey: string,
     options?: {
       configuredProfiles?: ConfiguredProfile[];
+      newUserApiKey?: string;
     }
   ) {
     this.config = config;
@@ -169,7 +171,14 @@ export class WebServer {
       : "webui";
   }
 
-  private authenticateApiRequest(req: Request, path: string): AuthResult | Response {
+  private bearerKey(req: Request): string | null {
+    const authHeader = req.headers.get("Authorization");
+    if (!authHeader) return null;
+    const parts = authHeader.split(" ");
+    return parts.length === 2 && parts[0] === "Bearer" && parts[1] ? parts[1] : null;
+  }
+
+  private async authenticateApiRequest(req: Request, path: string): Promise<AuthResult | Response> {
     if (path === "/api/health") {
       return { principal: { kind: "admin" } };
     }
@@ -179,7 +188,22 @@ export class WebServer {
     if (!this.auth) {
       return this.jsonResponse({ success: false, error: "Authentication is not configured" }, 401);
     }
-    return this.auth.authenticate(req, this.getRouteKind(req, path));
+    const result = this.auth.authenticate(req, this.getRouteKind(req, path));
+    if (!(result instanceof Response)) return result;
+    if (result.status !== 401) return result;
+
+    const key = this.bearerKey(req);
+    if (!key) return result;
+    try {
+      const profileApiKeyRepo = createProfileApiKeyRepository();
+      const generatedProfile = await profileApiKeyRepo.findProfileByApiKey(key);
+      if (!generatedProfile) return result;
+      await profileApiKeyRepo.touchLastUsed(generatedProfile.profileId);
+      return { principal: { kind: "profile", profileId: generatedProfile.profileId } };
+    } catch (error) {
+      logError("Generated profile key lookup failed", { error: String(error) });
+      return result;
+    }
   }
 
   private profileIdForRequest(
@@ -254,7 +278,7 @@ export class WebServer {
     // Auth: all /api/* routes (except public health) produce a request principal.
     let requestPrincipal: Principal = { kind: "admin" };
     if (path.startsWith("/api/") && path !== "/api/health") {
-      const authContext = this.authenticateApiRequest(req, path);
+      const authContext = await this.authenticateApiRequest(req, path);
       if (authContext instanceof Response) return authContext;
       const principal = authContext.principal;
       requestPrincipal = principal;
@@ -737,6 +761,7 @@ export async function startWebServer(
   apiKey: string,
   options?: {
     configuredProfiles?: ConfiguredProfile[];
+    newUserApiKey?: string;
   }
 ): Promise<WebServer> {
   const server = new WebServer(config, apiKey, options);

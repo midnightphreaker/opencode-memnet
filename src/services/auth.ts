@@ -14,15 +14,18 @@ export interface AuthResult {
 export class AuthMiddleware {
   private readonly apiKey: string;
   private readonly configuredProfiles: ConfiguredProfile[];
+  private readonly newUserApiKey: string;
 
   constructor(
     apiKey: string,
     options?: {
       configuredProfiles?: ConfiguredProfile[];
+      newUserApiKey?: string;
     }
   ) {
     this.apiKey = apiKey;
     this.configuredProfiles = options?.configuredProfiles ?? [];
+    this.newUserApiKey = options?.newUserApiKey ?? "";
   }
 
   authenticate(req: Request, _routeKind: RouteKind): AuthResult | Response {
@@ -40,6 +43,14 @@ export class AuthMiddleware {
     const key = parts[1];
     if (this.apiKey && timingSafeEqualString(key, this.apiKey)) {
       return { principal: { kind: "admin" } };
+    }
+
+    if (this.newUserApiKey && timingSafeEqualString(key, this.newUserApiKey)) {
+      const url = new URL(req.url);
+      if (req.method.toUpperCase() === "POST" && url.pathname === "/api/client/connect") {
+        return { principal: { kind: "newuser" } };
+      }
+      return this.unauthorized("NEWUSER_API_KEY is only valid for POST /api/client/connect");
     }
 
     const profile = findProfileByApiKey(this.configuredProfiles, key);

@@ -1,14 +1,16 @@
+import { randomBytes } from "node:crypto";
 import { embeddingService } from "./embedding.js";
 import { log, logInfo, logDebug, logError } from "./logger.js";
 import { getServerConfig } from "../server-config.js";
 import { CONFIG } from "../config.js";
 import type { MemoryType } from "../types/index.js";
-import { principalResponse, type Principal } from "./profile-auth.js";
+import { getConfiguredProfileById, principalResponse, type Principal } from "./profile-auth.js";
 import {
   createMemoryRepository,
   createUserPromptRepository,
   createUserProfileRepository,
   createClientRepository,
+  createProfileApiKeyRepository,
   createTagRegistry,
 } from "./storage/factory.js";
 import { stripPrivateContent } from "./privacy.js";
@@ -21,6 +23,7 @@ import type {
   MemoryRecord,
   MemoryScopeKind,
   ClientRepository,
+  ProfileApiKeyRepository,
 } from "./storage/types.js";
 import {
   getApiMigrationProgress,
@@ -39,6 +42,7 @@ const promptRepo: UserPromptRepository = createUserPromptRepository();
 const profileRepo: UserProfileRepository = createUserProfileRepository();
 const tagRegistry = createTagRegistry();
 let clientRepo: ClientRepository | null = null;
+let profileApiKeyRepo: ProfileApiKeyRepository | null = null;
 
 // Repositories are singletons from the factory, but initialize() (which runs
 // DB migrations) must be called before first use.  The LocalMemoryClient does
@@ -53,8 +57,11 @@ async function ensureInit(): Promise<void> {
       await profileRepo.initialize();
       clientRepo = createClientRepository();
       await clientRepo.initialize();
+      profileApiKeyRepo = createProfileApiKeyRepository();
+      await profileApiKeyRepo.initialize();
     })().catch((err) => {
       clientRepo = null as any;
+      profileApiKeyRepo = null as any;
       _initPromise = null;
       throw err;
     });
@@ -107,6 +114,9 @@ function ensurePrincipalCanAccessProfile(
   profileId: string | undefined
 ): ApiResponse<never> | null {
   if (!principal || principal.kind === "admin") return null;
+  if (principal.kind === "newuser") {
+    return { success: false, error: "NEWUSER_API_KEY is only valid for profile enrollment" };
+  }
   if (profileId === principal.profileId) return null;
   return { success: false, error: "Profile key cannot access another profile" };
 }
@@ -1982,6 +1992,7 @@ export async function handleResetTagMigration(): Promise<ApiResponse> {
 export async function handleClientConnect(
   data: {
     clientId: string;
+    profileId?: string;
     metadata?: Record<string, unknown>;
   },
   principal: Principal = { kind: "admin" }
@@ -1992,6 +2003,7 @@ export async function handleClientConnect(
     welcomeBack: boolean;
     stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
     principal: ReturnType<typeof principalResponse>;
+    enrollment?: { profileId: string; apiKey: string };
   }>
 > {
   try {
@@ -1999,6 +2011,41 @@ export async function handleClientConnect(
       return { success: false, error: "clientId is required" };
     }
     await ensureInit();
+
+    let effectivePrincipal = principal;
+    let enrollment: { profileId: string; apiKey: string } | undefined;
+    if (principal.kind === "newuser") {
+      const profileId = data.profileId?.trim();
+      if (!profileId) {
+        return { success: false, error: "profileId is required when using NEWUSER_API_KEY" };
+      }
+      const config = getServerConfig();
+      const existingStaticProfile = getConfiguredProfileById(config.configuredProfiles, profileId);
+      const existingGeneratedKey = await profileApiKeyRepo!.hasKeyForProfile(profileId);
+      if (existingStaticProfile || existingGeneratedKey) {
+        return {
+          success: false,
+          error:
+            "Profile already has an API key. Configure the client with that profile key instead of NEWUSER_API_KEY.",
+        };
+      }
+
+      const apiKey = `omnp_${randomBytes(32).toString("base64url")}`;
+      const created = await profileApiKeyRepo!.createKeyForProfile(
+        profileId,
+        apiKey,
+        data.clientId
+      );
+      if (!created) {
+        return {
+          success: false,
+          error:
+            "Profile already has an API key. Configure the client with that profile key instead of NEWUSER_API_KEY.",
+        };
+      }
+      effectivePrincipal = { kind: "profile", profileId };
+      enrollment = { profileId, apiKey };
+    }
 
     const metadata = data.metadata ?? {};
     const result = await clientRepo!.upsertClient(data.clientId, metadata);
@@ -2050,7 +2097,8 @@ export async function handleClientConnect(
           memoriesToday: stats.memoriesToday,
           totalPrompts: stats.totalPrompts,
         },
-        principal: principalResponse(principal),
+        principal: principalResponse(effectivePrincipal),
+        ...(enrollment ? { enrollment } : {}),
       },
     };
   } catch (error) {

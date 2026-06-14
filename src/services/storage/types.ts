@@ -417,3 +417,24 @@ export interface ClientRepository {
     totalPrompts: number;
   }>;
 }
+
+export interface ProfileApiKeyRow {
+  profileId: string;
+  apiKeyHash: string;
+  createdAt: number;
+  createdByClientId?: string;
+  lastUsedAt: number | null;
+}
+
+export interface ProfileApiKeyRepository {
+  initialize(): Promise<void>;
+  close(): Promise<void>;
+  hasKeyForProfile(profileId: string): Promise<boolean>;
+  createKeyForProfile(
+    profileId: string,
+    apiKey: string,
+    createdByClientId?: string
+  ): Promise<boolean>;
+  findProfileByApiKey(apiKey: string): Promise<{ profileId: string } | null>;
+  touchLastUsed(profileId: string): Promise<void>;
+}

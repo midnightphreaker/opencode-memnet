@@ -34,6 +34,6 @@ describe("plugin profile key support", () => {
 
   it("returns principal metadata from client connect", () => {
     expect(apiHandlers).toContain('principal: Principal = { kind: "admin" }');
-    expect(apiHandlers).toContain("principal: principalResponse(principal)");
+    expect(apiHandlers).toContain("principal: principalResponse(effectivePrincipal)");
   });
 });

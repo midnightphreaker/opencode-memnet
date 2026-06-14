@@ -1,10 +1,15 @@
 // src/server-config.ts
+import { randomBytes } from "node:crypto";
+import { chmodSync, writeFileSync } from "node:fs";
 import {
   loadConfiguredProfiles,
+  profileKeyMatchesApiKey,
   profileKeyMatchesServerKey,
   type ConfiguredProfile,
 } from "./services/profile-auth.js";
 import { resolveSecretValue } from "./services/secret-resolver.js";
+
+const NEWUSER_API_KEY_FILE = "/tmp/opencode-memnet-newuser-api-key";
 
 /**
  * Parse a duration string like "24h", "7d", "1w" into hours.
@@ -30,6 +35,9 @@ export interface ServerConfig {
   port: number;
   host: string;
   serverApiKey: string;
+  newUserApiKey: string;
+  newUserApiKeyGenerated: boolean;
+  newUserApiKeyFile: string | null;
   postgres: {
     url: string;
     ssl: boolean | "require";
@@ -106,13 +114,34 @@ function getEmbeddingDimensions(model: string): number {
 
 let _config: ServerConfig | null = null;
 
+function resolveNewUserApiKey(envValue: string | undefined): {
+  key: string;
+  generated: boolean;
+  file: string | null;
+} {
+  const configured = envValue?.trim();
+  if (configured) return { key: configured, generated: false, file: null };
+
+  const key = randomBytes(32).toString("base64url");
+  writeFileSync(NEWUSER_API_KEY_FILE, `${key}\n`, { mode: 0o600 });
+  chmodSync(NEWUSER_API_KEY_FILE, 0o600);
+  console.warn(
+    `[opencode-memnet] NEWUSER_API_KEY was not configured; generated a temporary bootstrap key at ${NEWUSER_API_KEY_FILE}. Read this file inside the container. It is invalid after the next server restart.`
+  );
+  return { key, generated: true, file: NEWUSER_API_KEY_FILE };
+}
+
 export function initServerConfig(): ServerConfig {
   if (_config) return _config;
   const env = process.env;
+  const newUserApiKey = resolveNewUserApiKey(env.NEWUSER_API_KEY);
   _config = {
     port: parseInt(env.SERVER_PORT || "4747"),
     host: env.SERVER_HOST || "0.0.0.0",
     serverApiKey: env.SERVER_API_KEY || "",
+    newUserApiKey: newUserApiKey.key,
+    newUserApiKeyGenerated: newUserApiKey.generated,
+    newUserApiKeyFile: newUserApiKey.file,
     postgres: {
       url: resolveSecretValue(env.POSTGRES_URL) || "",
       ssl: env.POSTGRES_SSL === "false" ? false : (env.POSTGRES_SSL as "require") || "require",
@@ -212,6 +241,12 @@ export function validateServerConfig(config: ServerConfig): string[] {
   }
   if (profileKeyMatchesServerKey(configuredProfiles, config.serverApiKey)) {
     errors.push("PROFILE_KEYS_FILE contains a profile apiKey that matches SERVER_API_KEY");
+  }
+  if (config.newUserApiKey && config.serverApiKey && config.newUserApiKey === config.serverApiKey) {
+    errors.push("NEWUSER_API_KEY must not match SERVER_API_KEY");
+  }
+  if (profileKeyMatchesApiKey(configuredProfiles, config.newUserApiKey)) {
+    errors.push("NEWUSER_API_KEY must not match any PROFILE_KEYS_FILE apiKey");
   }
 
   // Validate LLM provider config for tag migration

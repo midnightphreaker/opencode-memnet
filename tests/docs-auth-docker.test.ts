@@ -10,11 +10,27 @@ describe("auth and docker documentation", () => {
     const env = read(".env.example");
 
     expect(readme).toContain("SERVER_API_KEY");
+    expect(readme).toContain("NEWUSER_API_KEY");
     expect(readme).toContain("admin/all-profiles");
     expect(readme).not.toContain("DISABLE_WEBUI_AUTH");
     expect(readme).not.toContain("DISABLE_CLIENT_AUTH");
     expect(env).not.toContain("DISABLE_WEBUI_AUTH");
     expect(env).not.toContain("DISABLE_CLIENT_AUTH");
+  });
+
+  it("documents bootstrap profile enrollment", () => {
+    const readme = read("README.md");
+    const env = read(".env.example");
+    const compose = read("docker-compose.yml");
+    const externalCompose = read("docker-compose.external-db.yml");
+
+    expect(readme).toContain("Bootstrap Profile Enrollment");
+    expect(readme).toContain("docker compose exec server cat /tmp/opencode-memnet-newuser-api-key");
+    expect(readme).toContain("generated profile key");
+    expect(env).toContain("NEWUSER_API_KEY=");
+    expect(env).toContain("/tmp/opencode-memnet-newuser-api-key");
+    expect(compose).toContain("NEWUSER_API_KEY: ${NEWUSER_API_KEY:-}");
+    expect(externalCompose).toContain("NEWUSER_API_KEY: ${NEWUSER_API_KEY:-}");
   });
 
   it("uses a compose-safe localhost bind address", () => {

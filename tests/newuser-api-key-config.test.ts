@@ -4,9 +4,11 @@ import type { ServerConfig } from "../src/server-config.js";
 import { validateServerConfig } from "../src/server-config.js";
 
 const runtimeKeyPath = "/tmp/opencode-memnet-newuser-api-key";
+const serverKeyPath = "/tmp/opencode-memnet-server-api-key";
 
 afterEach(() => {
   rmSync(runtimeKeyPath, { force: true });
+  rmSync(serverKeyPath, { force: true });
 });
 
 function runConfigScenario(env: Record<string, string | undefined>) {
@@ -20,6 +22,9 @@ const { initServerConfig } = await import(${JSON.stringify(
   )});
 const config = initServerConfig();
 console.log(JSON.stringify({
+  serverApiKey: config.serverApiKey,
+  serverApiKeyGenerated: config.serverApiKeyGenerated,
+  serverApiKeyFile: config.serverApiKeyFile,
   newUserApiKey: config.newUserApiKey,
   newUserApiKeyGenerated: config.newUserApiKeyGenerated,
   newUserApiKeyFile: config.newUserApiKeyFile,
@@ -41,8 +46,11 @@ function makeConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
     port: 4747,
     host: "0.0.0.0",
     serverApiKey: "admin",
+    serverApiKeyGenerated: false,
+    serverApiKeyFile: null,
     newUserApiKey: "bootstrap",
     newUserApiKeyGenerated: false,
+    newUserApiKeyFile: null,
     postgres: {
       url: "postgres://localhost:5432/test",
       ssl: "require",
@@ -94,11 +102,19 @@ function makeConfig(overrides: Partial<ServerConfig> = {}): ServerConfig {
 }
 
 describe("NEWUSER_API_KEY server config", () => {
-  it("generates a runtime bootstrap key and writes it to a 0600 temp file when unset", () => {
+  it("generates persistent server and bootstrap keys with 0600 files when unset", () => {
     rmSync(runtimeKeyPath, { force: true });
+    rmSync(serverKeyPath, { force: true });
 
-    const config = runConfigScenario({ NEWUSER_API_KEY: "", SERVER_API_KEY: "admin" });
+    const config = runConfigScenario({ NEWUSER_API_KEY: "", SERVER_API_KEY: "" });
 
+    expect(config.serverApiKey).toBeString();
+    expect(config.serverApiKey.length).toBeGreaterThanOrEqual(32);
+    expect(config.serverApiKeyGenerated).toBe(true);
+    expect(config.serverApiKeyFile).toBe(serverKeyPath);
+    expect(existsSync(serverKeyPath)).toBe(true);
+    expect(readFileSync(serverKeyPath, "utf-8").trim()).toBe(config.serverApiKey);
+    expect(statSync(serverKeyPath).mode & 0o777).toBe(0o600);
     expect(config.newUserApiKey).toBeString();
     expect(config.newUserApiKey.length).toBeGreaterThanOrEqual(32);
     expect(config.newUserApiKeyGenerated).toBe(true);
@@ -106,6 +122,36 @@ describe("NEWUSER_API_KEY server config", () => {
     expect(existsSync(runtimeKeyPath)).toBe(true);
     expect(readFileSync(runtimeKeyPath, "utf-8").trim()).toBe(config.newUserApiKey);
     expect(statSync(runtimeKeyPath).mode & 0o777).toBe(0o600);
+  });
+
+  it("reuses generated keys across later starts", () => {
+    rmSync(runtimeKeyPath, { force: true });
+    rmSync(serverKeyPath, { force: true });
+
+    const first = runConfigScenario({ NEWUSER_API_KEY: "", SERVER_API_KEY: "" });
+    const second = runConfigScenario({ NEWUSER_API_KEY: "", SERVER_API_KEY: "" });
+
+    expect(second.serverApiKey).toBe(first.serverApiKey);
+    expect(second.newUserApiKey).toBe(first.newUserApiKey);
+    expect(readFileSync(serverKeyPath, "utf-8").trim()).toBe(first.serverApiKey);
+    expect(readFileSync(runtimeKeyPath, "utf-8").trim()).toBe(first.newUserApiKey);
+  });
+
+  it("rotates generated server and bootstrap keys when reset flag is TRUE", () => {
+    rmSync(runtimeKeyPath, { force: true });
+    rmSync(serverKeyPath, { force: true });
+
+    const first = runConfigScenario({ NEWUSER_API_KEY: "", SERVER_API_KEY: "" });
+    const reset = runConfigScenario({
+      NEWUSER_API_KEY: "",
+      SERVER_API_KEY: "",
+      OPENCODEMEMNET_RESET_KEYS: "TRUE",
+    });
+
+    expect(reset.serverApiKey).not.toBe(first.serverApiKey);
+    expect(reset.newUserApiKey).not.toBe(first.newUserApiKey);
+    expect(readFileSync(serverKeyPath, "utf-8").trim()).toBe(reset.serverApiKey);
+    expect(readFileSync(runtimeKeyPath, "utf-8").trim()).toBe(reset.newUserApiKey);
   });
 
   it("uses a configured bootstrap key without writing the temp file", () => {
@@ -117,6 +163,9 @@ describe("NEWUSER_API_KEY server config", () => {
     });
 
     expect(config).toEqual({
+      serverApiKey: "admin",
+      serverApiKeyGenerated: false,
+      serverApiKeyFile: null,
       newUserApiKey: "configured-bootstrap",
       newUserApiKeyGenerated: false,
       newUserApiKeyFile: null,

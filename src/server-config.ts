@@ -1,6 +1,6 @@
 // src/server-config.ts
 import { randomBytes } from "node:crypto";
-import { chmodSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import {
   loadConfiguredProfiles,
   profileKeyMatchesApiKey,
@@ -10,6 +10,7 @@ import {
 import { resolveSecretValue } from "./services/secret-resolver.js";
 
 const NEWUSER_API_KEY_FILE = "/tmp/opencode-memnet-newuser-api-key";
+const SERVER_API_KEY_FILE = "/tmp/opencode-memnet-server-api-key";
 
 /**
  * Parse a duration string like "24h", "7d", "1w" into hours.
@@ -35,6 +36,8 @@ export interface ServerConfig {
   port: number;
   host: string;
   serverApiKey: string;
+  serverApiKeyGenerated: boolean;
+  serverApiKeyFile: string | null;
   newUserApiKey: string;
   newUserApiKeyGenerated: boolean;
   newUserApiKeyFile: string | null;
@@ -114,31 +117,70 @@ function getEmbeddingDimensions(model: string): number {
 
 let _config: ServerConfig | null = null;
 
-function resolveNewUserApiKey(envValue: string | undefined): {
+function shouldResetGeneratedKeys(env: NodeJS.ProcessEnv): boolean {
+  return env.OPENCODEMEMNET_RESET_KEYS === "TRUE";
+}
+
+function resolveFileBackedApiKey(options: {
+  envName: "SERVER_API_KEY" | "NEWUSER_API_KEY";
+  envValue: string | undefined;
+  file: string;
+  reset: boolean;
+  purpose: string;
+}): {
   key: string;
   generated: boolean;
   file: string | null;
 } {
-  const configured = envValue?.trim();
+  const configured = options.envValue?.trim();
   if (configured) return { key: configured, generated: false, file: null };
 
+  if (!options.reset && existsSync(options.file)) {
+    const stored = readFileSync(options.file, "utf-8").trim();
+    if (stored) {
+      chmodSync(options.file, 0o600);
+      console.warn(
+        `[opencode-memnet] ${options.envName} was not configured; reusing persistent ${options.purpose} key from ${options.file}. Set OPENCODEMEMNET_RESET_KEYS=TRUE to rotate generated keys.`
+      );
+      return { key: stored, generated: true, file: options.file };
+    }
+  }
+
   const key = randomBytes(32).toString("base64url");
-  writeFileSync(NEWUSER_API_KEY_FILE, `${key}\n`, { mode: 0o600 });
-  chmodSync(NEWUSER_API_KEY_FILE, 0o600);
+  writeFileSync(options.file, `${key}\n`, { mode: 0o600 });
+  chmodSync(options.file, 0o600);
   console.warn(
-    `[opencode-memnet] NEWUSER_API_KEY was not configured; generated a temporary bootstrap key at ${NEWUSER_API_KEY_FILE}. Read this file inside the container. It is invalid after the next server restart.`
+    `[opencode-memnet] ${options.envName} was not configured; ${
+      options.reset ? "reset and generated" : "generated"
+    } a persistent ${options.purpose} key at ${options.file}. Read this file inside the container. Set OPENCODEMEMNET_RESET_KEYS=TRUE to rotate generated keys.`
   );
-  return { key, generated: true, file: NEWUSER_API_KEY_FILE };
+  return { key, generated: true, file: options.file };
 }
 
 export function initServerConfig(): ServerConfig {
   if (_config) return _config;
   const env = process.env;
-  const newUserApiKey = resolveNewUserApiKey(env.NEWUSER_API_KEY);
+  const resetGeneratedKeys = shouldResetGeneratedKeys(env);
+  const serverApiKey = resolveFileBackedApiKey({
+    envName: "SERVER_API_KEY",
+    envValue: env.SERVER_API_KEY,
+    file: SERVER_API_KEY_FILE,
+    reset: resetGeneratedKeys,
+    purpose: "admin",
+  });
+  const newUserApiKey = resolveFileBackedApiKey({
+    envName: "NEWUSER_API_KEY",
+    envValue: env.NEWUSER_API_KEY,
+    file: NEWUSER_API_KEY_FILE,
+    reset: resetGeneratedKeys,
+    purpose: "bootstrap enrollment",
+  });
   _config = {
     port: parseInt(env.SERVER_PORT || "4747"),
     host: env.SERVER_HOST || "0.0.0.0",
-    serverApiKey: env.SERVER_API_KEY || "",
+    serverApiKey: serverApiKey.key,
+    serverApiKeyGenerated: serverApiKey.generated,
+    serverApiKeyFile: serverApiKey.file,
     newUserApiKey: newUserApiKey.key,
     newUserApiKeyGenerated: newUserApiKey.generated,
     newUserApiKeyFile: newUserApiKey.file,

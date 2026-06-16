@@ -35,16 +35,27 @@ cd opencode-memnet
 cp .env.example .env
 ```
 
+Generate local secret values if you want to provide fixed keys yourself:
+
+```bash
+SERVER_API_KEY_VALUE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
+POSTGRES_PASSWORD_VALUE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
+```
+
 Edit `.env` and set the required values:
 
 ```env
-SERVER_API_KEY=change-me-admin-key
-POSTGRES_PASSWORD=change-me-db-password
+SERVER_API_KEY=<SERVER_API_KEY_VALUE>
+POSTGRES_PASSWORD=<POSTGRES_PASSWORD_VALUE>
 
 EMBEDDING_API_URL=https://api.openai.com/v1
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_API_KEY=sk-...
 ```
+
+If you leave `SERVER_API_KEY` or `NEWUSER_API_KEY` empty, the server generates persistent keys and
+writes them inside the container. Use `OPENCODEMEMNET_RESET_KEYS=TRUE` for one start to rotate those
+generated keys.
 
 Start the server:
 
@@ -224,15 +235,26 @@ cd opencode-memnet
 cp .env.example .env
 ```
 
+Generate local secret values if you want to provide fixed keys yourself:
+
+```bash
+SERVER_API_KEY_VALUE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
+POSTGRES_PASSWORD_VALUE="$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=')"
+```
+
 Edit `.env`. At minimum, set:
 
 ```env
-SERVER_API_KEY=change-me-admin-key
-POSTGRES_PASSWORD=change-me-db-password
+SERVER_API_KEY=<SERVER_API_KEY_VALUE>
+POSTGRES_PASSWORD=<POSTGRES_PASSWORD_VALUE>
 EMBEDDING_API_URL=https://api.openai.com/v1
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_API_KEY=sk-...
 ```
+
+Paste the generated values into `.env`; do not keep the shell variables or print the values in logs.
+If you leave `SERVER_API_KEY` empty, the server writes a generated admin key to
+`/tmp/opencode-memnet-server-api-key`.
 
 ### 2. Optional Profile Keys
 
@@ -257,7 +279,13 @@ Then set:
 
 ```env
 PROFILE_KEYS_FILE=/run/secrets/opencode-memnet-profile-keys.jsonc
-OPENCODE_MEMNET_PROFILE_KEY_DEFAULT=change-me-profile-key
+OPENCODE_MEMNET_PROFILE_KEY_DEFAULT=<generated-profile-key>
+```
+
+Generate static profile keys the same way as `SERVER_API_KEY`:
+
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
 ```
 
 Compose mounts `./secrets` at `/run/secrets` read-only. `secrets/.gitignore` keeps secret files out
@@ -275,7 +303,21 @@ Enrollment is allowed only when the requested profile has no static key in `PROF
 no generated key in Postgres. After enrollment, configure clients with the generated profile key
 instead of `NEWUSER_API_KEY`.
 
-If `NEWUSER_API_KEY` is empty, the server generates a temporary startup key and writes it to:
+To use a fixed bootstrap key, generate one:
+
+```bash
+openssl rand -base64 32 | tr '+/' '-_' | tr -d '='
+```
+
+Then paste it into `.env`:
+
+```env
+NEWUSER_API_KEY=<generated-newuser-bootstrap-key>
+```
+
+To use a generated bootstrap key instead, leave `NEWUSER_API_KEY` empty in `.env`.
+
+If `NEWUSER_API_KEY` is empty, the server generates or reuses a persistent bootstrap key at:
 
 ```text
 /tmp/opencode-memnet-newuser-api-key
@@ -287,8 +329,9 @@ For Docker Compose, read it inside the server container:
 docker compose exec server cat /tmp/opencode-memnet-newuser-api-key
 ```
 
-The generated bootstrap key is invalid after the next server restart. The key value is never printed
-in logs.
+The generated bootstrap key is reused on later server starts. The key value is never printed in logs.
+Set `OPENCODEMEMNET_RESET_KEYS=TRUE` for one server start to rotate both generated `SERVER_API_KEY`
+and `NEWUSER_API_KEY` file-backed keys, then set it back to `false` or remove it.
 
 ### 3. Start With The Bundled Database
 
@@ -369,8 +412,9 @@ Secret values for `POSTGRES_URL`, `EMBEDDING_API_KEY`, and `MEMORY_API_KEY` supp
 
 | Variable                             | Required | Default                                  | Description                                                                              |
 | ------------------------------------ | -------- | ---------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `SERVER_API_KEY`                     | yes      | empty                                    | Admin bearer token for all non-health API routes and all profiles.                       |
-| `NEWUSER_API_KEY`                    | no       | generated at startup                     | Bootstrap key accepted only by `POST /api/client/connect` for first profile enrollment.  |
+| `SERVER_API_KEY`                     | no       | generated file-backed key                | Admin bearer token for all non-health API routes and all profiles.                       |
+| `NEWUSER_API_KEY`                    | no       | generated file-backed key                | Bootstrap key accepted only by `POST /api/client/connect` for first profile enrollment.  |
+| `OPENCODEMEMNET_RESET_KEYS`          | no       | `false`                                  | Set to `TRUE` for one start to rotate generated file-backed server and bootstrap keys.   |
 | `PROFILE_KEYS_FILE`                  | no       | empty                                    | JSONC file containing profile-scoped API keys.                                           |
 | `WEB_SERVER_ALLOWED_ORIGIN`          | no       | `*`                                      | CORS `Access-Control-Allow-Origin` value.                                                |
 | `SERVER_HOST`                        | no       | `0.0.0.0`                                | Interface the server binds to inside Docker or direct Bun runtime.                       |
@@ -737,7 +781,14 @@ PROFILE_KEYS_FILE=/run/secrets/opencode-memnet-profile-keys.jsonc
 
 ### Bootstrap Enrollment Key In Docker
 
-When `NEWUSER_API_KEY` is blank, the server writes a temporary key inside the container:
+When `SERVER_API_KEY` is blank, the server writes a persistent generated admin key inside the
+container:
+
+```bash
+docker compose exec server cat /tmp/opencode-memnet-server-api-key
+```
+
+When `NEWUSER_API_KEY` is blank, the server writes a persistent bootstrap key inside the container:
 
 ```bash
 docker compose exec server cat /tmp/opencode-memnet-newuser-api-key
@@ -745,6 +796,9 @@ docker compose exec server cat /tmp/opencode-memnet-newuser-api-key
 
 Use that value as the plugin `apiKey` with a `profileId` for the first connection. The plugin
 rewrites the config to the generated profile key after enrollment.
+
+To rotate generated file-backed keys, set `OPENCODEMEMNET_RESET_KEYS=TRUE` for one server start,
+read the new files, then unset it or set it back to `false`.
 
 ### Auto-Capture Does Not Store Memories
 

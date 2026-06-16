@@ -25,12 +25,19 @@ describe("auth and docker documentation", () => {
     const externalCompose = read("docker-compose.external-db.yml");
 
     expect(readme).toContain("Bootstrap Profile Enrollment");
+    expect(readme).toContain("docker compose exec server cat /tmp/opencode-memnet-server-api-key");
     expect(readme).toContain("docker compose exec server cat /tmp/opencode-memnet-newuser-api-key");
     expect(readme).toContain("generated profile key");
     expect(env).toContain("NEWUSER_API_KEY=");
+    expect(env).toContain("OPENCODEMEMNET_RESET_KEYS=false");
+    expect(env).toContain("/tmp/opencode-memnet-server-api-key");
     expect(env).toContain("/tmp/opencode-memnet-newuser-api-key");
     expect(compose).toContain("NEWUSER_API_KEY: ${NEWUSER_API_KEY:-}");
+    expect(compose).toContain("OPENCODEMEMNET_RESET_KEYS: ${OPENCODEMEMNET_RESET_KEYS:-false}");
     expect(externalCompose).toContain("NEWUSER_API_KEY: ${NEWUSER_API_KEY:-}");
+    expect(externalCompose).toContain(
+      "OPENCODEMEMNET_RESET_KEYS: ${OPENCODEMEMNET_RESET_KEYS:-false}"
+    );
   });
 
   it("uses a compose-safe localhost bind address", () => {

@@ -8,6 +8,15 @@ function request(path: string, method: string, key: string): Request {
   });
 }
 
+function parseJsonLine(stdout: string): unknown {
+  const line = stdout
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .findLast((entry) => entry.startsWith("{") && entry.endsWith("}"));
+  if (!line) throw new Error(`No JSON object line found in stdout: ${stdout}`);
+  return JSON.parse(line);
+}
+
 describe("NEWUSER_API_KEY auth scope", () => {
   const auth = new AuthMiddleware("admin-secret", {
     configuredProfiles: [{ profileId: "phrkr", apiKey: "profile-secret" }],
@@ -71,7 +80,7 @@ console.log(JSON.stringify({ result, touched: globalThis.touched }));
     const stderr = Buffer.from(result.stderr).toString("utf8").trim();
     if (result.exitCode !== 0) throw new Error(stderr || stdout);
 
-    expect(JSON.parse(stdout)).toEqual({
+    expect(parseJsonLine(stdout)).toEqual({
       result: { principal: { kind: "profile", profileId: "phrkr" } },
       touched: "phrkr",
     });

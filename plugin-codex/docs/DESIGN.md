@@ -20,7 +20,7 @@ This approach keeps the server unchanged, follows Codex's documented extension m
 
 ### MCP-Only Package
 
-An MCP-only package would be simpler and enough for manual memory add/search/list/profile workflows. It would not provide automatic connection or capture behavior, so the nickname system and session lifecycle would feel weaker than the OpenCode plugin.
+An MCP-only package would be simpler and enough for manual memory add/search/list/profile workflows. It would not provide automatic connection or capture behavior, so session lifecycle continuity would feel weaker than the OpenCode plugin.
 
 ### Hook-Only Package
 
@@ -28,7 +28,7 @@ A hook-only package could register clients and capture prompts, but it would not
 
 ### Server-Side Codex Endpoint Changes
 
-Server-side Codex-specific endpoints could simplify the client, but the existing server already exposes the needed memory, context, auto-capture, profile, client, and nickname APIs. Adding server changes first would increase risk without proving a gap.
+Server-side Codex-specific endpoints could simplify the client, but the existing server already exposes the needed memory, context, auto-capture, profile, client, and stats APIs. Adding server changes first would increase risk without proving a gap.
 
 ## Architecture
 
@@ -53,7 +53,7 @@ The module graph should keep side effects near entrypoints. Config loading, clie
 
 ### Startup and Client Registration
 
-Codex starts the bundled MCP server. The MCP entrypoint loads config, creates or reads the Codex client ID, derives metadata, and calls `/api/client/connect`. If `nickname` is configured, it compares the configured nickname with the server response and calls `/api/client/nickname` when needed.
+Codex starts the bundled MCP server. The MCP entrypoint loads config, creates or reads the Codex client ID, derives metadata, and calls `/api/client/connect`. Optional configured `nickname` is sent as connection metadata only; the current strict server does not expose nickname update endpoints.
 
 The same registration logic runs from the `SessionStart` hook. Duplicate registration is acceptable because the server upserts the client and updates `lastSeen`.
 
@@ -63,7 +63,8 @@ Codex calls `memory_get_context` when it needs project memory. The tool derives 
 
 - `sessionID` when available
 - `projectTag`
-- `userId`
+- `profileId`
+- `repoId`
 - `maxMemories`
 - `excludeCurrentSession`
 - `maxAgeDays`
@@ -93,7 +94,9 @@ If a payload includes enough conversation data, `memory_capture` or the hook run
 - `hookEvent`
 - `sessionID`
 - `client: "codex"`
-- project/user metadata
+- project metadata
+- `profileId`
+- `repoId`
 
 This preserves useful continuity without inventing messages Codex did not provide.
 
@@ -111,6 +114,8 @@ Tool names use a `memory_` prefix to keep Codex's tool list readable:
 - `memory_stats`
 - `memory_set_nickname`
 - `memory_capture`
+
+`memory_set_nickname` is retained only to return a clear unsupported response without an HTTP request.
 
 Each tool returns JSON text with:
 
@@ -171,4 +176,4 @@ The first version should install locally through a Codex local marketplace or di
 
 The first version assumes the current server endpoints are sufficient. If implementation discovers that `/api/auto-capture` cannot support Codex hook payloads, the client must use `/api/memories` fallback rather than changing the server in the same pass.
 
-Server changes should be considered only after the Codex client has working MCP tools, nickname registration, and manual memory operations.
+Server changes should be considered only after the Codex client has working MCP tools and manual memory operations.

@@ -1,0 +1,31 @@
+{
+  "name": "opencode-memnet-codex-plugin",
+  "version": "0.1.0",
+  "description": "Codex CLI plugin bundle for opencode-memnet",
+  "type": "module",
+  "bin": {
+    "opencode-memnet-codex-mcp": "./dist/mcp/server.js",
+    "opencode-memnet-codex-hook": "./dist/hooks/runner.js"
+  },
+  "scripts": {
+    "build": "bun run build.ts",
+    "typecheck": "bunx tsc --noEmit",
+    "test": "bun test",
+    "verify": "bun run typecheck && bun test && bun run build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.26.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.8",
+    "typescript": "^5.7.3"
+  },
+  "files": [
+    "dist",
+    ".codex-plugin",
+    "hooks",
+    "skills",
+    "package.json"
+  ],
+  "license": "MIT"
+}

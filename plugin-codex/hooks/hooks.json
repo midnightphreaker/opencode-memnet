@@ -1,0 +1,54 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "opencode-memnet-codex-hook",
+            "timeout": 30,
+            "statusMessage": "Connecting opencode-memnet"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "opencode-memnet-codex-hook",
+            "timeout": 30,
+            "statusMessage": "Checking opencode-memnet memory"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "opencode-memnet-codex-hook",
+            "timeout": 30,
+            "statusMessage": "Saving opencode-memnet memory"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "opencode-memnet-codex-hook",
+            "timeout": 30,
+            "statusMessage": "Restoring opencode-memnet context"
+          }
+        ]
+      }
+    ]
+  }
+}

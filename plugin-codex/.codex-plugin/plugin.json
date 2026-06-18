@@ -1,0 +1,12 @@
+{
+  "name": "opencode-memnet-codex",
+  "version": "0.1.0",
+  "description": "Codex CLI integration for opencode-memnet persistent memory",
+  "skills": "./skills/",
+  "mcp_servers": {
+    "opencode-memnet": {
+      "command": "opencode-memnet-codex-mcp"
+    }
+  },
+  "hooks": "./hooks/hooks.json"
+}

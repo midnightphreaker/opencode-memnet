@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`plugin-codex` provides the Codex CLI equivalent of the existing OpenCode plugin. It connects Codex to the existing `opencode-memnet` server so Codex can use the same memory store, client identity registry, nickname system, project tags, user profile retrieval, and manual memory operations already used by the OpenCode client.
+`plugin-codex` provides the Codex CLI equivalent of the existing OpenCode plugin. It connects Codex to the existing `opencode-memnet` server so Codex can use the same memory store, client identity registry, strict profile/repository scope, project tags, user profile retrieval, and manual memory operations already used by the OpenCode client.
 
 The Codex integration must preserve the server as the source of truth. The first implementation must not require server changes.
 
@@ -10,7 +10,7 @@ The Codex integration must preserve the server as the source of truth. The first
 
 The current OpenCode plugin performs three jobs:
 
-- registers a persistent client ID and optional nickname with the server
+- registers a persistent client ID with the server
 - exposes memory commands for add, search, list, forget, profile, and stats
 - retrieves memory context and auto-captures session summaries through OpenCode hooks
 
@@ -20,9 +20,9 @@ Codex exposes different integration points. It supports plugins that can bundle 
 
 - Provide a Codex plugin package under `plugin-codex/`.
 - Communicate with the existing `opencode-memnet` server over HTTP.
-- Reuse the existing server endpoints for memory CRUD, search, context retrieval, auto-capture, profile lookup, client registration, nickname updates, and client stats.
+- Reuse the existing server endpoints for memory CRUD, search, context retrieval, auto-capture, profile lookup, client registration, and client stats.
 - Persist a Codex-specific client ID and register it with `/api/client/connect`.
-- Support nickname sync through config and `/api/client/nickname`.
+- Preserve optional nickname metadata for `/api/client/connect`, but do not depend on nickname update endpoints because the current strict server does not expose them.
 - Expose Codex-visible MCP tools for common memory workflows.
 - Bundle Codex hooks for best-effort lifecycle registration and capture.
 - Bundle a Codex skill that tells Codex when and how to use the memory MCP tools.
@@ -44,12 +44,13 @@ The Codex plugin must load configuration from Codex-oriented locations first:
 
 - project config: `.codex/opencode-memnet.jsonc`
 - user config: `~/.config/codex/opencode-memnet.jsonc`
-- environment fallback: `OPENCODE_MEMNET_SERVER_URL`, `OPENCODE_MEMNET_API_KEY`, and `OPENCODE_MEMNET_NICKNAME`
+- environment fallback: `OPENCODE_MEMNET_SERVER_URL`, `OPENCODE_MEMNET_API_KEY`, `OPENCODE_MEMNET_PROFILE_ID`, and `OPENCODE_MEMNET_NICKNAME`
 
 The config must support:
 
 - `serverUrl`: base URL for the existing memory server
 - `apiKey`: bearer token for the existing server
+- `profileId`: optional profile scope when using an admin key
 - `nickname`: optional Codex client nickname
 - `timeoutMs`: HTTP timeout, default `30000`
 - `memory.defaultScope`: default `project`
@@ -68,7 +69,6 @@ The plugin must persist a stable Codex client ID at:
 On MCP server startup and on `SessionStart`, the client must call:
 
 - `POST /api/client/connect`
-- `PUT /api/client/nickname` when configured nickname differs from the server nickname
 
 Metadata sent to the server must include:
 
@@ -80,15 +80,22 @@ Metadata sent to the server must include:
 - `projectName`
 - `gitRepoUrl` when available
 
+Memory and context operations must send:
+
+- `profileId` from config or the authenticated server principal
+- `repoId` derived from normalized repository identity
+
+They must not use `userId`, git user email, or local filesystem path as the scope identity.
+
 ### Project Tags
 
-The Codex plugin must generate the same kind of project and user tags as the OpenCode plugin by reusing the shared tag algorithm when possible. The tag prefix must remain `opencode` for compatibility with existing stored memories unless a future server setting exposes a different prefix.
+The Codex plugin must generate OpenCode-compatible project tags when possible. The tag prefix must remain `opencode` for compatibility with existing stored memories unless a future server setting exposes a different prefix. `repoId` is separate from the compatibility project tag and must come from normalized repository identity.
 
 ### MCP Tools
 
 The MCP server must expose these tools:
 
-- `memory_connect`: register the Codex client and return nickname/stats
+- `memory_connect`: register the Codex client and return server stats
 - `memory_get_context`: fetch formatted context from `/api/context/inject`
 - `memory_add`: add a memory to `/api/memories`
 - `memory_search`: search memories through `/api/search`
@@ -96,7 +103,7 @@ The MCP server must expose these tools:
 - `memory_forget`: delete a memory through `/api/memories/:id`
 - `memory_profile`: read the active user profile through `/api/user-profile`
 - `memory_stats`: read client stats through `/api/client/stats`
-- `memory_set_nickname`: update the Codex client nickname through `/api/client/nickname`
+- `memory_set_nickname`: return a clear unsupported response because the current server does not expose nickname updates
 - `memory_capture`: submit a best-effort capture payload through `/api/auto-capture` when enough conversation data exists, otherwise save a manual memory with `source: "codex-hook"`
 
 ### MCP Instructions
@@ -113,7 +120,7 @@ The MCP server must return instructions that tell Codex:
 
 The plugin must bundle command hooks for:
 
-- `SessionStart`: connect client and sync nickname
+- `SessionStart`: connect client
 - `UserPromptSubmit`: best-effort prompt capture or hook-event audit, depending on available payload
 - `Stop`: best-effort session capture
 - `PostCompact`: attempt to preserve continuity by asking the server for context associated with the current session or project
@@ -147,7 +154,7 @@ The plugin must use the existing server API contract used by `plugin/src/service
 - Missing config must make the MCP server start with tools that return clear configuration errors.
 - HTTP failures must return structured MCP tool errors with status, endpoint, and sanitized message.
 - Client registration failure must not prevent manual `memory_search` or `memory_add` from working when server auth is valid.
-- Nickname sync failure must be reported in `memory_connect` and plugin logs.
+- Unsupported nickname update attempts must return a clear structured error without making an HTTP request.
 - Hook failures must not write sensitive payloads or fail closed unless an explicit safety violation is detected.
 
 ## Security
@@ -173,7 +180,7 @@ The plugin must use the existing server API contract used by `plugin/src/service
 - `plugin-codex` can be built without modifying server code.
 - Codex can start the MCP server over stdio.
 - `memory_connect` registers a Codex client with the existing server.
-- Configured nickname appears through `/api/client/stats`.
+- `memory_set_nickname` returns a clear unsupported response without calling the server.
 - `memory_add`, `memory_search`, `memory_list`, `memory_forget`, `memory_profile`, and `memory_stats` work against the existing server.
 - `memory_get_context` returns the same formatted memory/profile context shape as the OpenCode plugin receives.
 - Hooks are packaged and can run without crashing when Codex sends partial or unexpected payloads.

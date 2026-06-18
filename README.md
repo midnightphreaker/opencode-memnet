@@ -7,12 +7,16 @@ Persistent memory for OpenCode-style coding agents.
 - a standalone server that stores memories, prompts, profiles, repository identity, tags, and
   embeddings in PostgreSQL with pgvector
 - a local OpenCode plugin that talks to that server over HTTP
+- an optional Codex CLI plugin bundle that exposes the same memory server through MCP tools and
+  Codex command hooks
 
 The supported install shape is:
 
 - server: Docker Compose from this repository
 - client plugin: clone this repository, build `plugin/dist/opencode-memnet.js` with Bun, and load
   that local file in OpenCode
+- Codex plugin: build `plugin-codex/` with Bun and use its local MCP server, hooks, and bundled
+  memory skill from the generated package
 
 There is no required npm package install flow for normal use.
 
@@ -115,6 +119,45 @@ JSON
 
 Restart OpenCode after building the plugin or changing the plugin config.
 
+## Codex Plugin Quickstart
+
+The Codex plugin is optional. It uses the same server, `profileId`, and repository-scoped memory
+model as the OpenCode plugin.
+
+Build and verify it from the repository root:
+
+```bash
+bun install
+cd plugin-codex && bun install && cd ..
+bun run verify:codex-plugin
+```
+
+Create Codex config:
+
+```bash
+mkdir -p ~/.config/codex
+cat > ~/.config/codex/opencode-memnet.jsonc <<'JSON'
+{
+  "serverUrl": "http://localhost:4747",
+  "apiKey": "change-me-admin-or-profile-key",
+  "profileId": "default"
+}
+JSON
+```
+
+For direct MCP setup, point Codex at the built MCP command:
+
+```toml
+[mcp_servers.opencode-memnet]
+command = "opencode-memnet-codex-mcp"
+startup_timeout_sec = 10
+tool_timeout_sec = 60
+```
+
+The package also includes `opencode-memnet-codex-hook`, `.codex-plugin/plugin.json`,
+`hooks/hooks.json`, and the `opencode-memnet-memory` Codex skill. See
+`plugin-codex/README.md` for the tool list and package-specific details.
+
 ## Detailed Workflow
 
 ### Runtime Pieces
@@ -124,6 +167,7 @@ Restart OpenCode after building the plugin or changing the plugin config.
 | Server             | `src/`     | API, WebUI, config validation, migrations, storage, background jobs  |
 | WebUI              | `src/web/` | Browser UI for memories, tags, profiles, stats, and maintenance jobs |
 | Plugin             | `plugin/`  | OpenCode hooks, memory tool, remote HTTP client                      |
+| Codex plugin       | `plugin-codex/` | Codex MCP server, command hooks, bundled memory skill          |
 | Shared client code | `shared/`  | Plugin-safe config, JSONC parsing, tags, privacy, logging            |
 | Database           | PostgreSQL | Durable records, profiles, repository identity, pgvector indexes     |
 

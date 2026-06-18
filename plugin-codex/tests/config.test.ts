@@ -2,9 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadConfigFromPaths, mergeConfig, parseJsonc, type CodexMemnetConfigInput } from "../src/config";
+import {
+  getUserConfigPath,
+  loadConfigFromPaths,
+  mergeConfig,
+  parseJsonc,
+  type CodexMemnetConfigInput,
+} from "../src/config";
 
 describe("mergeConfig", () => {
+  test("uses Codex home for the default user config path", () => {
+    expect(getUserConfigPath("/home/example")).toBe("/home/example/.codex/opencode-memnet.jsonc");
+  });
+
   test("project config overrides user config and env fills missing values", () => {
     const user: CodexMemnetConfigInput = {
       serverUrl: "http://user.example",
@@ -46,7 +56,7 @@ describe("mergeConfig", () => {
         OPENCODE_MEMNET_SERVER_URL: "http://env.example",
         OPENCODE_MEMNET_API_KEY: "env-key",
         OPENCODE_MEMNET_NICKNAME: "Env Name",
-      },
+      }
     );
 
     expect(result.serverUrl).toBe("http://env.example");
@@ -80,14 +90,14 @@ describe("mergeConfig", () => {
         `{
           "serverUrl": "http://user.example",
           "apiKey": "user-key",
-        }`,
+        }`
       );
       writeFileSync(
         projectPath,
         `{
           "serverUrl": "http://project.example",
           "capture": { "enabled": false },
-        }`,
+        }`
       );
 
       const result = loadConfigFromPaths({ userPath, projectPath, env: {} });
@@ -112,7 +122,7 @@ describe("mergeConfig", () => {
         projectPath,
         `{
           "profileId": "profile-project-1",
-        }`,
+        }`
       );
 
       const result = loadConfigFromPaths({ userPath, projectPath, env: {} });

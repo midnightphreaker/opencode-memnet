@@ -135,8 +135,8 @@ bun run verify:codex-plugin
 Create Codex config:
 
 ```bash
-mkdir -p ~/.config/codex
-cat > ~/.config/codex/opencode-memnet.jsonc <<'JSON'
+mkdir -p ~/.codex
+cat > ~/.codex/opencode-memnet.jsonc <<'JSON'
 {
   "serverUrl": "http://localhost:4747",
   "apiKey": "change-me-admin-or-profile-key",
@@ -162,14 +162,14 @@ The package also includes `opencode-memnet-codex-hook`, `.codex-plugin/plugin.js
 
 ### Runtime Pieces
 
-| Piece              | Location   | Responsibility                                                       |
-| ------------------ | ---------- | -------------------------------------------------------------------- |
-| Server             | `src/`     | API, WebUI, config validation, migrations, storage, background jobs  |
-| WebUI              | `src/web/` | Browser UI for memories, tags, profiles, stats, and maintenance jobs |
-| Plugin             | `plugin/`  | OpenCode hooks, memory tool, remote HTTP client                      |
-| Codex plugin       | `plugin-codex/` | Codex MCP server, command hooks, bundled memory skill          |
-| Shared client code | `shared/`  | Plugin-safe config, JSONC parsing, tags, privacy, logging            |
-| Database           | PostgreSQL | Durable records, profiles, repository identity, pgvector indexes     |
+| Piece              | Location        | Responsibility                                                       |
+| ------------------ | --------------- | -------------------------------------------------------------------- |
+| Server             | `src/`          | API, WebUI, config validation, migrations, storage, background jobs  |
+| WebUI              | `src/web/`      | Browser UI for memories, tags, profiles, stats, and maintenance jobs |
+| Plugin             | `plugin/`       | OpenCode hooks, memory tool, remote HTTP client                      |
+| Codex plugin       | `plugin-codex/` | Codex MCP server, command hooks, bundled memory skill                |
+| Shared client code | `shared/`       | Plugin-safe config, JSONC parsing, tags, privacy, logging            |
+| Database           | PostgreSQL      | Durable records, profiles, repository identity, pgvector indexes     |
 
 ### Authentication
 

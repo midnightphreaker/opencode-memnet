@@ -33,6 +33,7 @@
 ### Task 1: Package Scaffold
 
 **Files:**
+
 - Create: `plugin-codex/package.json`
 - Create: `plugin-codex/tsconfig.json`
 - Create: `plugin-codex/build.ts`
@@ -64,13 +65,7 @@ Create `plugin-codex/package.json`:
     "@types/bun": "^1.3.8",
     "typescript": "^5.7.3"
   },
-  "files": [
-    "dist",
-    ".codex-plugin",
-    "hooks",
-    "skills",
-    "package.json"
-  ],
+  "files": ["dist", ".codex-plugin", "hooks", "skills", "package.json"],
   "license": "MIT"
 }
 ```
@@ -146,6 +141,7 @@ git commit -m "feat(codex): scaffold codex plugin package"
 ### Task 2: Config, JSONC, Privacy, Identity, And Tags
 
 **Files:**
+
 - Create: `plugin-codex/src/jsonc.ts`
 - Create: `plugin-codex/src/config.ts`
 - Create: `plugin-codex/src/privacy.ts`
@@ -258,7 +254,7 @@ export function stripJsonc(input: string): string {
       continue;
     }
 
-    if (char === "\"" || char === "'") {
+    if (char === '"' || char === "'") {
       inString = true;
       stringQuote = char;
       output += char;
@@ -368,7 +364,7 @@ function readConfigFile(path: string): Partial<CodexMemnetConfig> {
 }
 
 export function loadConfig(cwd = process.cwd()): CodexMemnetConfig {
-  const userPath = join(homedir(), ".config", "codex", "opencode-memnet.jsonc");
+  const userPath = join(homedir(), ".codex", "opencode-memnet.jsonc");
   const projectPath = join(cwd, ".codex", "opencode-memnet.jsonc");
   return mergeConfig(readConfigFile(userPath), readConfigFile(projectPath));
 }
@@ -405,7 +401,7 @@ import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { homedir, hostname, platform } from "node:os";
 
-const CLIENT_ID_FILE = join(homedir(), ".config", "codex", "opencode-memnet-client-id");
+const CLIENT_ID_FILE = join(homedir(), ".codex", "opencode-memnet-client-id");
 
 export function getClientId(): string {
   if (existsSync(CLIENT_ID_FILE)) {
@@ -414,7 +410,7 @@ export function getClientId(): string {
   }
 
   const id = randomUUID();
-  mkdirSync(join(homedir(), ".config", "codex"), { recursive: true });
+  mkdirSync(join(homedir(), ".codex"), { recursive: true });
   writeFileSync(CLIENT_ID_FILE, id, "utf8");
   return id;
 }
@@ -445,7 +441,11 @@ export interface TagInfo {
 
 function git(cwd: string, args: string[]): string | undefined {
   try {
-    return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+    return execFileSync("git", args, {
+      cwd,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
   } catch {
     return undefined;
   }
@@ -494,6 +494,7 @@ git commit -m "feat(codex): add config identity privacy and tags"
 ### Task 3: HTTP Client
 
 **Files:**
+
 - Create: `plugin-codex/src/http-client.ts`
 - Test: `plugin-codex/tests/http-client.test.ts`
 
@@ -510,7 +511,16 @@ describe("RemoteMemoryClient", () => {
     const requests: Request[] = [];
     const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
       requests.push(new Request(input, init));
-      return Response.json({ success: true, data: { firstTime: true, nickname: null, welcomeBack: false, daysSinceLastSeen: null, stats: null } });
+      return Response.json({
+        success: true,
+        data: {
+          firstTime: true,
+          nickname: null,
+          welcomeBack: false,
+          daysSinceLastSeen: null,
+          stats: null,
+        },
+      });
     };
 
     const client = new RemoteMemoryClient({
@@ -608,7 +618,10 @@ export class RemoteMemoryClient {
   }
 
   setClientNickname(nickname: string) {
-    return this.request<{ nickname: string }>("PUT", "/api/client/nickname", { clientId: this.clientId, nickname });
+    return this.request<{ nickname: string }>("PUT", "/api/client/nickname", {
+      clientId: this.clientId,
+      nickname,
+    });
   }
 
   getClientStats() {
@@ -661,6 +674,7 @@ git commit -m "feat(codex): add remote memory HTTP client"
 ### Task 4: MCP Tools And Server
 
 **Files:**
+
 - Create: `plugin-codex/src/mcp/tools.ts`
 - Create: `plugin-codex/src/mcp/server.ts`
 - Test: `plugin-codex/tests/mcp-tools.test.ts`
@@ -740,7 +754,9 @@ export function createToolHandlers(ctx: HandlerContext) {
       return connect;
     },
 
-    async memory_get_context(args: { query?: string; sessionID?: string; maxMemories?: number } = {}) {
+    async memory_get_context(
+      args: { query?: string; sessionID?: string; maxMemories?: number } = {}
+    ) {
       const tags = getTags(ctx.cwd);
       return client(ctx).getContext({
         sessionID: args.sessionID,
@@ -753,7 +769,8 @@ export function createToolHandlers(ctx: HandlerContext) {
     },
 
     async memory_add(args: { content?: string; type?: string; tags?: string[] }) {
-      if (!args.content || !args.content.trim()) return { success: false, error: "content required" };
+      if (!args.content || !args.content.trim())
+        return { success: false, error: "content required" };
       if (isFullyPrivate(args.content)) return { success: false, error: "Private content blocked" };
       const tags = getTags(ctx.cwd);
       return client(ctx).addMemory({
@@ -791,12 +808,14 @@ export function createToolHandlers(ctx: HandlerContext) {
     },
 
     async memory_set_nickname(args: { nickname?: string }) {
-      if (!args.nickname || !args.nickname.trim()) return { success: false, error: "nickname required" };
+      if (!args.nickname || !args.nickname.trim())
+        return { success: false, error: "nickname required" };
       return client(ctx).setClientNickname(args.nickname.trim());
     },
 
     async memory_capture(args: { summary?: string; sessionID?: string }) {
-      if (!args.summary || !args.summary.trim()) return { success: false, error: "summary required" };
+      if (!args.summary || !args.summary.trim())
+        return { success: false, error: "summary required" };
       const tags = getTags(ctx.cwd);
       return client(ctx).addMemory({
         content: stripPrivateContent(args.summary),
@@ -840,16 +859,42 @@ function text(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] };
 }
 
-server.tool("memory_connect", { nickname: z.string().optional() }, async (args) => text(await handlers.memory_connect(args)));
-server.tool("memory_get_context", { query: z.string().optional(), sessionID: z.string().optional(), maxMemories: z.number().optional() }, async (args) => text(await handlers.memory_get_context(args)));
-server.tool("memory_add", { content: z.string(), type: z.string().optional(), tags: z.array(z.string()).optional() }, async (args) => text(await handlers.memory_add(args)));
-server.tool("memory_search", { query: z.string(), limit: z.number().optional() }, async (args) => text(await handlers.memory_search(args)));
-server.tool("memory_list", { limit: z.number().optional() }, async (args) => text(await handlers.memory_list(args)));
-server.tool("memory_forget", { memoryId: z.string() }, async (args) => text(await handlers.memory_forget(args)));
+server.tool("memory_connect", { nickname: z.string().optional() }, async (args) =>
+  text(await handlers.memory_connect(args))
+);
+server.tool(
+  "memory_get_context",
+  {
+    query: z.string().optional(),
+    sessionID: z.string().optional(),
+    maxMemories: z.number().optional(),
+  },
+  async (args) => text(await handlers.memory_get_context(args))
+);
+server.tool(
+  "memory_add",
+  { content: z.string(), type: z.string().optional(), tags: z.array(z.string()).optional() },
+  async (args) => text(await handlers.memory_add(args))
+);
+server.tool("memory_search", { query: z.string(), limit: z.number().optional() }, async (args) =>
+  text(await handlers.memory_search(args))
+);
+server.tool("memory_list", { limit: z.number().optional() }, async (args) =>
+  text(await handlers.memory_list(args))
+);
+server.tool("memory_forget", { memoryId: z.string() }, async (args) =>
+  text(await handlers.memory_forget(args))
+);
 server.tool("memory_profile", {}, async () => text(await handlers.memory_profile()));
 server.tool("memory_stats", {}, async () => text(await handlers.memory_stats()));
-server.tool("memory_set_nickname", { nickname: z.string() }, async (args) => text(await handlers.memory_set_nickname(args)));
-server.tool("memory_capture", { summary: z.string(), sessionID: z.string().optional() }, async (args) => text(await handlers.memory_capture(args)));
+server.tool("memory_set_nickname", { nickname: z.string() }, async (args) =>
+  text(await handlers.memory_set_nickname(args))
+);
+server.tool(
+  "memory_capture",
+  { summary: z.string(), sessionID: z.string().optional() },
+  async (args) => text(await handlers.memory_capture(args))
+);
 
 await server.connect(new StdioServerTransport());
 ```
@@ -870,6 +915,7 @@ git commit -m "feat(codex): expose memory MCP tools"
 ### Task 5: Hook Runner
 
 **Files:**
+
 - Create: `plugin-codex/src/hooks/payload.ts`
 - Create: `plugin-codex/src/hooks/runner.ts`
 - Test: `plugin-codex/tests/hooks.test.ts`
@@ -983,7 +1029,9 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error(`[opencode-memnet-codex-hook] ${error instanceof Error ? error.message : String(error)}`);
+  console.error(
+    `[opencode-memnet-codex-hook] ${error instanceof Error ? error.message : String(error)}`
+  );
   process.exit(0);
 });
 ```
@@ -1004,6 +1052,7 @@ git commit -m "feat(codex): add memory hook runner"
 ### Task 6: Codex Plugin Manifest, Hooks Config, And Skill
 
 **Files:**
+
 - Create: `plugin-codex/.codex-plugin/plugin.json`
 - Create: `plugin-codex/hooks/hooks.json`
 - Create: `plugin-codex/skills/opencode-memnet-memory/SKILL.md`
@@ -1123,6 +1172,7 @@ git commit -m "feat(codex): add codex plugin metadata"
 ### Task 7: Build, Verification, And Local Install Docs
 
 **Files:**
+
 - Create: `plugin-codex/README.md`
 - Modify: `plugin-codex/package.json`
 
@@ -1130,22 +1180,23 @@ git commit -m "feat(codex): add codex plugin metadata"
 
 Create `plugin-codex/README.md`:
 
-```md
+````md
 # opencode-memnet Codex Plugin
 
 Codex CLI integration for the existing opencode-memnet server.
 
 ## Configuration
 
-Create `~/.config/codex/opencode-memnet.jsonc`:
+Create `~/.codex/opencode-memnet.jsonc`:
 
 ```jsonc
 {
   "serverUrl": "http://localhost:4747",
   "apiKey": "your-server-api-key",
-  "nickname": "codex"
+  "nickname": "codex",
 }
 ```
+````
 
 Project-level config may be placed at `.codex/opencode-memnet.jsonc`.
 
@@ -1177,7 +1228,8 @@ tool_timeout_sec = 60
 - `memory_stats`
 - `memory_set_nickname`
 - `memory_capture`
-```
+
+````
 
 - [ ] **Step 2: Run verification**
 
@@ -1197,7 +1249,7 @@ dist/hooks/runner.js
 dist/hooks-config/hooks.json
 dist/mcp/server.js
 dist/skills/opencode-memnet-memory/SKILL.md
-```
+````
 
 - [ ] **Step 4: Commit docs and build verification**
 

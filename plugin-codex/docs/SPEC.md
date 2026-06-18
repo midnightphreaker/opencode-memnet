@@ -43,7 +43,7 @@ Codex exposes different integration points. It supports plugins that can bundle 
 The Codex plugin must load configuration from Codex-oriented locations first:
 
 - project config: `.codex/opencode-memnet.jsonc`
-- user config: `~/.config/codex/opencode-memnet.jsonc`
+- user config: `~/.codex/opencode-memnet.jsonc`
 - environment fallback: `OPENCODE_MEMNET_SERVER_URL`, `OPENCODE_MEMNET_API_KEY`, `OPENCODE_MEMNET_PROFILE_ID`, and `OPENCODE_MEMNET_NICKNAME`
 
 The config must support:
@@ -64,7 +64,7 @@ The config must support:
 
 The plugin must persist a stable Codex client ID at:
 
-`~/.config/codex/opencode-memnet-client-id`
+`~/.codex/opencode-memnet-client-id`
 
 On MCP server startup and on `SessionStart`, the client must call:
 

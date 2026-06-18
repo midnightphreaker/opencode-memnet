@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { mergeConfig } from "../src/config";
 import { parseHookPayload } from "../src/hooks/payload";
 import { runHook } from "../src/hooks/runner";
 
@@ -29,7 +30,7 @@ function writeProjectConfig(cwd: string, options: { captureEnabled?: boolean } =
       apiKey: "test-api-key",
       profileId: "profile-1",
       capture: { enabled: options.captureEnabled ?? true },
-    }),
+    })
   );
 }
 
@@ -85,9 +86,11 @@ describe("parseHookPayload", () => {
       event: "SessionStart",
     });
     expect(parseHookPayload(JSON.stringify({ hook_event: "UserPromptSubmit" })).event).toBe(
-      "UserPromptSubmit",
+      "UserPromptSubmit"
     );
-    expect(parseHookPayload(JSON.stringify({ type: "Stop", working_directory: "/work" }))).toMatchObject({
+    expect(
+      parseHookPayload(JSON.stringify({ type: "Stop", working_directory: "/work" }))
+    ).toMatchObject({
       event: "Stop",
       cwd: "/work",
     });
@@ -98,7 +101,7 @@ describe("parseHookPayload", () => {
       JSON.stringify({
         session: { id: "nested-session" },
         user_prompt: "remember this",
-      }),
+      })
     );
 
     expect(payload.sessionID).toBe("nested-session");
@@ -119,6 +122,7 @@ describe("runHook", () => {
           calls += 1;
           return Response.json({ success: true });
         },
+        loadConfig: () => mergeConfig({}, {}, {}),
       });
 
       expect(result).toEqual({ success: true, captured: false, reason: "missing-config" });
@@ -140,7 +144,7 @@ describe("runHook", () => {
           session_id: "session-1",
           prompt: "keep <private>secret-token</private> visible",
         }),
-        { cwd, clientId: "client-1", fetcher },
+        { cwd, clientId: "client-1", fetcher }
       );
 
       expect(result).toEqual({ success: true, captured: true });

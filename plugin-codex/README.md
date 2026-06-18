@@ -33,8 +33,8 @@ write those memories.
 3. Create the Codex plugin config file:
 
    ```bash
-   mkdir -p ~/.config/codex
-   $EDITOR ~/.config/codex/opencode-memnet.jsonc
+   mkdir -p ~/.codex
+   $EDITOR ~/.codex/opencode-memnet.jsonc
    ```
 
    ```jsonc
@@ -58,7 +58,7 @@ write those memories.
 5. Restart Codex, run `/mcp`, and confirm `opencode-memnet` is listed.
 
 If a tool returns `Missing serverUrl`, Codex started the MCP server, but the plugin
-could not find `~/.config/codex/opencode-memnet.jsonc` or the equivalent environment
+could not find `~/.codex/opencode-memnet.jsonc` or the equivalent environment
 variables.
 
 ## What Each Piece Does
@@ -70,14 +70,14 @@ variables.
 | Codex hook runner     | `plugin-codex/dist/hooks/runner.js`                        | Runs during Codex lifecycle events and records safe prompt memory without blocking Codex.    |
 | Codex skill           | `plugin-codex/dist/skills/opencode-memnet-memory/SKILL.md` | Teaches Codex when to use memory tools and what not to store.                                |
 | Codex plugin manifest | `plugin-codex/.codex-plugin/plugin.json`                   | Describes the plugin bundle: skills, MCP server, and hooks.                                  |
-| Plugin config         | `~/.config/codex/opencode-memnet.jsonc`                    | Tells the plugin which server to use and which API key/profile to use.                       |
+| Plugin config         | `~/.codex/opencode-memnet.jsonc`                           | Tells the plugin which server to use and which API key/profile to use.                       |
 | Codex MCP config      | `~/.codex/config.toml`                                     | Tells Codex how to start the plugin MCP server process.                                      |
 
 The two config files are different on purpose:
 
 - `~/.codex/config.toml` is Codex configuration. It starts MCP servers and controls
   Codex behavior.
-- `~/.config/codex/opencode-memnet.jsonc` is opencode-memnet plugin configuration.
+- `~/.codex/opencode-memnet.jsonc` is opencode-memnet plugin configuration.
   It contains the memory server URL, API key, profile, and memory options.
 
 ## Requirements
@@ -157,7 +157,7 @@ For local setup, the most explicit form is the absolute `dist/.../*.js` path.
 The plugin reads config from these places:
 
 1. Project config: `.codex/opencode-memnet.jsonc`
-2. User config: `~/.config/codex/opencode-memnet.jsonc`
+2. User config: `~/.codex/opencode-memnet.jsonc`
 3. Environment variables, only when a value is missing from the files
 
 Project config overrides user config. Nested objects such as `memory`, `context`,
@@ -319,7 +319,7 @@ instead of the project you are working on.
 
 ### MCP Config With Environment Variables
 
-This keeps the API key out of `~/.config/codex/opencode-memnet.jsonc` and asks
+This keeps the API key out of `~/.codex/opencode-memnet.jsonc` and asks
 Codex to forward it from your shell environment:
 
 ```toml
@@ -638,7 +638,7 @@ OpenCode reads:
 Codex reads:
 
 ```text
-~/.config/codex/opencode-memnet.jsonc
+~/.codex/opencode-memnet.jsonc
 <project>/.codex/opencode-memnet.jsonc
 ```
 
@@ -675,7 +675,7 @@ not use Codex's `context` config.
 The Codex plugin persists its client ID here:
 
 ```text
-~/.config/codex/opencode-memnet-client-id
+~/.codex/opencode-memnet-client-id
 ```
 
 It sends this ID as `X-Client-ID` on server requests.
@@ -741,7 +741,7 @@ Codex started the MCP server, but the plugin config is missing.
 
 Fix one of these:
 
-- Create `~/.config/codex/opencode-memnet.jsonc`.
+- Create `~/.codex/opencode-memnet.jsonc`.
 - Create `<project>/.codex/opencode-memnet.jsonc`.
 - Set and forward `OPENCODE_MEMNET_SERVER_URL` with `env_vars`.
 
@@ -827,17 +827,17 @@ bun run verify
 
 ## Source Map
 
-| File                                     | Purpose                                                                                                   |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `src/config.ts`                          | Loads `.codex/opencode-memnet.jsonc`, `~/.config/codex/opencode-memnet.jsonc`, and environment fallbacks. |
-| `src/jsonc.ts`                           | Parses JSONC comments and trailing commas.                                                                |
-| `src/identity.ts`                        | Creates and persists the Codex client ID.                                                                 |
-| `src/tags.ts`                            | Derives project tags, repository IDs, and git metadata.                                                   |
-| `src/http-client.ts`                     | Calls the existing `opencode-memnet` server API.                                                          |
-| `src/mcp/server.ts`                      | Starts the stdio MCP server and registers tools.                                                          |
-| `src/mcp/tools.ts`                       | Implements `memory_*` tools.                                                                              |
-| `src/hooks/payload.ts`                   | Reads defensive hook payload fields.                                                                      |
-| `src/hooks/runner.ts`                    | Runs Codex command hooks.                                                                                 |
-| `hooks/hooks.json`                       | Default packaged hook configuration.                                                                      |
-| `skills/opencode-memnet-memory/SKILL.md` | Bundled Codex memory skill.                                                                               |
-| `.codex-plugin/plugin.json`              | Codex plugin manifest.                                                                                    |
+| File                                     | Purpose                                                                                            |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `src/config.ts`                          | Loads `.codex/opencode-memnet.jsonc`, `~/.codex/opencode-memnet.jsonc`, and environment fallbacks. |
+| `src/jsonc.ts`                           | Parses JSONC comments and trailing commas.                                                         |
+| `src/identity.ts`                        | Creates and persists the Codex client ID.                                                          |
+| `src/tags.ts`                            | Derives project tags, repository IDs, and git metadata.                                            |
+| `src/http-client.ts`                     | Calls the existing `opencode-memnet` server API.                                                   |
+| `src/mcp/server.ts`                      | Starts the stdio MCP server and registers tools.                                                   |
+| `src/mcp/tools.ts`                       | Implements `memory_*` tools.                                                                       |
+| `src/hooks/payload.ts`                   | Reads defensive hook payload fields.                                                               |
+| `src/hooks/runner.ts`                    | Runs Codex command hooks.                                                                          |
+| `hooks/hooks.json`                       | Default packaged hook configuration.                                                               |
+| `skills/opencode-memnet-memory/SKILL.md` | Bundled Codex memory skill.                                                                        |
+| `.codex-plugin/plugin.json`              | Codex plugin manifest.                                                                             |

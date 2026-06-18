@@ -81,7 +81,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export function mergeConfig(
   user: CodexMemnetConfigInput,
   project: CodexMemnetConfigInput,
-  env: ConfigEnv = process.env,
+  env: ConfigEnv = process.env
 ): CodexMemnetConfig {
   const merged = deepMerge(deepMerge(DEFAULT_CONFIG, user), project);
 
@@ -102,9 +102,13 @@ export function mergeConfig(
 }
 
 export function loadConfig(cwd = process.cwd()): CodexMemnetConfig {
-  const userPath = join(homedir(), ".config", "codex", "opencode-memnet.jsonc");
+  const userPath = getUserConfigPath();
   const projectPath = join(cwd, ".codex", "opencode-memnet.jsonc");
   return loadConfigFromPaths({ userPath, projectPath });
+}
+
+export function getUserConfigPath(home = homedir()): string {
+  return join(home, ".codex", "opencode-memnet.jsonc");
 }
 
 export function loadConfigFromPaths({

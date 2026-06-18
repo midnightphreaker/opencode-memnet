@@ -4,10 +4,14 @@ import { homedir, hostname, platform } from "node:os";
 import { dirname, join } from "node:path";
 import { getProjectDetails } from "./tags";
 
-const CLIENT_ID_FILE = join(homedir(), ".config", "codex", "opencode-memnet-client-id");
+const CLIENT_ID_FILE = getClientIdPath();
 
 export function getClientId(): string {
   return getClientIdFromFile(CLIENT_ID_FILE);
+}
+
+export function getClientIdPath(home = homedir()): string {
+  return join(home, ".codex", "opencode-memnet-client-id");
 }
 
 export function getClientIdFromFile(path: string): string {

@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildClientMetadata, getClientIdFromFile } from "../src/identity";
+import { buildClientMetadata, getClientIdFromFile, getClientIdPath } from "../src/identity";
 
 describe("buildClientMetadata", () => {
   test("marks metadata as Codex client metadata", () => {
@@ -38,6 +38,10 @@ describe("buildClientMetadata", () => {
 });
 
 describe("getClientIdFromFile", () => {
+  test("uses Codex home for the default client id path", () => {
+    expect(getClientIdPath("/home/example")).toBe("/home/example/.codex/opencode-memnet-client-id");
+  });
+
   test("persists a generated client id without using the real home directory", () => {
     const dir = mkdtempSync(join(tmpdir(), "codex-client-id-"));
     const path = join(dir, "nested", "client-id");

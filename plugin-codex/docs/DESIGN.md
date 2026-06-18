@@ -131,7 +131,7 @@ Deletion requires a concrete `memoryId`. Adding memory rejects empty content, fu
 Config is intentionally separate from OpenCode's `~/.config/opencode` path so Codex users can manage it independently:
 
 - `.codex/opencode-memnet.jsonc`
-- `~/.config/codex/opencode-memnet.jsonc`
+- `~/.codex/opencode-memnet.jsonc`
 - env fallback
 
 Project config overrides user config. Environment variables fill missing values but do not override explicit project config.

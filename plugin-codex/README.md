@@ -6,7 +6,7 @@ It does not create a new memory database. It gives Codex three ways to use the s
 memory server that the OpenCode plugin already uses:
 
 - an MCP server that exposes memory tools to Codex
-- Codex lifecycle hooks that connect and capture safe prompts
+- Codex lifecycle hooks that inject memory context and auto-capture session summaries
 - a Codex skill that tells Codex when to call the memory tools
 
 In plain English: the server stores the memories, and this plugin lets Codex read and
@@ -67,7 +67,7 @@ variables.
 | --------------------- | ---------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
 | Memory server         | `opencode-memnet` server from the repo root                | Stores memories, profiles, repository identity, tags, prompts, and embeddings in PostgreSQL. |
 | Codex MCP server      | `plugin-codex/dist/mcp/server.js`                          | Runs as a local stdio MCP process and exposes `memory_*` tools to Codex.                     |
-| Codex hook runner     | `plugin-codex/dist/hooks/runner.js`                        | Runs during Codex lifecycle events and records safe prompt memory without blocking Codex.    |
+| Codex hook runner     | `plugin-codex/dist/hooks/runner.js`                        | Runs during Codex lifecycle events to inject context and auto-capture summaries.             |
 | Codex skill           | `plugin-codex/dist/skills/opencode-memnet-memory/SKILL.md` | Teaches Codex when to use memory tools and what not to store.                                |
 | Codex plugin manifest | `plugin-codex/.codex-plugin/plugin.json`                   | Describes the plugin bundle: skills, MCP server, and hooks.                                  |
 | Plugin config         | `~/.codex/opencode-memnet.jsonc`                           | Tells the plugin which server to use and which API key/profile to use.                       |
@@ -376,10 +376,11 @@ approval_mode = "prompt"
 
 Hooks let Codex run the hook runner at useful moments:
 
-- `SessionStart`: connect the Codex client to the server
-- `UserPromptSubmit`: capture a safe prompt when available
-- `Stop`: attempt capture when a turn stops
-- `PostCompact`: attempt continuity after compaction
+- `SessionStart`: connect the Codex client and inject project memory context when available
+- `UserPromptSubmit`: inject project memory context before the prompt is sent
+- `Stop`: use `transcript_path` to auto-capture useful conversation summaries after a turn
+- `PreCompact`: auto-capture useful conversation summaries before compaction
+- `PostCompact`: connect after compaction without emitting fake restoration context
 
 The package includes default hook config at:
 
@@ -436,7 +437,20 @@ Example:
           {
             "type": "command",
             "command": "/home/phrkr/.mcp-servers/opencode-memnet/plugin-codex/dist/hooks/runner.js",
-            "timeout": 30,
+            "timeout": 180,
+            "statusMessage": "Saving opencode-memnet memory"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/phrkr/.mcp-servers/opencode-memnet/plugin-codex/dist/hooks/runner.js",
+            "timeout": 180,
             "statusMessage": "Saving opencode-memnet memory"
           }
         ]
@@ -481,16 +495,22 @@ The hook runner:
 - tolerates missing or unknown hook fields
 - loads the same `opencode-memnet.jsonc` config as the MCP server
 - connects the Codex client with `/api/client/connect`
-- skips capture when config is missing, capture is disabled, no prompt exists, or the prompt is private
-- strips `<private>...</private>` blocks before storing content
-- exits successfully for non-fatal failures so memory capture does not block Codex work
+- calls `/api/context/inject` from `SessionStart` and `UserPromptSubmit`, then returns
+  `hookSpecificOutput.additionalContext` only when Codex can use it
+- does not store raw `UserPromptSubmit` prompts as memories
+- strips `<private>...</private>` blocks while parsing transcripts
+- calls `/api/auto-capture` from `Stop` and `PreCompact` when `transcript_path`
+  contains a latest user prompt plus assistant text or tool activity
+- skips capture when config is missing, capture is disabled, `transcript_path` is
+  unavailable, `stop_hook_active` is true, or the transcript does not contain enough
+  useful conversation data
+- exits successfully for non-fatal failures so memory context and capture do not block Codex work
 
-The hook runner stores prompt capture as memory with:
-
-```text
-type: codex-hook
-source: codex-hook
-```
+`transcript_path` parsing is best effort because Codex documents transcripts as a
+convenience format rather than a stable hook interface. `PostCompact` cannot inject
+new model-visible context after compaction; continuity comes from the next supported
+context hook, usually `SessionStart` with `source: "compact"` or the next
+`UserPromptSubmit`.
 
 ## Install The Skill
 
@@ -613,16 +633,16 @@ restart Codex and check `/mcp`, `/hooks`, and `/skills`.
 The OpenCode plugin and the Codex plugin are two different clients for that same
 server:
 
-| Capability                                           | OpenCode plugin                       | Codex plugin                                                      |
-| ---------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------- |
-| Talks to the same server                             | Yes                                   | Yes                                                               |
-| Uses the same memory database                        | Yes                                   | Yes                                                               |
-| Uses `profileId` and repository identity             | Yes                                   | Yes                                                               |
-| Uses compatible project tags                         | Yes                                   | Yes, keeps the `opencode_project_...` tag shape for compatibility |
-| Can inject context automatically into a chat message | Yes, through OpenCode `chat.message`  | No, Codex does not expose the same chat mutation hook             |
-| Provides interactive memory tools                    | One OpenCode `memory` tool with modes | MCP tools named `memory_*`                                        |
-| Provides lifecycle capture                           | OpenCode session hooks                | Codex command hooks                                               |
-| Provides reusable agent instructions                 | OpenCode plugin behavior              | Bundled Codex skill                                               |
+| Capability                                          | OpenCode plugin                       | Codex plugin                                                      |
+| --------------------------------------------------- | ------------------------------------- | ----------------------------------------------------------------- |
+| Talks to the same server                            | Yes                                   | Yes                                                               |
+| Uses the same memory database                       | Yes                                   | Yes                                                               |
+| Uses `profileId` and repository identity            | Yes                                   | Yes                                                               |
+| Uses compatible project tags                        | Yes                                   | Yes, keeps the `opencode_project_...` tag shape for compatibility |
+| Can inject context automatically into model context | Yes, through OpenCode `chat.message`  | Yes, as Codex developer context from supported command hooks      |
+| Provides interactive memory tools                   | One OpenCode `memory` tool with modes | MCP tools named `memory_*`                                        |
+| Provides lifecycle capture                          | OpenCode session hooks                | Codex command hooks                                               |
+| Provides reusable agent instructions                | OpenCode plugin behavior              | Bundled Codex skill                                               |
 
 ### Can OpenCode And Codex Use The Same JSON Config?
 
@@ -837,6 +857,8 @@ bun run verify
 | `src/mcp/server.ts`                      | Starts the stdio MCP server and registers tools.                                                   |
 | `src/mcp/tools.ts`                       | Implements `memory_*` tools.                                                                       |
 | `src/hooks/payload.ts`                   | Reads defensive hook payload fields.                                                               |
+| `src/hooks/transcript.ts`                | Parses Codex JSONL transcripts for best-effort auto-capture input.                                 |
+| `src/hooks/logger.ts`                    | Writes sanitized hook diagnostics outside stdout.                                                  |
 | `src/hooks/runner.ts`                    | Runs Codex command hooks.                                                                          |
 | `hooks/hooks.json`                       | Default packaged hook configuration.                                                               |
 | `skills/opencode-memnet-memory/SKILL.md` | Bundled Codex memory skill.                                                                        |

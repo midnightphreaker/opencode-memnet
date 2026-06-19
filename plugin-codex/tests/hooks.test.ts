@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { mergeConfig } from "../src/config";
 import { parseHookPayload } from "../src/hooks/payload";
 import { runHook } from "../src/hooks/runner";
+import { parseTranscript } from "../src/hooks/transcript";
 
 interface RecordedRequest {
   url: URL;
@@ -38,11 +39,22 @@ function createRecorder() {
   const requests: RecordedRequest[] = [];
   const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
+    const pathname = new URL(request.url).pathname;
     requests.push({
       url: new URL(request.url),
       method: request.method,
       body: request.body ? await request.json() : undefined,
     });
+    if (pathname === "/api/context/inject") {
+      return Response.json({
+        success: true,
+        data: {
+          context: "Existing project memory",
+          memories: [{ id: "mem-1" }],
+          profileInjected: false,
+        },
+      });
+    }
     return Response.json({ success: true, data: { ok: true } });
   };
   return { requests, fetcher };
@@ -82,8 +94,9 @@ describe("parseHookPayload", () => {
   });
 
   test("extracts common hook event and cwd names", () => {
-    expect(parseHookPayload(JSON.stringify({ event: "SessionStart" }))).toMatchObject({
+    expect(parseHookPayload(JSON.stringify({ hook_event_name: "SessionStart" }))).toMatchObject({
       event: "SessionStart",
+      hookEventName: "SessionStart",
     });
     expect(parseHookPayload(JSON.stringify({ hook_event: "UserPromptSubmit" })).event).toBe(
       "UserPromptSubmit"
@@ -107,6 +120,92 @@ describe("parseHookPayload", () => {
     expect(payload.sessionID).toBe("nested-session");
     expect(payload.prompt).toBe("remember this");
   });
+
+  test("extracts official Codex hook fields", () => {
+    const payload = parseHookPayload(
+      JSON.stringify({
+        hook_event_name: "Stop",
+        session_id: "session-1",
+        transcript_path: "/tmp/transcript.jsonl",
+        turn_id: "turn-1",
+        source: "compact",
+        trigger: "manual",
+        last_assistant_message: "done",
+        stop_hook_active: true,
+      })
+    );
+
+    expect(payload).toMatchObject({
+      event: "Stop",
+      hookEventName: "Stop",
+      sessionID: "session-1",
+      transcriptPath: "/tmp/transcript.jsonl",
+      turnID: "turn-1",
+      source: "compact",
+      trigger: "manual",
+      lastAssistantMessage: "done",
+      stopHookActive: true,
+    });
+  });
+});
+
+describe("parseTranscript", () => {
+  test("extracts user and assistant text and tool call summaries", () => {
+    const transcript = [
+      JSON.stringify({
+        session_id: "session-1",
+        message: {
+          role: "user",
+          id: "prompt-1",
+          parts: [{ type: "text", text: "Build this <private>secret</private>" }],
+        },
+      }),
+      JSON.stringify({
+        message: { role: "assistant", parts: [{ type: "reasoning", encrypted: "abc" }] },
+      }),
+      JSON.stringify({
+        message: { role: "assistant", parts: [{ type: "text", text: "Implemented it" }] },
+      }),
+      JSON.stringify({
+        message: {
+          role: "assistant",
+          parts: [
+            {
+              type: "tool",
+              tool: "Bash",
+              state: {
+                input: { command: "bun test <private>secret-arg</private>" },
+                output: "ignored",
+              },
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        message: { role: "tool", parts: [{ type: "text", text: "tool output ignored" }] },
+      }),
+    ].join("\n");
+
+    const result = parseTranscript(transcript);
+
+    expect(result.sessionID).toBe("session-1");
+    expect(result.latestUserPrompt).toBe("Build this");
+    expect(result.promptMessageId).toBe("prompt-1");
+    expect(result.hasAssistantActivity).toBe(true);
+    expect(result.messages).toEqual([
+      { role: "user", id: "prompt-1", parts: [{ type: "text", text: "Build this" }] },
+      { role: "assistant", id: undefined, parts: [{ type: "text", text: "Implemented it" }] },
+      {
+        role: "assistant",
+        id: undefined,
+        parts: [{ type: "tool", tool: "Bash", state: { input: { command: "bun test " } } }],
+      },
+    ]);
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(JSON.stringify(result)).not.toContain("secret-arg");
+    expect(JSON.stringify(result)).not.toContain("tool output ignored");
+    expect(JSON.stringify(result)).not.toContain("encrypted");
+  });
 });
 
 describe("runHook", () => {
@@ -125,14 +224,14 @@ describe("runHook", () => {
         loadConfig: () => mergeConfig({}, {}, {}),
       });
 
-      expect(result).toEqual({ success: true, captured: false, reason: "missing-config" });
+      expect(result).toEqual({ success: true, action: "skipped", reason: "missing-config" });
       expect(calls).toBe(0);
     } finally {
       cleanup(cwd);
     }
   });
 
-  test("connects and captures prompt with stripped private blocks and strict scope", async () => {
+  test("SessionStart connects and returns additional context", async () => {
     const cwd = tempProject();
     writeProjectConfig(cwd);
     const { requests, fetcher } = createRecorder();
@@ -140,17 +239,25 @@ describe("runHook", () => {
     try {
       const result = await runHook(
         JSON.stringify({
-          hook_event: "UserPromptSubmit",
+          hook_event_name: "SessionStart",
           session_id: "session-1",
-          prompt: "keep <private>secret-token</private> visible",
         }),
         { cwd, clientId: "client-1", fetcher }
       );
 
-      expect(result).toEqual({ success: true, captured: true });
+      expect(result).toEqual({
+        success: true,
+        action: "context",
+        output: {
+          hookSpecificOutput: {
+            hookEventName: "SessionStart",
+            additionalContext: "Existing project memory",
+          },
+        },
+      });
       expect(requests.map((request) => request.url.pathname)).toEqual([
         "/api/client/connect",
-        "/api/memories",
+        "/api/context/inject",
       ]);
 
       expect(requests[0].body).toMatchObject({
@@ -172,67 +279,239 @@ describe("runHook", () => {
       expect("userName" in connectMetadata).toBe(false);
 
       const body = requests[1].body as Record<string, unknown>;
-      const containerTag = body.containerTag;
       const repoId = body.repoId;
       expect(body).toMatchObject({
-        content: "keep  visible",
-        containerTag: expect.any(String),
-        type: "codex-hook",
-        source: "codex-hook",
-        hookEvent: "UserPromptSubmit",
         sessionID: "session-1",
+        projectTag: expect.any(String),
         profileId: "profile-1",
         repoId: expect.any(String),
-        projectTag: expect.any(String),
-        projectName: expect.any(String),
+        maxMemories: 5,
+        excludeCurrentSession: true,
+        maxAgeDays: null,
       });
       expect(repoId).toMatch(/^repo_/);
-      expect(repoId).not.toBe(containerTag);
-      expect(body.gitRepoUrl === undefined || typeof body.gitRepoUrl === "string").toBe(true);
-      expect(JSON.stringify(body)).not.toContain("secret-token");
-      expect("userId" in body).toBe(false);
-      expect("userEmail" in body).toBe(false);
-      expect("userName" in body).toBe(false);
-      expect("projectPath" in body).toBe(false);
     } finally {
       cleanup(cwd);
     }
   });
 
-  test("fully private prompts connect but skip memory capture", async () => {
+  test("UserPromptSubmit injects context and does not write raw prompt memories", async () => {
     const cwd = tempProject();
     writeProjectConfig(cwd);
     const { requests, fetcher } = createRecorder();
 
     try {
-      const result = await runHook(JSON.stringify({ prompt: "<private>secret-token</private>" }), {
-        cwd,
-        clientId: "client-1",
-        fetcher,
-      });
+      const result = await runHook(
+        JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          session_id: "session-1",
+          prompt: "keep <private>secret-token</private> visible",
+        }),
+        { cwd, clientId: "client-1", fetcher }
+      );
 
-      expect(result).toEqual({ success: true, captured: false, reason: "private-prompt" });
-      expect(requests).toHaveLength(1);
-      expect(requests[0].url.pathname).toBe("/api/client/connect");
-      expect(JSON.stringify(requests[0].body)).not.toContain("secret-token");
+      expect(result.action).toBe("context");
+      expect(requests.map((request) => request.url.pathname)).toEqual([
+        "/api/client/connect",
+        "/api/context/inject",
+      ]);
+      expect(JSON.stringify(requests)).not.toContain("secret-token");
+      expect(requests.some((request) => request.url.pathname === "/api/memories")).toBe(false);
     } finally {
       cleanup(cwd);
     }
   });
 
-  test("capture disabled still connects but does not write memory", async () => {
+  test("fully private prompts do not leak content and do not write memories", async () => {
+    const cwd = tempProject();
+    writeProjectConfig(cwd);
+    const { requests, fetcher } = createRecorder();
+
+    try {
+      const result = await runHook(
+        JSON.stringify({
+          hook_event_name: "UserPromptSubmit",
+          prompt: "<private>secret-token</private>",
+        }),
+        { cwd, clientId: "client-1", fetcher }
+      );
+
+      expect(result.action).toBe("context");
+      expect(requests.map((request) => request.url.pathname)).toEqual([
+        "/api/client/connect",
+        "/api/context/inject",
+      ]);
+      expect(JSON.stringify(requests)).not.toContain("secret-token");
+      expect(requests.some((request) => request.url.pathname === "/api/memories")).toBe(false);
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  test("Stop with transcript calls auto-capture", async () => {
+    const cwd = tempProject();
+    writeProjectConfig(cwd);
+    const transcriptPath = join(cwd, "transcript.jsonl");
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          session_id: "session-1",
+          message: {
+            role: "user",
+            id: "prompt-1",
+            parts: [{ type: "text", text: "remember this" }],
+          },
+        }),
+        JSON.stringify({ message: { role: "assistant", parts: [{ type: "text", text: "Done" }] } }),
+      ].join("\n")
+    );
+    const { requests, fetcher } = createRecorder();
+
+    try {
+      const result = await runHook(
+        JSON.stringify({
+          hook_event_name: "Stop",
+          session_id: "session-1",
+          transcript_path: transcriptPath,
+        }),
+        { cwd, clientId: "client-1", fetcher }
+      );
+
+      expect(result).toEqual({ success: true, action: "captured" });
+      expect(requests.map((request) => request.url.pathname)).toEqual([
+        "/api/client/connect",
+        "/api/auto-capture",
+      ]);
+      expect(requests[1].body).toMatchObject({
+        sessionID: "session-1",
+        projectTag: expect.any(String),
+        profileId: "profile-1",
+        repoId: expect.any(String),
+        conversationMessages: [
+          { role: "user", parts: [{ type: "text", text: "remember this" }] },
+          { role: "assistant", parts: [{ type: "text", text: "Done" }] },
+        ],
+        userPrompt: "remember this",
+        promptMessageId: "prompt-1",
+      });
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  test("Stop with active stop hook skips capture", async () => {
+    const cwd = tempProject();
+    writeProjectConfig(cwd);
+    const { requests, fetcher } = createRecorder();
+
+    try {
+      const result = await runHook(
+        JSON.stringify({ hook_event_name: "Stop", stop_hook_active: true }),
+        {
+          cwd,
+          clientId: "client-1",
+          fetcher,
+        }
+      );
+
+      expect(result).toEqual({ success: true, action: "skipped", reason: "stop-hook-active" });
+      expect(requests.map((request) => request.url.pathname)).toEqual(["/api/client/connect"]);
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  test("PreCompact with transcript calls auto-capture", async () => {
+    const cwd = tempProject();
+    writeProjectConfig(cwd);
+    const transcriptPath = join(cwd, "transcript.jsonl");
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          session_id: "session-1",
+          message: {
+            role: "user",
+            id: "prompt-1",
+            parts: [{ type: "text", text: "compact this" }],
+          },
+        }),
+        JSON.stringify({
+          message: {
+            role: "assistant",
+            parts: [
+              {
+                type: "tool",
+                tool: "apply_patch",
+                state: { input: { command: "*** Begin Patch" } },
+              },
+            ],
+          },
+        }),
+      ].join("\n")
+    );
+    const { requests, fetcher } = createRecorder();
+
+    try {
+      const result = await runHook(
+        JSON.stringify({
+          hook_event_name: "PreCompact",
+          session_id: "session-1",
+          transcript_path: transcriptPath,
+          trigger: "auto",
+        }),
+        { cwd, clientId: "client-1", fetcher }
+      );
+
+      expect(result).toEqual({ success: true, action: "captured" });
+      expect(requests.map((request) => request.url.pathname)).toEqual([
+        "/api/client/connect",
+        "/api/auto-capture",
+      ]);
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  test("PostCompact connects and returns no hook output", async () => {
+    const cwd = tempProject();
+    writeProjectConfig(cwd);
+    const { requests, fetcher } = createRecorder();
+
+    try {
+      const result = await runHook(
+        JSON.stringify({ hook_event_name: "PostCompact", trigger: "manual" }),
+        {
+          cwd,
+          clientId: "client-1",
+          fetcher,
+        }
+      );
+
+      expect(result).toEqual({ success: true, action: "connected" });
+      expect(requests.map((request) => request.url.pathname)).toEqual(["/api/client/connect"]);
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  test("capture disabled still connects but does not auto-capture", async () => {
     const cwd = tempProject();
     writeProjectConfig(cwd, { captureEnabled: false });
     const { requests, fetcher } = createRecorder();
 
     try {
-      const result = await runHook(JSON.stringify({ prompt: "remember this" }), {
-        cwd,
-        clientId: "client-1",
-        fetcher,
-      });
+      const result = await runHook(
+        JSON.stringify({ hook_event_name: "Stop", transcript_path: join(cwd, "missing.jsonl") }),
+        {
+          cwd,
+          clientId: "client-1",
+          fetcher,
+        }
+      );
 
-      expect(result).toEqual({ success: true, captured: false, reason: "capture-disabled" });
+      expect(result).toEqual({ success: true, action: "skipped", reason: "capture-disabled" });
       expect(requests).toHaveLength(1);
       expect(requests[0].url.pathname).toBe("/api/client/connect");
     } finally {
@@ -246,35 +525,38 @@ describe("runHook", () => {
     const { requests, fetcher } = createFailingRecorder("/api/client/connect");
 
     try {
-      const result = await runHook(JSON.stringify({ prompt: "remember this" }), {
+      const result = await runHook(JSON.stringify({ hook_event_name: "SessionStart" }), {
         cwd,
         clientId: "client-1",
         fetcher,
       });
 
-      expect(result).toEqual({ success: true, captured: false, reason: "connect-failed" });
+      expect(result).toEqual({ success: true, action: "skipped", reason: "connect-failed" });
       expect(requests.map((request) => request.url.pathname)).toEqual(["/api/client/connect"]);
     } finally {
       cleanup(cwd);
     }
   });
 
-  test("memory write failure is non-blocking after connect succeeds", async () => {
+  test("failed context HTTP call is non-blocking after connect succeeds", async () => {
     const cwd = tempProject();
     writeProjectConfig(cwd);
-    const { requests, fetcher } = createFailingRecorder("/api/memories");
+    const { requests, fetcher } = createFailingRecorder("/api/context/inject");
 
     try {
-      const result = await runHook(JSON.stringify({ prompt: "remember this" }), {
-        cwd,
-        clientId: "client-1",
-        fetcher,
-      });
+      const result = await runHook(
+        JSON.stringify({ hook_event_name: "UserPromptSubmit", prompt: "remember this" }),
+        {
+          cwd,
+          clientId: "client-1",
+          fetcher,
+        }
+      );
 
-      expect(result).toEqual({ success: true, captured: false, reason: "memory-write-failed" });
+      expect(result).toEqual({ success: true, action: "skipped", reason: "context-failed" });
       expect(requests.map((request) => request.url.pathname)).toEqual([
         "/api/client/connect",
-        "/api/memories",
+        "/api/context/inject",
       ]);
     } finally {
       cleanup(cwd);

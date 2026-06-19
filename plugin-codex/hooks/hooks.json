@@ -31,7 +31,20 @@
           {
             "type": "command",
             "command": "opencode-memnet-codex-hook",
-            "timeout": 30,
+            "timeout": 180,
+            "statusMessage": "Saving opencode-memnet memory"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "manual|auto",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "opencode-memnet-codex-hook",
+            "timeout": 180,
             "statusMessage": "Saving opencode-memnet memory"
           }
         ]

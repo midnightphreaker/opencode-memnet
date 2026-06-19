@@ -2,11 +2,19 @@
 import { loadConfig, type CodexMemnetConfig } from "../config";
 import { getClientId } from "../identity";
 import { RemoteMemoryClient } from "../http-client";
-import { isFullyPrivate, stripPrivateContent } from "../privacy";
 import { getTags, type TagInfo } from "../tags";
-import { parseHookPayload } from "./payload";
+import { logHookDiagnostic } from "./logger";
+import { parseHookPayload, type ParsedHookPayload } from "./payload";
+import { parseTranscriptFile, type ParsedTranscript } from "./transcript";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+type HookEvent = "SessionStart" | "UserPromptSubmit" | "Stop" | "PreCompact" | "PostCompact";
+type HookOutput = {
+  hookSpecificOutput: {
+    hookEventName: "SessionStart" | "UserPromptSubmit";
+    additionalContext: string;
+  };
+};
 
 export interface RunHookOptions {
   cwd?: string;
@@ -16,19 +24,35 @@ export interface RunHookOptions {
 }
 
 export type RunHookResult =
-  | { success: true; captured: true }
+  | { success: true; action: "context"; output: HookOutput }
+  | { success: true; action: "captured" }
+  | { success: true; action: "connected" }
   | {
       success: true;
-      captured: false;
+      action: "skipped";
       reason:
         | "missing-config"
         | "connect-failed"
         | "capture-disabled"
-        | "missing-prompt"
-        | "private-prompt"
-        | "empty-prompt"
-        | "memory-write-failed";
+        | "stop-hook-active"
+        | "missing-transcript"
+        | "transcript-unusable"
+        | "context-empty"
+        | "context-failed"
+        | "capture-failed"
+        | "unsupported-event";
     };
+
+interface HookRuntime {
+  payload: ParsedHookPayload;
+  event?: HookEvent;
+  cwd: string;
+  config: CodexMemnetConfig;
+  clientId: string;
+  http: RemoteMemoryClient;
+  tags: TagInfo;
+  profileId?: string;
+}
 
 export async function runHook(input: string, options: RunHookOptions = {}): Promise<RunHookResult> {
   const payload = parseHookPayload(input);
@@ -36,7 +60,14 @@ export async function runHook(input: string, options: RunHookOptions = {}): Prom
   const config = options.loadConfig ? options.loadConfig(cwd) : loadConfig(cwd);
 
   if (!config.serverUrl || !config.apiKey) {
-    return { success: true, captured: false, reason: "missing-config" };
+    logHookDiagnostic(payload.event ?? "unknown", { reason: "missing-config" });
+    return { success: true, action: "skipped", reason: "missing-config" };
+  }
+
+  const event = normalizeEvent(payload.event);
+  if (!event) {
+    logHookDiagnostic(payload.event ?? "unknown", { reason: "unsupported-event" });
+    return { success: true, action: "skipped", reason: "unsupported-event" };
   }
 
   const clientId = options.clientId ?? getClientId();
@@ -53,42 +84,120 @@ export async function runHook(input: string, options: RunHookOptions = {}): Prom
     profileId: config.profileId ?? tags.profileId,
   });
   if (!connect.success) {
-    return { success: true, captured: false, reason: "connect-failed" };
+    logHookDiagnostic(event, { reason: "connect-failed", error: connect.error });
+    return { success: true, action: "skipped", reason: "connect-failed" };
   }
 
-  if (!config.capture.enabled) {
-    return { success: true, captured: false, reason: "capture-disabled" };
-  }
-  if (!payload.prompt) {
-    return { success: true, captured: false, reason: "missing-prompt" };
-  }
-  if (isFullyPrivate(payload.prompt)) {
-    return { success: true, captured: false, reason: "private-prompt" };
-  }
+  const runtime: HookRuntime = {
+    payload,
+    event,
+    cwd,
+    config,
+    clientId,
+    http,
+    tags,
+    profileId: resolveProfileId(config, tags, connect.data?.principal),
+  };
 
-  const content = stripPrivateContent(payload.prompt);
-  if (!content.trim()) {
-    return { success: true, captured: false, reason: "empty-prompt" };
+  switch (event) {
+    case "SessionStart":
+    case "UserPromptSubmit":
+      return injectContext(runtime, event);
+    case "Stop":
+      return captureFromTranscript(runtime, { skipActiveStop: true });
+    case "PreCompact":
+      return captureFromTranscript(runtime, { skipActiveStop: false });
+    case "PostCompact":
+      return { success: true, action: "connected" };
   }
+}
 
-  const write = await http.addMemory({
-    content,
-    containerTag: tags.projectTag,
-    type: "codex-hook",
-    source: "codex-hook",
-    hookEvent: payload.event,
-    sessionID: payload.sessionID,
-    projectTag: tags.projectTag,
-    profileId: config.profileId ?? tags.profileId,
-    repoId: tags.repoId,
-    ...projectMetadata(tags),
+async function injectContext(
+  runtime: HookRuntime,
+  event: "SessionStart" | "UserPromptSubmit"
+): Promise<RunHookResult> {
+  const response = await runtime.http.getContext({
+    sessionID: runtime.payload.sessionID,
+    projectTag: runtime.tags.projectTag,
+    profileId: runtime.profileId,
+    repoId: runtime.tags.repoId,
+    maxMemories: runtime.config.context.maxMemories,
+    excludeCurrentSession: runtime.config.context.excludeCurrentSession,
+    maxAgeDays: runtime.config.context.maxAgeDays,
   });
 
-  if (!write.success) {
-    return { success: true, captured: false, reason: "memory-write-failed" };
+  if (!response.success) {
+    logHookDiagnostic(event, { reason: "context-failed", error: response.error });
+    return { success: true, action: "skipped", reason: "context-failed" };
   }
 
-  return { success: true, captured: true };
+  const context = response.data?.context?.trim();
+  if (!context) {
+    return { success: true, action: "skipped", reason: "context-empty" };
+  }
+
+  return {
+    success: true,
+    action: "context",
+    output: {
+      hookSpecificOutput: {
+        hookEventName: event,
+        additionalContext: context,
+      },
+    },
+  };
+}
+
+async function captureFromTranscript(
+  runtime: HookRuntime,
+  options: { skipActiveStop: boolean }
+): Promise<RunHookResult> {
+  if (options.skipActiveStop && runtime.payload.stopHookActive) {
+    return { success: true, action: "skipped", reason: "stop-hook-active" };
+  }
+  if (!runtime.config.capture.enabled) {
+    return { success: true, action: "skipped", reason: "capture-disabled" };
+  }
+  if (!runtime.payload.transcriptPath) {
+    return { success: true, action: "skipped", reason: "missing-transcript" };
+  }
+
+  let transcript: ParsedTranscript;
+  try {
+    transcript = parseTranscriptFile(runtime.payload.transcriptPath);
+  } catch (error) {
+    logHookDiagnostic(runtime.event ?? "unknown", { reason: "missing-transcript", error });
+    return { success: true, action: "skipped", reason: "missing-transcript" };
+  }
+
+  if (
+    !transcript.latestUserPrompt ||
+    !transcript.promptMessageId ||
+    !transcript.hasAssistantActivity
+  ) {
+    return { success: true, action: "skipped", reason: "transcript-unusable" };
+  }
+
+  const response = await runtime.http.autoCapture({
+    sessionID: runtime.payload.sessionID ?? transcript.sessionID ?? "unknown",
+    projectTag: runtime.tags.projectTag,
+    profileId: runtime.profileId,
+    repoId: runtime.tags.repoId,
+    projectMetadata: projectMetadata(runtime.tags),
+    conversationMessages: transcript.messages,
+    userPrompt: transcript.latestUserPrompt,
+    promptMessageId: transcript.promptMessageId,
+  });
+
+  if (!response.success) {
+    logHookDiagnostic(runtime.event ?? "unknown", {
+      reason: "capture-failed",
+      error: response.error,
+    });
+    return { success: true, action: "skipped", reason: "capture-failed" };
+  }
+
+  return { success: true, action: "captured" };
 }
 
 async function readStdin(): Promise<string> {
@@ -101,7 +210,37 @@ async function readStdin(): Promise<string> {
 
 export async function main(): Promise<void> {
   const input = await readStdin();
-  await runHook(input);
+  const result = await runHook(input);
+  if (result.action === "context") {
+    process.stdout.write(`${JSON.stringify(result.output)}\n`);
+  }
+}
+
+function normalizeEvent(value: string | undefined): HookEvent | undefined {
+  if (
+    value === "SessionStart" ||
+    value === "UserPromptSubmit" ||
+    value === "Stop" ||
+    value === "PreCompact" ||
+    value === "PostCompact"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function resolveProfileId(
+  config: CodexMemnetConfig,
+  tags: TagInfo,
+  principal:
+    | { kind: "admin" }
+    | { kind: "profile"; profileId: string; displayName?: string }
+    | undefined
+): string | undefined {
+  if (principal?.kind === "profile") {
+    return principal.profileId;
+  }
+  return config.profileId ?? tags.profileId;
 }
 
 function buildHookClientMetadata(tags: TagInfo): Record<string, unknown> {
@@ -130,7 +269,7 @@ function sanitizeDiagnostic(value: unknown): string {
 
 if (import.meta.main) {
   main().catch((error) => {
-    console.error(`[opencode-memnet-codex-hook] ${sanitizeDiagnostic(error)}`);
+    logHookDiagnostic("fatal", { error: sanitizeDiagnostic(error) });
     process.exit(0);
   });
 }

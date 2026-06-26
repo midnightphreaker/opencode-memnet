@@ -1,9 +1,10 @@
-import { RemoteMemoryClient, type ApiResponse } from "../http-client";
+import { RemoteMemoryClient, type ApiResponse, type MemoryBankSummary } from "../http-client";
 import type { CodexMemnetConfig } from "../config";
 import { assertConfigured } from "../config";
 import { buildClientMetadata } from "../identity";
 import { isFullyPrivate, stripPrivateContent } from "../privacy";
 import { getTags, type TagInfo } from "../tags";
+import { suggestMemoryBank } from "../../../shared/memory-bank";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -16,7 +17,7 @@ export interface HandlerContext {
 
 type ToolFailure = { success: false; error: string };
 type ToolResult<T = unknown> = ApiResponse<T> | ToolFailure;
-type ProjectScope = { profileId?: string; repoId: string };
+type ProjectScope = { repoId: string };
 type CaptureArgs = {
   summary?: string;
   sessionID?: string;
@@ -24,6 +25,13 @@ type CaptureArgs = {
   userPrompt?: string;
   promptMessageId?: string;
 };
+type ActiveMemoryBankContext = {
+  http: RemoteMemoryClient;
+  tags: TagInfo;
+  memoryBank: MemoryBankSummary;
+};
+
+const NO_ACTIVE_MEMORY_BANK = "No active Memory Bank. Create one before using memory operations.";
 
 function fail(error: string): ToolFailure {
   return { success: false, error };
@@ -55,7 +63,6 @@ function client(ctx: HandlerContext): RemoteMemoryClient | ToolFailure {
 
 function projectScope(ctx: HandlerContext, tags: TagInfo): ProjectScope {
   return {
-    profileId: ctx.config.profileId ?? tags.profileId,
     repoId: tags.repoId,
   };
 }
@@ -78,6 +85,46 @@ function isFailure(value: RemoteMemoryClient | ToolFailure): value is ToolFailur
   return "success" in value && value.success === false;
 }
 
+function buildConnectBody(ctx: HandlerContext, tags: TagInfo, nickname?: string) {
+  return {
+    metadata: {
+      client: buildClientMetadata(ctx.cwd).client,
+      runtime: buildClientMetadata(ctx.cwd).runtime,
+      repoId: tags.repoId,
+      projectTag: tags.projectTag,
+      ...projectMetadata(tags),
+      ...(nickname ? { nickname } : {}),
+    },
+    includeStats: false,
+  };
+}
+
+async function connectAndSelectMemoryBank(
+  ctx: HandlerContext
+): Promise<ActiveMemoryBankContext | ToolFailure> {
+  const http = client(ctx);
+  if (isFailure(http)) {
+    return http;
+  }
+
+  const tags = getTags(ctx.cwd);
+  const connect = await http.clientConnect(buildConnectBody(ctx, tags));
+  if (!connect.success) {
+    return fail(connect.error ?? "connect failed");
+  }
+
+  const memoryBank = connect.data?.memoryBanks?.[0];
+  if (!memoryBank) {
+    return fail(NO_ACTIVE_MEMORY_BANK);
+  }
+
+  return { http, tags, memoryBank };
+}
+
+function isMemoryBankFailure(value: ActiveMemoryBankContext | ToolFailure): value is ToolFailure {
+  return "success" in value && value.success === false;
+}
+
 export function createToolHandlers(ctx: HandlerContext) {
   return {
     async memory_connect(args: { nickname?: string } = {}): Promise<ToolResult> {
@@ -88,37 +135,50 @@ export function createToolHandlers(ctx: HandlerContext) {
 
       const tags = getTags(ctx.cwd);
       const nickname = args.nickname?.trim() || ctx.config.nickname?.trim();
-      return http.clientConnect(
+      const response = await http.clientConnect(buildConnectBody(ctx, tags, nickname));
+      if (!response.success) {
+        return response;
+      }
+      if (!response.data?.memoryBanks?.length) {
+        return {
+          ...response,
+          data: {
+            ...response.data,
+            suggestedMemoryBank: suggestMemoryBank(ctx.cwd),
+          },
+        };
+      }
+      return response;
+    },
+
+    async memory_get_context(
+      args: { sessionID?: string; maxMemories?: number } = {}
+    ): Promise<ToolResult> {
+      const active = await connectAndSelectMemoryBank(ctx);
+      if (isMemoryBankFailure(active)) {
+        return active;
+      }
+
+      return active.http.getContext(
         {
-          client: buildClientMetadata(ctx.cwd).client,
-          runtime: buildClientMetadata(ctx.cwd).runtime,
-          repoId: tags.repoId,
-          projectTag: tags.projectTag,
-          ...projectMetadata(tags),
-          ...(nickname ? { nickname } : {}),
+          sessionID: args.sessionID,
+          projectTag: active.tags.projectTag,
+          ...projectScope(ctx, active.tags),
+          maxMemories: args.maxMemories ?? ctx.config.context.maxMemories,
+          excludeCurrentSession: ctx.config.context.excludeCurrentSession,
+          maxAgeDays: ctx.config.context.maxAgeDays,
         },
-        { profileId: projectScope(ctx, tags).profileId },
+        {
+          memoryBankId: active.memoryBank.id,
+        }
       );
     },
 
-    async memory_get_context(args: { sessionID?: string; maxMemories?: number } = {}): Promise<ToolResult> {
-      const http = client(ctx);
-      if (isFailure(http)) {
-        return http;
-      }
-
-      const tags = getTags(ctx.cwd);
-      return http.getContext({
-        sessionID: args.sessionID,
-        projectTag: tags.projectTag,
-        ...projectScope(ctx, tags),
-        maxMemories: args.maxMemories ?? ctx.config.context.maxMemories,
-        excludeCurrentSession: ctx.config.context.excludeCurrentSession,
-        maxAgeDays: ctx.config.context.maxAgeDays,
-      });
-    },
-
-    async memory_add(args: { content?: string; type?: string; tags?: string[] }): Promise<ToolResult> {
+    async memory_add(args: {
+      content?: string;
+      type?: string;
+      tags?: string[];
+    }): Promise<ToolResult> {
       if (!args.content || !args.content.trim()) {
         return fail("content required");
       }
@@ -126,19 +186,23 @@ export function createToolHandlers(ctx: HandlerContext) {
         return fail("Private content blocked");
       }
 
-      const http = client(ctx);
-      if (isFailure(http)) {
-        return http;
+      const active = await connectAndSelectMemoryBank(ctx);
+      if (isMemoryBankFailure(active)) {
+        return active;
       }
 
-      const tags = getTags(ctx.cwd);
-      return http.addMemory({
-        content: stripPrivateContent(args.content),
-        containerTag: tags.projectTag,
-        type: args.type,
-        tags: args.tags,
-        ...scopedProjectPayload(ctx, tags),
-      });
+      return active.http.addMemory(
+        {
+          content: stripPrivateContent(args.content),
+          containerTag: active.tags.projectTag,
+          type: args.type,
+          tags: args.tags,
+          ...scopedProjectPayload(ctx, active.tags),
+        },
+        {
+          memoryBankId: active.memoryBank.id,
+        }
+      );
     },
 
     async memory_search(args: { query?: string; limit?: number } = {}): Promise<ToolResult> {
@@ -146,34 +210,42 @@ export function createToolHandlers(ctx: HandlerContext) {
         return fail("query required");
       }
 
-      const http = client(ctx);
-      if (isFailure(http)) {
-        return http;
+      const active = await connectAndSelectMemoryBank(ctx);
+      if (isMemoryBankFailure(active)) {
+        return active;
       }
 
-      const tags = getTags(ctx.cwd);
-      return http.searchMemories({
-        q: args.query,
-        tag: tags.projectTag,
-        pageSize: args.limit ?? 20,
-        scope: ctx.config.memory.defaultScope,
-        ...projectScope(ctx, tags),
-      });
+      return active.http.searchMemories(
+        {
+          q: args.query,
+          tag: active.tags.projectTag,
+          pageSize: args.limit ?? 20,
+          scope: ctx.config.memory.defaultScope,
+          ...projectScope(ctx, active.tags),
+        },
+        {
+          memoryBankId: active.memoryBank.id,
+        }
+      );
     },
 
     async memory_list(args: { limit?: number } = {}): Promise<ToolResult> {
-      const http = client(ctx);
-      if (isFailure(http)) {
-        return http;
+      const active = await connectAndSelectMemoryBank(ctx);
+      if (isMemoryBankFailure(active)) {
+        return active;
       }
 
-      const tags = getTags(ctx.cwd);
-      return http.listMemories({
-        tag: tags.projectTag,
-        pageSize: args.limit ?? 20,
-        scope: ctx.config.memory.defaultScope,
-        ...projectScope(ctx, tags),
-      });
+      return active.http.listMemories(
+        {
+          tag: active.tags.projectTag,
+          pageSize: args.limit ?? 20,
+          scope: ctx.config.memory.defaultScope,
+          ...projectScope(ctx, active.tags),
+        },
+        {
+          memoryBankId: active.memoryBank.id,
+        }
+      );
     },
 
     async memory_forget(args: { memoryId?: string }): Promise<ToolResult> {
@@ -181,12 +253,12 @@ export function createToolHandlers(ctx: HandlerContext) {
         return fail("memoryId required");
       }
 
-      const http = client(ctx);
-      if (isFailure(http)) {
-        return http;
+      const active = await connectAndSelectMemoryBank(ctx);
+      if (isMemoryBankFailure(active)) {
+        return active;
       }
 
-      return http.deleteMemory(args.memoryId);
+      return active.http.deleteMemory(args.memoryId, { memoryBankId: active.memoryBank.id });
     },
 
     async memory_profile(): Promise<ToolResult> {
@@ -196,16 +268,35 @@ export function createToolHandlers(ctx: HandlerContext) {
       }
 
       const tags = getTags(ctx.cwd);
-      return http.getUserProfile(projectScope(ctx, tags).profileId);
+      const response = await http.clientConnect(buildConnectBody(ctx, tags));
+      if (!response.success) {
+        return response;
+      }
+      return {
+        success: true,
+        data: {
+          principal: response.data?.principal,
+          memoryBanks: response.data?.memoryBanks ?? [],
+          activeMemoryBank: response.data?.memoryBanks?.[0] ?? null,
+          requiresMemoryBank: response.data?.requiresMemoryBank ?? true,
+          ...(response.data?.memoryBanks?.length
+            ? {}
+            : { suggestedMemoryBank: suggestMemoryBank(ctx.cwd) }),
+        },
+      };
     },
 
     async memory_stats(): Promise<ToolResult> {
-      const http = client(ctx);
-      if (isFailure(http)) {
-        return http;
+      const active = await connectAndSelectMemoryBank(ctx);
+      if (isMemoryBankFailure(active)) {
+        return active;
       }
 
-      return http.getClientStats();
+      return active.http.clientConnect({
+        ...buildConnectBody(ctx, active.tags),
+        includeStats: true,
+        memoryBankId: active.memoryBank.id,
+      });
     },
 
     async memory_set_nickname(_args: { nickname?: string }): Promise<ToolResult> {
@@ -231,32 +322,41 @@ export function createToolHandlers(ctx: HandlerContext) {
         return fail("capture disabled");
       }
 
-      const http = client(ctx);
-      if (isFailure(http)) {
-        return http;
+      const active = await connectAndSelectMemoryBank(ctx);
+      if (isMemoryBankFailure(active)) {
+        return active;
       }
 
-      const tags = getTags(ctx.cwd);
       if (hasAutoCaptureData) {
-        return http.autoCapture({
-          sessionID: args.sessionID as string,
-          projectTag: tags.projectTag,
-          ...projectScope(ctx, tags),
-          projectMetadata: projectMetadata(tags),
-          conversationMessages: args.conversationMessages,
-          userPrompt: stripPrivateContent(args.userPrompt as string),
-          promptMessageId: args.promptMessageId,
-        });
+        return active.http.autoCapture(
+          {
+            sessionID: args.sessionID as string,
+            projectTag: active.tags.projectTag,
+            ...projectScope(ctx, active.tags),
+            projectMetadata: projectMetadata(active.tags),
+            conversationMessages: args.conversationMessages,
+            userPrompt: stripPrivateContent(args.userPrompt as string),
+            promptMessageId: args.promptMessageId,
+          },
+          {
+            memoryBankId: active.memoryBank.id,
+          }
+        );
       }
 
-      return http.addMemory({
-        content: stripPrivateContent(args.summary as string),
-        containerTag: tags.projectTag,
-        type: "codex-session",
-        source: "codex-mcp",
-        sessionID: args.sessionID,
-        ...scopedProjectPayload(ctx, tags),
-      });
+      return active.http.addMemory(
+        {
+          content: stripPrivateContent(args.summary as string),
+          containerTag: active.tags.projectTag,
+          type: "codex-session",
+          source: "codex-mcp",
+          sessionID: args.sessionID,
+          ...scopedProjectPayload(ctx, active.tags),
+        },
+        {
+          memoryBankId: active.memoryBank.id,
+        }
+      );
     },
   };
 }

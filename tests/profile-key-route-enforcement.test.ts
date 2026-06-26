@@ -8,19 +8,31 @@ type AuthHelper = {
   authenticateApiRequest(req: Request, path: string): Promise<unknown>;
 };
 
-describe("profile key route enforcement", () => {
+function authService() {
+  return {
+    authenticateBearer: async (key: string) => (key === "admin-secret" ? { kind: "admin" } : null),
+  };
+}
+
+describe("v2 auth route enforcement", () => {
   const webServer = read("src/services/web-server.ts");
   const server = read("src/server.ts");
 
-  it("passes configured profiles into the web server", () => {
-    expect(server).toContain("configuredProfiles: config.configuredProfiles");
-    expect(webServer).toContain("configuredProfiles?: ConfiguredProfile[]");
+  it("passes AuthService into the web server", () => {
+    expect(server).toContain("new AuthService");
+    expect(server).toContain("createUserApiKeyRepository()");
+    expect(server).toContain("createMemoryBankRepository()");
+    expect(webServer).toContain("constructor(config: WebServerConfig, authService: AuthService)");
   });
 
-  it("classifies plugin requests with X-Opencode-Memnet-Client", () => {
-    expect(webServer).toContain('"X-Opencode-Memnet-Client"');
-    expect(webServer).toContain('=== "plugin"');
-    expect(webServer).toContain("CLIENT_AUTH_ROUTES");
+  it("removes route-kind auth branching and legacy fallback", () => {
+    const legacyGeneratedProfileMessage = ["Generated", "profile", "key", "lookup", "failed"].join(
+      " "
+    );
+    expect(webServer).not.toContain("RouteKind");
+    expect(webServer).not.toContain("CLIENT_AUTH_ROUTES");
+    expect(webServer).not.toContain("createProfileApiKeyRepository");
+    expect(webServer).not.toContain(legacyGeneratedProfileMessage);
   });
 
   it("keeps the request principal from auth and passes it to scoped routes", () => {
@@ -28,67 +40,34 @@ describe("profile key route enforcement", () => {
     expect(webServer).toContain("const principal = authContext.principal");
   });
 
-  it("enforces profile scope on query and body profile IDs", () => {
-    expect(webServer).toContain("requireProfileIdForPrincipal(principal");
-    expect(webServer).toContain("applyPrincipalProfileToBody");
-  });
+  it("enforces v2 bearer auth on API routes", async () => {
+    const server = new WebServer(
+      { port: 0, host: "127.0.0.1", enabled: false },
+      authService() as any
+    ) as unknown as AuthHelper;
 
-  it("filters profile listing by principal", () => {
-    expect(webServer).toContain("handleListUserProfiles(principal)");
-    expect(webServer).toContain("principalResponse(principal)");
-  });
+    const missing = await server.authenticateApiRequest(
+      new Request("http://localhost/api/memories"),
+      "/api/memories"
+    );
+    expect(missing).toBeInstanceOf(Response);
+    expect((missing as Response).status).toBe(401);
 
-  it("uses principal profile for maintenance job scope", () => {
-    expect(webServer).toContain("deriveJobScope(principal)");
-    expect(webServer).toContain('principal.kind === "profile"');
-  });
-
-  it("does not allow spoofed plugin headers to bypass WebUI auth on shared routes", async () => {
-    const server = new WebServer({ port: 0, host: "127.0.0.1", enabled: false }, "admin-secret", {
-      disableWebuiAuth: false,
-      disableClientAuth: true,
-    }) as unknown as AuthHelper;
-
-    const sharedRouteResult = await server.authenticateApiRequest(
+    const invalid = await server.authenticateApiRequest(
       new Request("http://localhost/api/memories", {
-        headers: { "X-Opencode-Memnet-Client": "plugin" },
+        headers: { Authorization: "Bearer wrong" },
       }),
       "/api/memories"
     );
-    expect(sharedRouteResult).toBeInstanceOf(Response);
-    expect((sharedRouteResult as Response).status).toBe(401);
+    expect(invalid).toBeInstanceOf(Response);
+    expect((invalid as Response).status).toBe(401);
 
-    const clientConnectResult = await server.authenticateApiRequest(
-      new Request("http://localhost/api/client/connect", {
-        method: "POST",
-        headers: { "X-Opencode-Memnet-Client": "plugin" },
+    const valid = await server.authenticateApiRequest(
+      new Request("http://localhost/api/memories", {
+        headers: { Authorization: "Bearer admin-secret" },
       }),
-      "/api/client/connect"
+      "/api/memories"
     );
-    expect(clientConnectResult).toBeInstanceOf(Response);
-    expect((clientConnectResult as Response).status).toBe(401);
-
-    const clientStatsResult = await server.authenticateApiRequest(
-      new Request("http://localhost/api/client/stats", {
-        method: "GET",
-        headers: { "X-Opencode-Memnet-Client": "plugin" },
-      }),
-      "/api/client/stats"
-    );
-    expect(clientStatsResult).toBeInstanceOf(Response);
-    expect((clientStatsResult as Response).status).toBe(401);
-
-    const badBearerResult = await server.authenticateApiRequest(
-      new Request("http://localhost/api/client/connect", {
-        method: "POST",
-        headers: {
-          Authorization: "Bearer wrong",
-          "X-Opencode-Memnet-Client": "plugin",
-        },
-      }),
-      "/api/client/connect"
-    );
-    expect(badBearerResult).toBeInstanceOf(Response);
-    expect((badBearerResult as Response).status).toBe(401);
+    expect(valid).toEqual({ principal: { kind: "admin" } });
   });
 });

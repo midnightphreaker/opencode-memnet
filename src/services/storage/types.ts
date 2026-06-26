@@ -5,11 +5,16 @@
 export type MemoryScopeKind = "user" | "project";
 
 export interface ProfileScope {
-  profileId: string;
+  profileId?: string;
 }
 
 export interface ProjectScope extends ProfileScope {
   repoId: string;
+}
+
+export interface MemoryBankOwner {
+  apiKeyId: string;
+  memoryBankId: string;
 }
 
 // ── Search and query types ──
@@ -23,8 +28,10 @@ export interface MemorySearchOptions {
   includeAllContainers?: boolean;
   limit: number;
   similarityThreshold: number;
-  profileId: string;
+  profileId?: string;
   repoId?: string;
+  apiKeyId?: string;
+  memoryBankId?: string;
 }
 
 // ── Row / result types ──
@@ -38,8 +45,10 @@ export interface MemoryRow {
   metadata?: Record<string, unknown>;
   createdAt: number;
   updatedAt: number;
-  profileId: string;
+  profileId?: string;
   repoId?: string;
+  apiKeyId?: string;
+  memoryBankId?: string;
   localProjectPath?: string;
   gitRepoUrl?: string;
   repoNickname?: string;
@@ -61,6 +70,8 @@ export interface SearchResult {
   isPinned?: boolean;
   containerTag?: string;
   createdAt?: number;
+  apiKeyId?: string;
+  memoryBankId?: string;
 }
 
 export interface TagInfo {
@@ -68,6 +79,8 @@ export interface TagInfo {
   tags?: string[];
   profileId?: string;
   repoId?: string;
+  apiKeyId?: string;
+  memoryBankId?: string;
   localProjectPath?: string;
   gitRepoUrl?: string;
   repoNickname?: string;
@@ -84,11 +97,75 @@ export interface MemoryRecord {
   createdAt: number;
   updatedAt: number;
   metadata?: string;
-  profileId: string;
+  profileId?: string;
   repoId?: string;
+  apiKeyId?: string;
+  memoryBankId?: string;
   localProjectPath?: string;
   gitRepoUrl?: string;
   repoNickname?: string;
+}
+
+export interface UserApiKeyRow {
+  id: string;
+  name: string;
+  description: string;
+  apiKeyHash: string;
+  createdAt: number;
+  updatedAt: number;
+  lastUsedAt: number | null;
+  revokedAt: number | null;
+}
+
+export interface UserApiKeyRepository {
+  initialize(): Promise<void>;
+  close(): Promise<void>;
+  create(args: {
+    id: string;
+    name: string;
+    description: string;
+    apiKeyValue: string;
+  }): Promise<UserApiKeyRow>;
+  list(): Promise<UserApiKeyRow[]>;
+  getById(id: string): Promise<UserApiKeyRow | null>;
+  findByApiKey(apiKeyValue: string): Promise<UserApiKeyRow | null>;
+  touchLastUsed(id: string): Promise<void>;
+  update(args: { id: string; name?: string; description?: string }): Promise<UserApiKeyRow | null>;
+  revoke(id: string): Promise<boolean>;
+}
+
+export interface MemoryBankRow {
+  id: string;
+  apiKeyId: string;
+  apiKeyName: string;
+  name: string;
+  description: string;
+  shortcut: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface MemoryBankRepository {
+  initialize(): Promise<void>;
+  close(): Promise<void>;
+  create(args: {
+    id: string;
+    apiKeyId: string;
+    name: string;
+    description: string;
+  }): Promise<MemoryBankRow>;
+  listForApiKey(apiKeyId: string): Promise<MemoryBankRow[]>;
+  getForApiKey(args: { apiKeyId: string; memoryBankId: string }): Promise<MemoryBankRow | null>;
+  getById(memoryBankId: string): Promise<MemoryBankRow | null>;
+  update(args: { id: string; name?: string; description?: string }): Promise<MemoryBankRow | null>;
+  countRowsForBank(id: string): Promise<{
+    memories: number;
+    prompts: number;
+    profileLearning: number;
+    aiSessions: number;
+    aiMessages: number;
+  }>;
+  delete(id: string): Promise<boolean>;
 }
 
 // ── Memory repository interface ──
@@ -98,10 +175,10 @@ export interface MemoryRepository {
   close(): Promise<void>;
 
   insert(record: MemoryRecord): Promise<void>;
-  delete(memoryId: string): Promise<boolean>;
-  deleteMany(ids: string[]): Promise<number>;
+  delete(memoryId: string, owner?: MemoryBankOwner): Promise<boolean>;
+  deleteMany(ids: string[], owner?: MemoryBankOwner): Promise<number>;
   update(record: MemoryRecord): Promise<void>;
-  getById(memoryId: string): Promise<MemoryRow | null>;
+  getById(memoryId: string, owner?: MemoryBankOwner): Promise<MemoryRow | null>;
 
   search(options: MemorySearchOptions): Promise<SearchResult[]>;
 
@@ -112,8 +189,10 @@ export interface MemoryRepository {
     includeAllContainers?: boolean;
     containerTagFilter?: string;
     limit: number;
-    profileId: string;
+    profileId?: string;
     repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<MemoryRow[]>;
 
   getBySessionId(args: {
@@ -129,28 +208,39 @@ export interface MemoryRepository {
     scopeHash?: string;
     profileId?: string;
     repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<number>;
 
   /**
    * Returns a breakdown of memory counts grouped by type.
    * Used by handleStats to avoid loading all rows into memory.
    */
-  countByType(args?: { profileId?: string; repoId?: string }): Promise<Record<string, number>>;
+  countByType(args?: {
+    profileId?: string;
+    repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
+  }): Promise<Record<string, number>>;
 
   getDistinctTags(args?: {
     scope?: MemoryScopeKind;
     scopeHash?: string;
     profileId?: string;
     repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<TagInfo[]>;
   getDistinctTagValues(args?: {
     scope?: MemoryScopeKind;
     profileId?: string;
     repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<string[]>;
 
-  pin(memoryId: string): Promise<void>;
-  unpin(memoryId: string): Promise<void>;
+  pin(memoryId: string, owner?: MemoryBankOwner): Promise<void>;
+  unpin(memoryId: string, owner?: MemoryBankOwner): Promise<void>;
 
   /**
    * Returns memories whose `updatedAt` is older than `cutoffTime`.
@@ -161,6 +251,8 @@ export interface MemoryRepository {
     limit?: number;
     offset?: number;
     profileId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<MemoryRow[]>;
 
   /**
@@ -171,20 +263,26 @@ export interface MemoryRepository {
     limit?: number;
     offset?: number;
     profileId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<MemoryRecord[]>;
 
   /**
    * Count project memories with NULL or empty tags column.
    * Used by tag-migration detection.
    */
-  countUntagged(): Promise<number>;
+  countUntagged(owner?: MemoryBankOwner): Promise<number>;
 
   /**
    * Returns untagged project-scoped memories with pagination, including
    * their raw vectors. Used by tag-migration to process memories that
    * need LLM-generated tags.
    */
-  getUntaggedProjectMemories(limit?: number, offset?: number): Promise<MemoryRecord[]>;
+  getUntaggedProjectMemories(
+    limit?: number,
+    offset?: number,
+    owner?: MemoryBankOwner
+  ): Promise<MemoryRecord[]>;
 
   /**
    * Update the tags column, re-embed and overwrite vector/tags_vector blobs,
@@ -196,7 +294,8 @@ export interface MemoryRepository {
     tags: string,
     vector: Float32Array,
     tagsVector: Float32Array | undefined,
-    updatedAt: number
+    updatedAt: number,
+    owner?: MemoryBankOwner
   ): Promise<void>;
 
   /**
@@ -204,7 +303,12 @@ export interface MemoryRepository {
    * but embedding/vector generation fails, so the memory is marked as
    * tagged and won't be picked up again for tag generation.
    */
-  updateTagsOnly(id: string, tags: string, updatedAt: number): Promise<void>;
+  updateTagsOnly(
+    id: string,
+    tags: string,
+    updatedAt: number,
+    owner?: MemoryBankOwner
+  ): Promise<void>;
 
   /**
    * Update only the vector/tags_vector columns (tags must already be set).
@@ -214,14 +318,19 @@ export interface MemoryRepository {
     id: string,
     vector: Float32Array,
     tagsVector: Float32Array | undefined,
-    updatedAt: number
+    updatedAt: number,
+    owner?: MemoryBankOwner
   ): Promise<void>;
 
   /**
    * Get memories that have tags but missing vector/tagsVector columns.
    * Used for the separate vector-generation pass.
    */
-  getMemoriesWithoutVectors(limit?: number, offset?: number): Promise<MemoryRecord[]>;
+  getMemoriesWithoutVectors(
+    limit?: number,
+    offset?: number,
+    owner?: MemoryBankOwner
+  ): Promise<MemoryRecord[]>;
 }
 
 // ── User prompt repository interface ──
@@ -232,6 +341,8 @@ export interface UserPromptRow {
   messageId: string;
   profileId: string;
   repoId: string;
+  apiKeyId?: string;
+  memoryBankId?: string;
   localProjectPath: string | null;
   content: string;
   createdAt: number;
@@ -249,35 +360,54 @@ export interface UserPromptRepository {
     messageId: string;
     profileId: string;
     repoId: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
     localProjectPath?: string;
     content: string;
   }): Promise<string>;
-  getLastUncapturedPrompt(sessionId: string): Promise<UserPromptRow | null>;
-  deletePrompt(promptId: string): Promise<void>;
-  markAsCaptured(promptId: string): Promise<void>;
-  claimPrompt(promptId: string): Promise<boolean>;
-  releasePrompt(promptId: string): Promise<void>;
-  countUncapturedPrompts(): Promise<number>;
-  getUncapturedPrompts(limit: number): Promise<UserPromptRow[]>;
-  markMultipleAsCaptured(promptIds: string[]): Promise<void>;
-  countUnanalyzedForUserLearning(profileId: string): Promise<number>;
-  getPromptsForUserLearning(args: { profileId: string; limit: number }): Promise<UserPromptRow[]>;
-  markAsUserLearningCaptured(promptId: string): Promise<void>;
-  markMultipleAsUserLearningCaptured(promptIds: string[]): Promise<void>;
+  getLastUncapturedPrompt(
+    sessionId: string,
+    owner?: MemoryBankOwner
+  ): Promise<UserPromptRow | null>;
+  deletePrompt(promptId: string, owner?: MemoryBankOwner): Promise<void>;
+  markAsCaptured(promptId: string, owner?: MemoryBankOwner): Promise<void>;
+  claimPrompt(promptId: string, owner?: MemoryBankOwner): Promise<boolean>;
+  releasePrompt(promptId: string, owner?: MemoryBankOwner): Promise<void>;
+  countUncapturedPrompts(owner?: MemoryBankOwner): Promise<number>;
+  getUncapturedPrompts(limit: number, owner?: MemoryBankOwner): Promise<UserPromptRow[]>;
+  markMultipleAsCaptured(promptIds: string[], owner?: MemoryBankOwner): Promise<void>;
+  countUnanalyzedForUserLearning(profileId: string, owner?: MemoryBankOwner): Promise<number>;
+  getPromptsForUserLearning(args: {
+    profileId: string;
+    limit: number;
+    apiKeyId?: string;
+    memoryBankId?: string;
+  }): Promise<UserPromptRow[]>;
+  markAsUserLearningCaptured(promptId: string, owner?: MemoryBankOwner): Promise<void>;
+  markMultipleAsUserLearningCaptured(promptIds: string[], owner?: MemoryBankOwner): Promise<void>;
   deleteOldPrompts(args: {
     cutoffTime: number;
     profileId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<{ deleted: number; linkedMemoryIds: string[] }>;
-  linkMemoryToPrompt(promptId: string, memoryId: string): Promise<void>;
-  getPromptById(promptId: string): Promise<UserPromptRow | null>;
-  getCapturedPrompts(args: { profileId: string; repoId?: string }): Promise<UserPromptRow[]>;
+  linkMemoryToPrompt(promptId: string, memoryId: string, owner?: MemoryBankOwner): Promise<void>;
+  getPromptById(promptId: string, owner?: MemoryBankOwner): Promise<UserPromptRow | null>;
+  getCapturedPrompts(args: {
+    profileId: string;
+    repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
+  }): Promise<UserPromptRow[]>;
   searchPrompts(args: {
     query: string;
     profileId: string;
     repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
     limit?: number;
   }): Promise<UserPromptRow[]>;
-  getPromptsByIds(ids: string[]): Promise<UserPromptRow[]>;
+  getPromptsByIds(ids: string[], owner?: MemoryBankOwner): Promise<UserPromptRow[]>;
 }
 
 // ── User profile repository interface ──
@@ -291,6 +421,8 @@ export interface UserProfileData {
 export interface UserProfileRow {
   id: string;
   profileId: string;
+  apiKeyId?: string;
+  memoryBankId?: string;
   profileData: string;
   version: number;
   createdAt: number;
@@ -302,6 +434,8 @@ export interface UserProfileRow {
 export interface UserProfileChangelogRow {
   id: string;
   profileId: string;
+  apiKeyId?: string;
+  memoryBankId?: string;
   version: number;
   changeType: string;
   changeSummary: string;
@@ -313,24 +447,33 @@ export interface UserProfileRepository {
   initialize(): Promise<void>;
   close(): Promise<void>;
 
-  getActiveProfile(profileId: string): Promise<UserProfileRow | null>;
-  getProfileById(profileId: string): Promise<UserProfileRow | null>;
+  getActiveProfile(profileId: string, owner?: MemoryBankOwner): Promise<UserProfileRow | null>;
+  getProfileById(profileId: string, owner?: MemoryBankOwner): Promise<UserProfileRow | null>;
   getAllActiveProfiles(): Promise<UserProfileRow[]>;
   createProfile(
     profileId: string,
     profileData: UserProfileData,
-    promptsAnalyzed: number
+    promptsAnalyzed: number,
+    ownership?: { apiKeyId?: string; memoryBankId?: string }
   ): Promise<string>;
   updateProfile(
     profileId: string,
     profileData: UserProfileData,
     additionalPromptsAnalyzed: number,
-    changeSummary: string
+    changeSummary: string,
+    ownership?: { apiKeyId?: string; memoryBankId?: string }
   ): Promise<void>;
-  deleteProfile(profileId: string): Promise<void>;
-  applyConfidenceDecay(profileId: string): Promise<void>;
-  getProfileChangelogs(profileId: string, limit?: number): Promise<UserProfileChangelogRow[]>;
-  getChangelogById(changelogId: string): Promise<UserProfileChangelogRow | null>;
+  deleteProfile(profileId: string, owner?: MemoryBankOwner): Promise<void>;
+  applyConfidenceDecay(profileId: string, owner?: MemoryBankOwner): Promise<void>;
+  getProfileChangelogs(
+    profileId: string,
+    limit?: number,
+    owner?: MemoryBankOwner
+  ): Promise<UserProfileChangelogRow[]>;
+  getChangelogById(
+    changelogId: string,
+    owner?: MemoryBankOwner
+  ): Promise<UserProfileChangelogRow | null>;
 
   /**
    * Merge incoming profile data into the existing data, applying
@@ -343,6 +486,8 @@ export interface UserProfileRepository {
 
 export interface AISessionRow {
   id: string;
+  apiKeyId?: string;
+  memoryBankId?: string;
   provider: string;
   sessionId: string;
   conversationId?: string;
@@ -355,6 +500,8 @@ export interface AISessionRow {
 export interface AIMessageRow {
   id?: number;
   aiSessionId: string;
+  apiKeyId?: string;
+  memoryBankId?: string;
   sequence: number;
   role: string;
   content: string;
@@ -368,27 +515,34 @@ export interface AISessionRepository {
   initialize(): Promise<void>;
   close(): Promise<void>;
 
-  getSession(sessionId: string, provider: string): Promise<AISessionRow | null>;
+  getSession(
+    sessionId: string,
+    provider: string,
+    owner?: MemoryBankOwner
+  ): Promise<AISessionRow | null>;
   createSession(params: {
     provider: string;
     sessionId: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
     conversationId?: string;
     metadata?: Record<string, any>;
   }): Promise<AISessionRow>;
   updateSession(
     sessionId: string,
     provider: string,
-    updates: { conversationId?: string; metadata?: Record<string, any> }
+    updates: { conversationId?: string; metadata?: Record<string, any> },
+    owner?: MemoryBankOwner
   ): Promise<void>;
-  deleteSession(sessionId: string, provider: string): Promise<void>;
+  deleteSession(sessionId: string, provider: string, owner?: MemoryBankOwner): Promise<void>;
   cleanupExpiredSessions(): Promise<number>;
 
   addMessage(
     message: Omit<AIMessageRow, "id" | "createdAt" | "sequence"> & { sequence?: number }
   ): Promise<number>;
-  getMessages(aiSessionId: string): Promise<AIMessageRow[]>;
-  getLastSequence(aiSessionId: string): Promise<number>;
-  clearMessages(aiSessionId: string): Promise<void>;
+  getMessages(aiSessionId: string, owner?: MemoryBankOwner): Promise<AIMessageRow[]>;
+  getLastSequence(aiSessionId: string, owner?: MemoryBankOwner): Promise<number>;
+  clearMessages(aiSessionId: string, owner?: MemoryBankOwner): Promise<void>;
 }
 
 // ── Client tracking types ──
@@ -416,25 +570,13 @@ export interface ClientRepository {
     memoriesToday: number;
     totalPrompts: number;
   }>;
-}
-
-export interface ProfileApiKeyRow {
-  profileId: string;
-  apiKeyHash: string;
-  createdAt: number;
-  createdByClientId?: string;
-  lastUsedAt: number | null;
-}
-
-export interface ProfileApiKeyRepository {
-  initialize(): Promise<void>;
-  close(): Promise<void>;
-  hasKeyForProfile(profileId: string): Promise<boolean>;
-  createKeyForProfile(
-    profileId: string,
-    apiKey: string,
-    createdByClientId?: string
-  ): Promise<boolean>;
-  findProfileByApiKey(apiKey: string): Promise<{ profileId: string } | null>;
-  touchLastUsed(profileId: string): Promise<void>;
+  getClientStatsForBank(args: {
+    clientId: string;
+    apiKeyId: string;
+    memoryBankId: string;
+  }): Promise<{
+    totalMemories: number;
+    memoriesToday: number;
+    totalPrompts: number;
+  }>;
 }

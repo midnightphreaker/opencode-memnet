@@ -7,8 +7,7 @@ import { createToolHandlers } from "../src/mcp/tools";
 
 const baseConfig: CodexMemnetConfig = {
   serverUrl: "http://server.test",
-  apiKey: "key",
-  profileId: "profile-config-1",
+  apiKey: "secret-api-key",
   nickname: "Configured Name",
   timeoutMs: 30_000,
   memory: { defaultScope: "project" },
@@ -19,33 +18,66 @@ const baseConfig: CodexMemnetConfig = {
 interface RecordedRequest {
   url: URL;
   method: string;
+  headers: Headers;
   body?: unknown;
 }
 
-function createRecorder() {
+function connectData(memoryBanks = [memoryBank()]) {
+  return {
+    principal: {
+      kind: "user-api-key",
+      apiKeyId: "key-1",
+      apiKeyName: "opencode",
+      apiKeyDescription: "OpenCode agent memory access",
+    },
+    memoryBanks,
+    requiresMemoryBank: memoryBanks.length === 0,
+  };
+}
+
+function memoryBank() {
+  return {
+    id: "bank-1",
+    apiKeyId: "key-1",
+    name: "project",
+    description: "Work done on project repo",
+    shortcut: "opencode>project",
+    createdAt: "2026-06-26T00:00:00.000Z",
+    updatedAt: "2026-06-26T00:00:00.000Z",
+  };
+}
+
+function createRecorder(options: { memoryBanks?: ReturnType<typeof memoryBank>[] } = {}) {
   const requests: RecordedRequest[] = [];
   const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
+    const url = new URL(request.url);
     requests.push({
-      url: new URL(request.url),
+      url,
       method: request.method,
+      headers: request.headers,
       body: request.body ? await request.json() : undefined,
     });
+    if (url.pathname === "/api/client/connect") {
+      return Response.json({ success: true, data: connectData(options.memoryBanks) });
+    }
     return Response.json({ success: true, data: { ok: true } });
   };
   return { requests, fetcher };
 }
 
-function createHandlers(options: {
-  config?: CodexMemnetConfig;
-  fetcher?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
-} = {}) {
+function createHandlers(
+  options: {
+    config?: CodexMemnetConfig;
+    fetcher?: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
+  } = {}
+) {
   const cwd = mkdtempSync(join(tmpdir(), "codex-mcp-tools-"));
   const handlers = createToolHandlers({
     cwd,
     config: options.config ?? baseConfig,
     clientId: "client-123",
-    fetcher: options.fetcher ?? (async () => Response.json({ success: true, data: { ok: true } })),
+    fetcher: options.fetcher ?? (async () => Response.json({ success: true, data: connectData() })),
   });
   return { cwd, handlers };
 }
@@ -76,8 +108,8 @@ describe("MCP tool handlers", () => {
     }
   });
 
-  test("memory_connect posts configured profileId and minimal metadata", async () => {
-    const { requests, fetcher } = createRecorder();
+  test("memory_connect posts v2 connect body and suggests a bank when none exists", async () => {
+    const { requests, fetcher } = createRecorder({ memoryBanks: [] });
     const { cwd, handlers } = createHandlers({ fetcher });
 
     try {
@@ -88,7 +120,7 @@ describe("MCP tool handlers", () => {
       expect(requests[0].url.pathname).toBe("/api/client/connect");
       expect(requests[0].body).toMatchObject({
         clientId: "client-123",
-        profileId: "profile-config-1",
+        includeStats: false,
         metadata: {
           client: "codex",
           runtime: "codex-cli",
@@ -98,18 +130,32 @@ describe("MCP tool handlers", () => {
           projectName: expect.any(String),
         },
       });
-      const metadata = (requests[0].body as { metadata: Record<string, unknown> }).metadata;
-      expect(metadata.gitRepoUrl === undefined || typeof metadata.gitRepoUrl === "string").toBe(true);
-      expect("cwd" in metadata).toBe(false);
-      expect("projectPath" in metadata).toBe(false);
-      expect("userEmail" in metadata).toBe(false);
-      expect("userName" in metadata).toBe(false);
+      expect(JSON.stringify(requests[0].body)).not.toContain("profileId");
+      expect(JSON.stringify(result)).toContain("suggestedMemoryBank");
+      expect(JSON.stringify(result)).not.toContain(baseConfig.apiKey);
     } finally {
       cleanup(cwd);
     }
   });
 
-  test("memory_get_context posts profileId and repoId without userId or query", async () => {
+  test("memory operations fail with exact message when no bank is active", async () => {
+    const { fetcher } = createRecorder({ memoryBanks: [] });
+    const { cwd, handlers } = createHandlers({ fetcher });
+
+    try {
+      const result = await handlers.memory_search({ query: "identity" });
+
+      expect(result).toEqual({
+        success: false,
+        error: "No active Memory Bank. Create one before using memory operations.",
+      });
+      expect(JSON.stringify(result)).not.toContain(baseConfig.apiKey);
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  test("memory_get_context posts repo scope with Memory Bank header", async () => {
     const { requests, fetcher } = createRecorder();
     const { cwd, handlers } = createHandlers({ fetcher });
 
@@ -117,23 +163,25 @@ describe("MCP tool handlers", () => {
       const result = await handlers.memory_get_context({ sessionID: "session-1", maxMemories: 7 });
 
       expect(result.success).toBe(true);
-      expect(requests[0].method).toBe("POST");
-      expect(requests[0].url.pathname).toBe("/api/context/inject");
-      expect(requests[0].body).toMatchObject({
+      expect(requests.map((request) => request.url.pathname)).toEqual([
+        "/api/client/connect",
+        "/api/context/inject",
+      ]);
+      expect(requests[1].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
+      expect(requests[1].body).toMatchObject({
         sessionID: "session-1",
         projectTag: expect.any(String),
-        profileId: "profile-config-1",
         repoId: expect.any(String),
         maxMemories: 7,
       });
-      expect("userId" in (requests[0].body as Record<string, unknown>)).toBe(false);
-      expect("query" in (requests[0].body as Record<string, unknown>)).toBe(false);
+      expect(JSON.stringify(requests[1].body)).not.toContain("profileId");
+      expect("query" in (requests[1].body as Record<string, unknown>)).toBe(false);
     } finally {
       cleanup(cwd);
     }
   });
 
-  test("memory_add strips private blocks and sends only allowed project fields", async () => {
+  test("memory_add strips private blocks and sends Memory Bank header", async () => {
     const { requests, fetcher } = createRecorder();
     const { cwd, handlers } = createHandlers({ fetcher });
 
@@ -145,27 +193,19 @@ describe("MCP tool handlers", () => {
       });
 
       expect(result.success).toBe(true);
-      expect(requests[0].method).toBe("POST");
-      expect(requests[0].url.pathname).toBe("/api/memories");
-      const body = requests[0].body as Record<string, unknown>;
-      const containerTag = body.containerTag;
-      const repoId = body.repoId;
-      expect(requests[0].body).toMatchObject({
+      expect(requests[1].url.pathname).toBe("/api/memories");
+      expect(requests[1].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
+      const body = requests[1].body as Record<string, unknown>;
+      expect(body).toMatchObject({
         content: "keep  visible",
         containerTag: expect.any(String),
         type: "note",
         tags: ["important"],
-        profileId: "profile-config-1",
         repoId: expect.any(String),
         projectName: expect.any(String),
       });
-      expect(repoId).toMatch(/^repo_/);
-      expect(repoId).not.toBe(containerTag);
-      expect(body.gitRepoUrl === undefined || typeof body.gitRepoUrl === "string").toBe(true);
-      expect("userId" in body).toBe(false);
-      expect("userEmail" in body).toBe(false);
-      expect("userName" in body).toBe(false);
-      expect("projectPath" in body).toBe(false);
+      expect(JSON.stringify(body)).not.toContain("profileId");
+      expect(JSON.stringify(body)).not.toContain("secret");
     } finally {
       cleanup(cwd);
     }
@@ -191,7 +231,7 @@ describe("MCP tool handlers", () => {
     }
   });
 
-  test("memory_search and memory_list include configured scope query params", async () => {
+  test("memory_search and memory_list include bank headers and no profile query", async () => {
     const { requests, fetcher } = createRecorder();
     const { cwd, handlers } = createHandlers({ fetcher });
 
@@ -199,26 +239,22 @@ describe("MCP tool handlers", () => {
       await handlers.memory_search({ query: "identity", limit: 3 });
       await handlers.memory_list({ limit: 4 });
 
-      expect(requests[0].method).toBe("GET");
-      expect(requests[0].url.pathname).toBe("/api/search");
-      expect(requests[0].url.searchParams.get("q")).toBe("identity");
-      expect(requests[0].url.searchParams.get("pageSize")).toBe("3");
-      expect(requests[0].url.searchParams.get("profileId")).toBe("profile-config-1");
-      expect(requests[0].url.searchParams.get("repoId")).toMatch(/^repo_/);
-      expect(requests[0].url.searchParams.has("userId")).toBe(false);
+      expect(requests[1].url.pathname).toBe("/api/search");
+      expect(requests[1].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
+      expect(requests[1].url.searchParams.get("q")).toBe("identity");
+      expect(requests[1].url.searchParams.get("pageSize")).toBe("3");
+      expect(requests[1].url.searchParams.has("profileId")).toBe(false);
 
-      expect(requests[1].method).toBe("GET");
-      expect(requests[1].url.pathname).toBe("/api/memories");
-      expect(requests[1].url.searchParams.get("pageSize")).toBe("4");
-      expect(requests[1].url.searchParams.get("profileId")).toBe("profile-config-1");
-      expect(requests[1].url.searchParams.get("repoId")).toMatch(/^repo_/);
-      expect(requests[1].url.searchParams.has("userId")).toBe(false);
+      expect(requests[3].url.pathname).toBe("/api/memories");
+      expect(requests[3].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
+      expect(requests[3].url.searchParams.get("pageSize")).toBe("4");
+      expect(requests[3].url.searchParams.has("profileId")).toBe(false);
     } finally {
       cleanup(cwd);
     }
   });
 
-  test("memory_forget deletes the encoded memory path", async () => {
+  test("memory_forget deletes the encoded memory path with bank header", async () => {
     const { requests, fetcher } = createRecorder();
     const { cwd, handlers } = createHandlers({ fetcher });
 
@@ -226,14 +262,15 @@ describe("MCP tool handlers", () => {
       const result = await handlers.memory_forget({ memoryId: "memory/1" });
 
       expect(result.success).toBe(true);
-      expect(requests[0].method).toBe("DELETE");
-      expect(requests[0].url.pathname).toBe("/api/memories/memory%2F1");
+      expect(requests[1].method).toBe("DELETE");
+      expect(requests[1].url.pathname).toBe("/api/memories/memory%2F1");
+      expect(requests[1].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
     } finally {
       cleanup(cwd);
     }
   });
 
-  test("memory_profile uses configured profileId query", async () => {
+  test("memory_profile reports bank state without user profile request", async () => {
     const { requests, fetcher } = createRecorder();
     const { cwd, handlers } = createHandlers({ fetcher });
 
@@ -241,15 +278,19 @@ describe("MCP tool handlers", () => {
       const result = await handlers.memory_profile();
 
       expect(result.success).toBe(true);
-      expect(requests[0].method).toBe("GET");
-      expect(requests[0].url.pathname).toBe("/api/user-profile");
-      expect(requests[0].url.searchParams.get("profileId")).toBe("profile-config-1");
+      expect(requests.map((request) => request.url.pathname)).toEqual(["/api/client/connect"]);
+      if (result.success) {
+        expect(result.data).toMatchObject({
+          activeMemoryBank: { id: "bank-1" },
+          requiresMemoryBank: false,
+        });
+      }
     } finally {
       cleanup(cwd);
     }
   });
 
-  test("memory_stats hits client stats", async () => {
+  test("memory_stats requests scoped stats for the active bank", async () => {
     const { requests, fetcher } = createRecorder();
     const { cwd, handlers } = createHandlers({ fetcher });
 
@@ -257,9 +298,14 @@ describe("MCP tool handlers", () => {
       const result = await handlers.memory_stats();
 
       expect(result.success).toBe(true);
-      expect(requests[0].method).toBe("GET");
-      expect(requests[0].url.pathname).toBe("/api/client/stats");
-      expect(requests[0].url.searchParams.get("clientId")).toBe("client-123");
+      expect(requests.map((request) => request.url.pathname)).toEqual([
+        "/api/client/connect",
+        "/api/client/connect",
+      ]);
+      expect(requests[1].body).toMatchObject({
+        includeStats: true,
+        memoryBankId: "bank-1",
+      });
     } finally {
       cleanup(cwd);
     }
@@ -285,23 +331,26 @@ describe("MCP tool handlers", () => {
     }
   });
 
-  test("memory_capture fallback stores manual memory with codex-mcp source", async () => {
+  test("memory_capture fallback stores manual memory with bank header", async () => {
     const { requests, fetcher } = createRecorder();
     const { cwd, handlers } = createHandlers({ fetcher });
 
     try {
-      const result = await handlers.memory_capture({ summary: "Useful summary", sessionID: "session-1" });
+      const result = await handlers.memory_capture({
+        summary: "Useful summary",
+        sessionID: "session-1",
+      });
 
       expect(result.success).toBe(true);
-      expect(requests[0].method).toBe("POST");
-      expect(requests[0].url.pathname).toBe("/api/memories");
-      expect(requests[0].body).toMatchObject({
+      expect(requests[1].url.pathname).toBe("/api/memories");
+      expect(requests[1].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
+      expect(requests[1].body).toMatchObject({
         content: "Useful summary",
         source: "codex-mcp",
         sessionID: "session-1",
-        profileId: "profile-config-1",
         repoId: expect.any(String),
       });
+      expect(JSON.stringify(requests[1].body)).not.toContain("profileId");
     } finally {
       cleanup(cwd);
     }
@@ -321,17 +370,17 @@ describe("MCP tool handlers", () => {
       });
 
       expect(result.success).toBe(true);
-      expect(requests[0].method).toBe("POST");
-      expect(requests[0].url.pathname).toBe("/api/auto-capture");
-      expect(requests[0].body).toMatchObject({
+      expect(requests[1].url.pathname).toBe("/api/auto-capture");
+      expect(requests[1].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
+      expect(requests[1].body).toMatchObject({
         sessionID: "session-1",
         projectTag: expect.any(String),
-        profileId: "profile-config-1",
         repoId: expect.any(String),
         conversationMessages: [{ role: "user", content: "remember this" }],
         userPrompt: "remember this",
         promptMessageId: "prompt-1",
       });
+      expect(JSON.stringify(requests[1].body)).not.toContain("profileId");
     } finally {
       cleanup(cwd);
     }

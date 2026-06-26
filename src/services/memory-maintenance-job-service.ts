@@ -17,7 +17,10 @@ export type JobType =
 
 export type JobStatus = "queued" | "running" | "completed" | "failed";
 
-export type JobScope = { kind: "all" } | { kind: "profile"; profileId: string };
+export type JobScope =
+  | { kind: "all" }
+  | { kind: "profile"; profileId: string }
+  | { kind: "memory-bank"; apiKeyId: string; memoryBankId: string };
 
 export interface MemoryMaintenanceJob {
   id: string;
@@ -73,7 +76,9 @@ function jobTypeLabel(type: JobType): string {
 }
 
 function scopeKey(scope: JobScope): string {
-  return scope.kind === "all" ? "all" : `profile:${scope.profileId}`;
+  if (scope.kind === "all") return "all";
+  if (scope.kind === "profile") return `profile:${scope.profileId}`;
+  return `memory-bank:${scope.apiKeyId}:${scope.memoryBankId}`;
 }
 
 function isDuplicateJob(existing: MemoryMaintenanceJob, type: JobType, scope: JobScope): boolean {
@@ -324,7 +329,11 @@ async function executeTagMigrationJob(job: MemoryMaintenanceJob): Promise<void> 
   const { runTagMigration } = await import("./tag-migration-service.js");
   // Fire and let the migration service handle it
   // For now, this is a one-shot trigger
-  await runTagMigration();
+  await runTagMigration(
+    job.scope.kind === "memory-bank"
+      ? { apiKeyId: job.scope.apiKeyId, memoryBankId: job.scope.memoryBankId }
+      : undefined
+  );
   job.summary = "Tag migration cycle completed.";
 }
 
@@ -335,9 +344,14 @@ async function executeNormalizeTagsJob(job: MemoryMaintenanceJob): Promise<void>
   log("job-service: starting tag normalization backfill");
 
   const result = await registry.backfillFromExistingTags(
-    job.scope.kind === "profile"
-      ? { batchSize: 100, profileId: job.scope.profileId }
-      : { batchSize: 100 }
+    job.scope.kind === "memory-bank"
+      ? {
+          batchSize: 100,
+          owner: { apiKeyId: job.scope.apiKeyId, memoryBankId: job.scope.memoryBankId },
+        }
+      : job.scope.kind === "profile"
+        ? { batchSize: 100, profileId: job.scope.profileId }
+        : { batchSize: 100 }
   );
 
   job.processedItems = result.processed;

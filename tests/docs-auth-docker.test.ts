@@ -3,68 +3,34 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const read = (path: string) => readFileSync(join(import.meta.dir, "..", path), "utf-8");
+const legacyNewUserKey = ["NEWUSER", "API", "KEY"].join("_");
+const legacyProfileKeysFile = ["PROFILE", "KEYS", "FILE"].join("_");
 
-describe("auth and docker documentation", () => {
-  it("documents API-key-required auth without auth-disabled modes", () => {
+describe("v2 auth and docker documentation", () => {
+  it("documents required server key, clean-start backup, and Memory Banks", () => {
     const readme = read("README.md");
     const env = read(".env.example");
 
-    expect(readme).toContain("SERVER_API_KEY");
-    expect(readme).toContain("NEWUSER_API_KEY");
-    expect(readme).toContain("admin/all-profiles");
-    expect(readme).not.toContain("DISABLE_WEBUI_AUTH");
-    expect(readme).not.toContain("DISABLE_CLIENT_AUTH");
-    expect(env).not.toContain("DISABLE_WEBUI_AUTH");
-    expect(env).not.toContain("DISABLE_CLIENT_AUTH");
+    expect(readme).toContain("SERVER_API_KEY is required");
+    expect(readme).toContain("pg_dump");
+    expect(readme).toContain("pg_restore --list");
+    expect(readme).toContain("There is no v1-to-v2 upgrade");
+    expect(readme).toContain("shown once");
+    expect(readme).toContain("<api-key-name>><memory-bank-name>");
+    expect(env).toContain("SERVER_API_KEY=");
+    expect(env).not.toContain(legacyNewUserKey);
+    expect(env).not.toContain(legacyProfileKeysFile);
   });
 
-  it("documents bootstrap profile enrollment", () => {
-    const readme = read("README.md");
-    const env = read(".env.example");
+  it("passes only SERVER_API_KEY for compose server auth", () => {
     const compose = read("docker-compose.yml");
     const externalCompose = read("docker-compose.external-db.yml");
 
-    expect(readme).toContain("Bootstrap Profile Enrollment");
-    expect(readme).toContain("docker compose exec server cat /tmp/opencode-memnet-server-api-key");
-    expect(readme).toContain("docker compose exec server cat /tmp/opencode-memnet-newuser-api-key");
-    expect(readme).toContain("generated profile key");
-    expect(env).toContain("NEWUSER_API_KEY=");
-    expect(env).toContain("OPENCODEMEMNET_RESET_KEYS=false");
-    expect(env).toContain("/tmp/opencode-memnet-server-api-key");
-    expect(env).toContain("/tmp/opencode-memnet-newuser-api-key");
-    expect(compose).toContain("NEWUSER_API_KEY: ${NEWUSER_API_KEY:-}");
-    expect(compose).toContain("OPENCODEMEMNET_RESET_KEYS: ${OPENCODEMEMNET_RESET_KEYS:-false}");
-    expect(externalCompose).toContain("NEWUSER_API_KEY: ${NEWUSER_API_KEY:-}");
-    expect(externalCompose).toContain(
-      "OPENCODEMEMNET_RESET_KEYS: ${OPENCODEMEMNET_RESET_KEYS:-false}"
-    );
-  });
-
-  it("uses a compose-safe localhost bind address", () => {
-    const readme = read("README.md");
-    const env = read(".env.example");
-    const compose = read("docker-compose.yml");
-    const externalCompose = read("docker-compose.external-db.yml");
-
-    expect(readme).toContain("`EXTERNAL_HOST`");
-    expect(readme).toContain("`127.0.0.1`");
-    expect(env).toContain("EXTERNAL_HOST=127.0.0.1");
-    expect(compose).toContain("${EXTERNAL_HOST:-127.0.0.1}");
-    expect(externalCompose).toContain("${EXTERNAL_HOST:-127.0.0.1}");
-    expect(compose).not.toContain("${EXTERNAL_HOST:-localhost}");
-    expect(externalCompose).not.toContain("${EXTERNAL_HOST:-localhost}");
-  });
-
-  it("documents and mounts profile-key secrets for docker", () => {
-    const readme = read("README.md");
-    const env = read(".env.example");
-    const compose = read("docker-compose.yml");
-    const externalCompose = read("docker-compose.external-db.yml");
-
-    expect(readme).toContain("./secrets/opencode-memnet-profile-keys.jsonc");
-    expect(readme).toContain("PROFILE_KEYS_FILE=/run/secrets/opencode-memnet-profile-keys.jsonc");
-    expect(env).toContain("PROFILE_KEYS_FILE=/run/secrets/opencode-memnet-profile-keys.jsonc");
-    expect(compose).toContain("./secrets:/run/secrets:ro");
-    expect(externalCompose).toContain("./secrets:/run/secrets:ro");
+    expect(compose).toContain("SERVER_API_KEY: ${SERVER_API_KEY:-}");
+    expect(externalCompose).toContain("SERVER_API_KEY: ${SERVER_API_KEY:-}");
+    expect(compose).not.toContain(legacyNewUserKey);
+    expect(compose).not.toContain(legacyProfileKeysFile);
+    expect(externalCompose).not.toContain(legacyNewUserKey);
+    expect(externalCompose).not.toContain(legacyProfileKeysFile);
   });
 });

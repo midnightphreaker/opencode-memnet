@@ -1585,6 +1585,78 @@ button:disabled {
   font-style: italic;
 }
 
+.admin-section {
+  border-top: 1px solid var(--border);
+  padding: 16px 0;
+}
+
+.admin-section h2 {
+  color: var(--primary-bright);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.admin-form {
+  display: grid;
+  grid-template-columns: minmax(140px, 1fr) minmax(180px, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.admin-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.api-key-row {
+  display: grid;
+  grid-template-columns: minmax(110px, 1fr) minmax(160px, 2fr);
+  gap: 8px;
+  text-align: left;
+  border: 1px solid var(--border);
+  background: var(--card-alt);
+  padding: 8px;
+  border-radius: 0;
+  height: auto;
+  min-height: 34px;
+  letter-spacing: 0.04em;
+}
+
+.api-key-row small {
+  color: var(--muted-foreground);
+  overflow-wrap: anywhere;
+}
+
+.api-key-row.active {
+  border-color: var(--primary-bright);
+  color: var(--primary-bright);
+}
+
+#memory-bank-select {
+  width: 100%;
+  margin-bottom: 10px;
+}
+
+.modal-description {
+  padding: 16px 16px 0;
+  color: var(--foreground-soft);
+}
+
+.generated-key-value {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  padding: 12px;
+  margin: 16px;
+  border-radius: 0;
+  color: var(--primary-bright);
+  background: var(--background);
+}
+
 /* ── Job Status Bar (replaces .migration-status-bar) ── */
 .job-status-bar {
   position: fixed;
@@ -1972,6 +2044,11 @@ textarea:focus-visible {
 
   .form-row {
     flex-direction: column;
+  }
+
+  .admin-form,
+  .api-key-row {
+    grid-template-columns: 1fr;
   }
 
   .memory-header {

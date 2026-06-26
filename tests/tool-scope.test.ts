@@ -54,7 +54,30 @@ const clientConfig = {
 
 mock.module(${JSON.stringify(remoteClientUrl)}, () => ({
   getRemoteClient: () => ({
-    clientConnect: async () => ({ success: true, data: null }),
+    clientConnect: async () => ({
+      success: true,
+      data: {
+        principal: {
+          kind: "user-api-key",
+          apiKeyId: "key-1",
+          apiKeyName: "opencode",
+          apiKeyDescription: "OpenCode agent memory access",
+        },
+        memoryBanks: [
+          {
+            id: "bank-1",
+            apiKeyId: "key-1",
+            apiKeyName: "opencode",
+            name: "repo",
+            description: "Work done on repo",
+            shortcut: "opencode>repo",
+            createdAt: Date.now(),
+            updatedAt: Date.now(),
+          },
+        ],
+        requiresMemoryBank: false,
+      },
+    }),
     searchMemories: async (...args) => {
       searchCalls.push(args);
       return { success: true, results: [], total: 0, timing: 0 };

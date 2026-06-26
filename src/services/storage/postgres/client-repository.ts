@@ -96,4 +96,50 @@ export class PostgresClientRepository implements ClientRepository {
       totalPrompts,
     };
   }
+
+  async getClientStatsForBank(args: {
+    clientId: string;
+    apiKeyId: string;
+    memoryBankId: string;
+  }): Promise<{
+    totalMemories: number;
+    memoriesToday: number;
+    totalPrompts: number;
+  }> {
+    const sql = this.sql();
+
+    const memResult = await sql`
+      SELECT COUNT(*) as count
+      FROM memories
+      WHERE api_key_id = ${args.apiKeyId}
+        AND memory_bank_id = ${args.memoryBankId}
+    `;
+    const totalMemories = parseInt(memResult[0]?.count ?? "0");
+
+    const todayResult = await sql`
+      SELECT COUNT(*) as count
+      FROM memories
+      WHERE api_key_id = ${args.apiKeyId}
+        AND memory_bank_id = ${args.memoryBankId}
+        AND created_at >= (extract(epoch from current_date)::bigint * 1000)
+    `;
+    const memoriesToday = parseInt(todayResult[0]?.count ?? "0");
+
+    const promptResult = await sql`
+      SELECT COUNT(*) as count
+      FROM user_prompts
+      WHERE api_key_id = ${args.apiKeyId}
+        AND memory_bank_id = ${args.memoryBankId}
+        AND session_id IN (
+          SELECT session_id
+          FROM user_prompts
+          WHERE api_key_id = ${args.apiKeyId}
+            AND memory_bank_id = ${args.memoryBankId}
+            AND session_id = ${args.clientId}
+        )
+    `;
+    const totalPrompts = parseInt(promptResult[0]?.count ?? "0");
+
+    return { totalMemories, memoriesToday, totalPrompts };
+  }
 }

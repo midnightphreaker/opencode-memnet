@@ -5,6 +5,7 @@
 import { getPostgresClient } from "./client.js";
 import { log } from "../../logger.js";
 import type { SqlClient } from "./client.js";
+import type { MemoryBankOwner } from "../types.js";
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -138,7 +139,10 @@ export class PostgresTagRegistry {
    *
    * Returns { tagId, canonicalName, isNew }
    */
-  async resolveOrCreateTag(rawTag: string): Promise<{
+  async resolveOrCreateTag(
+    rawTag: string,
+    owner?: MemoryBankOwner
+  ): Promise<{
     tagId: number;
     canonicalName: string;
     isNew: boolean;
@@ -150,10 +154,16 @@ export class PostgresTagRegistry {
     }
 
     // 1. Direct lookup by canonical name
-    const direct = await sql`
-      SELECT id, canonical_name FROM memory_tags
-      WHERE canonical_name = ${normalized}
-    `;
+    const direct = owner
+      ? await sql`
+          SELECT id, canonical_name FROM memory_tags
+          WHERE canonical_name = ${normalized}
+            AND memory_bank_id = ${owner.memoryBankId}
+        `
+      : await sql`
+          SELECT id, canonical_name FROM memory_tags
+          WHERE canonical_name = ${normalized}
+        `;
     if (direct.length > 0) {
       const row = direct[0]!;
       return {
@@ -164,12 +174,21 @@ export class PostgresTagRegistry {
     }
 
     // 2. Lookup by alias
-    const aliasMatch = await sql`
-      SELECT mt.id, mt.canonical_name
-      FROM memory_tag_aliases mta
-      JOIN memory_tags mt ON mt.id = mta.tag_id
-      WHERE mta.normalized_alias = ${normalized}
-    `;
+    const aliasMatch = owner
+      ? await sql`
+          SELECT mt.id, mt.canonical_name
+          FROM memory_tag_aliases mta
+          JOIN memory_tags mt ON mt.id = mta.tag_id
+          WHERE mta.normalized_alias = ${normalized}
+            AND mta.memory_bank_id = ${owner.memoryBankId}
+            AND mt.memory_bank_id = ${owner.memoryBankId}
+        `
+      : await sql`
+          SELECT mt.id, mt.canonical_name
+          FROM memory_tag_aliases mta
+          JOIN memory_tags mt ON mt.id = mta.tag_id
+          WHERE mta.normalized_alias = ${normalized}
+        `;
     if (aliasMatch.length > 0) {
       const row = aliasMatch[0]!;
       return {
@@ -182,14 +201,20 @@ export class PostgresTagRegistry {
     // 3. Check sorted-term canonical form
     const canonical = canonicalizeTagName(normalized);
     if (canonical !== normalized) {
-      const canonMatch = await sql`
-        SELECT id, canonical_name FROM memory_tags
-        WHERE canonical_name = ${canonical}
-      `;
+      const canonMatch = owner
+        ? await sql`
+            SELECT id, canonical_name FROM memory_tags
+            WHERE canonical_name = ${canonical}
+              AND memory_bank_id = ${owner.memoryBankId}
+          `
+        : await sql`
+            SELECT id, canonical_name FROM memory_tags
+            WHERE canonical_name = ${canonical}
+          `;
       if (canonMatch.length > 0) {
         // Add the normalized form as an alias
         const cmr = canonMatch[0]!;
-        await this.addAlias(cmr.id, normalized);
+        await this.addAlias(cmr.id, normalized, owner);
         return {
           tagId: cmr.id,
           canonicalName: cmr.canonical_name,
@@ -198,15 +223,24 @@ export class PostgresTagRegistry {
       }
 
       // Also check aliases for the canonical form
-      const canonAlias = await sql`
-        SELECT mt.id, mt.canonical_name
-        FROM memory_tag_aliases mta
-        JOIN memory_tags mt ON mt.id = mta.tag_id
-        WHERE mta.normalized_alias = ${canonical}
-      `;
+      const canonAlias = owner
+        ? await sql`
+            SELECT mt.id, mt.canonical_name
+            FROM memory_tag_aliases mta
+            JOIN memory_tags mt ON mt.id = mta.tag_id
+            WHERE mta.normalized_alias = ${canonical}
+              AND mta.memory_bank_id = ${owner.memoryBankId}
+              AND mt.memory_bank_id = ${owner.memoryBankId}
+          `
+        : await sql`
+            SELECT mt.id, mt.canonical_name
+            FROM memory_tag_aliases mta
+            JOIN memory_tags mt ON mt.id = mta.tag_id
+            WHERE mta.normalized_alias = ${canonical}
+          `;
       if (canonAlias.length > 0) {
         const car = canonAlias[0]!;
-        await this.addAlias(car.id, normalized);
+        await this.addAlias(car.id, normalized, owner);
         return {
           tagId: car.id,
           canonicalName: car.canonical_name,
@@ -217,25 +251,33 @@ export class PostgresTagRegistry {
 
     // 4. Create a new canonical tag
     const finalName = canonical;
-    const inserted = await sql`
-      INSERT INTO memory_tags (canonical_name)
-      VALUES (${finalName})
-      ON CONFLICT (canonical_name) DO UPDATE SET usage_count = memory_tags.usage_count
-      RETURNING id, canonical_name
-    `;
+    const inserted = owner
+      ? await sql`
+          INSERT INTO memory_tags (canonical_name, memory_bank_id)
+          VALUES (${finalName}, ${owner.memoryBankId})
+          ON CONFLICT (memory_bank_id, canonical_name)
+          DO UPDATE SET usage_count = memory_tags.usage_count
+          RETURNING id, canonical_name
+        `
+      : await sql`
+          INSERT INTO memory_tags (canonical_name)
+          VALUES (${finalName})
+          ON CONFLICT (canonical_name) DO UPDATE SET usage_count = memory_tags.usage_count
+          RETURNING id, canonical_name
+        `;
     const insertedRow = inserted[0]!;
     const tagId = insertedRow.id;
     const createdName = insertedRow.canonical_name;
 
     // If the raw tag differs from the canonical name, add as alias
     if (normalized !== finalName) {
-      await this.addAlias(tagId, normalized);
+      await this.addAlias(tagId, normalized, owner);
     }
 
     // If the original raw input differs from the normalized form, add as alias
     const rawLowered = rawTag.toLowerCase().trim();
     if (rawLowered !== normalized && rawLowered !== finalName) {
-      await this.addAlias(tagId, rawLowered);
+      await this.addAlias(tagId, rawLowered, owner);
     }
 
     log(`[tag-registry] Created canonical tag: "${createdName}" (id=${tagId})`);
@@ -251,34 +293,58 @@ export class PostgresTagRegistry {
    * Resolve a raw tag to a canonical tag ID without creating.
    * Returns null if no match found.
    */
-  async resolveTag(rawTag: string): Promise<number | null> {
+  async resolveTag(rawTag: string, owner?: MemoryBankOwner): Promise<number | null> {
     const sql = this.sql();
     const normalized = normalizeTagName(rawTag);
     if (!normalized) return null;
 
     // Direct lookup
-    const direct = await sql`
-      SELECT id FROM memory_tags WHERE canonical_name = ${normalized}
-    `;
+    const direct = owner
+      ? await sql`
+          SELECT id FROM memory_tags
+          WHERE canonical_name = ${normalized}
+            AND memory_bank_id = ${owner.memoryBankId}
+        `
+      : await sql`
+          SELECT id FROM memory_tags WHERE canonical_name = ${normalized}
+        `;
     if (direct.length > 0) return direct[0]!.id;
 
     // Alias lookup
-    const alias = await sql`
-      SELECT tag_id FROM memory_tag_aliases WHERE normalized_alias = ${normalized}
-    `;
+    const alias = owner
+      ? await sql`
+          SELECT tag_id FROM memory_tag_aliases
+          WHERE normalized_alias = ${normalized}
+            AND memory_bank_id = ${owner.memoryBankId}
+        `
+      : await sql`
+          SELECT tag_id FROM memory_tag_aliases WHERE normalized_alias = ${normalized}
+        `;
     if (alias.length > 0) return alias[0]!.tag_id;
 
     // Canonical form lookup
     const canonical = canonicalizeTagName(normalized);
     if (canonical !== normalized) {
-      const canon = await sql`
-        SELECT id FROM memory_tags WHERE canonical_name = ${canonical}
-      `;
+      const canon = owner
+        ? await sql`
+            SELECT id FROM memory_tags
+            WHERE canonical_name = ${canonical}
+              AND memory_bank_id = ${owner.memoryBankId}
+          `
+        : await sql`
+            SELECT id FROM memory_tags WHERE canonical_name = ${canonical}
+          `;
       if (canon.length > 0) return canon[0]!.id;
 
-      const canonAlias = await sql`
-        SELECT tag_id FROM memory_tag_aliases WHERE normalized_alias = ${canonical}
-      `;
+      const canonAlias = owner
+        ? await sql`
+            SELECT tag_id FROM memory_tag_aliases
+            WHERE normalized_alias = ${canonical}
+              AND memory_bank_id = ${owner.memoryBankId}
+          `
+        : await sql`
+            SELECT tag_id FROM memory_tag_aliases WHERE normalized_alias = ${canonical}
+          `;
       if (canonAlias.length > 0) return canonAlias[0]!.tag_id;
     }
 
@@ -289,12 +355,20 @@ export class PostgresTagRegistry {
    * Add an alias for a canonical tag.
    * Silently ignores if alias already exists for a different tag.
    */
-  async addAlias(tagId: number, alias: string): Promise<void> {
+  async addAlias(tagId: number, alias: string, owner?: MemoryBankOwner): Promise<void> {
     const sql = this.sql();
     const normalizedAlias = normalizeTagName(alias);
     if (!normalizedAlias) return;
 
     try {
+      if (owner) {
+        await sql`
+          INSERT INTO memory_tag_aliases (tag_id, alias, normalized_alias, memory_bank_id)
+          VALUES (${tagId}, ${alias}, ${normalizedAlias}, ${owner.memoryBankId})
+          ON CONFLICT (memory_bank_id, normalized_alias) DO NOTHING
+        `;
+        return;
+      }
       await sql`
         INSERT INTO memory_tag_aliases (tag_id, alias, normalized_alias)
         VALUES (${tagId}, ${alias}, ${normalizedAlias})
@@ -311,7 +385,11 @@ export class PostgresTagRegistry {
    * then upserts the memory-tag links.
    * Also increments usage_count on each canonical tag.
    */
-  async linkMemoryTags(memoryId: string, rawTags: string[]): Promise<void> {
+  async linkMemoryTags(
+    memoryId: string,
+    rawTags: string[],
+    owner?: MemoryBankOwner
+  ): Promise<void> {
     if (!rawTags || rawTags.length === 0) return;
     const sql = this.sql();
 
@@ -320,7 +398,7 @@ export class PostgresTagRegistry {
     for (const raw of rawTags) {
       const trimmed = raw.trim();
       if (!trimmed) continue;
-      const { tagId } = await this.resolveOrCreateTag(trimmed);
+      const { tagId } = await this.resolveOrCreateTag(trimmed, owner);
       tagIds.push(tagId);
     }
 
@@ -329,27 +407,54 @@ export class PostgresTagRegistry {
 
     // Upsert links
     for (const tagId of uniqueTagIds) {
-      await sql`
-        INSERT INTO memory_tag_links (memory_id, tag_id)
-        VALUES (${memoryId}, ${tagId})
-        ON CONFLICT (memory_id, tag_id) DO NOTHING
-      `;
+      if (owner) {
+        await sql`
+          INSERT INTO memory_tag_links (memory_id, tag_id, memory_bank_id)
+          VALUES (${memoryId}, ${tagId}, ${owner.memoryBankId})
+          ON CONFLICT (memory_id, tag_id) DO NOTHING
+        `;
+      } else {
+        await sql`
+          INSERT INTO memory_tag_links (memory_id, tag_id)
+          VALUES (${memoryId}, ${tagId})
+          ON CONFLICT (memory_id, tag_id) DO NOTHING
+        `;
+      }
       // Update usage count
-      await sql`
-        UPDATE memory_tags
-        SET usage_count = usage_count + 1,
-            last_used_at = NOW(),
-            updated_at = NOW()
-        WHERE id = ${tagId}
-      `;
+      if (owner) {
+        await sql`
+          UPDATE memory_tags
+          SET usage_count = usage_count + 1,
+              last_used_at = NOW(),
+              updated_at = NOW()
+          WHERE id = ${tagId}
+            AND memory_bank_id = ${owner.memoryBankId}
+        `;
+      } else {
+        await sql`
+          UPDATE memory_tags
+          SET usage_count = usage_count + 1,
+              last_used_at = NOW(),
+              updated_at = NOW()
+          WHERE id = ${tagId}
+        `;
+      }
     }
   }
 
   /**
    * Remove all tag links for a memory.
    */
-  async unlinkMemoryTags(memoryId: string): Promise<void> {
+  async unlinkMemoryTags(memoryId: string, owner?: MemoryBankOwner): Promise<void> {
     const sql = this.sql();
+    if (owner) {
+      await sql`
+        DELETE FROM memory_tag_links
+        WHERE memory_id = ${memoryId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return;
+    }
     await sql`
       DELETE FROM memory_tag_links WHERE memory_id = ${memoryId}
     `;
@@ -358,15 +463,24 @@ export class PostgresTagRegistry {
   /**
    * Get all canonical tags ordered by usage count.
    */
-  async getAllCanonicalTags(limit = 500): Promise<CanonicalTag[]> {
+  async getAllCanonicalTags(limit = 500, owner?: MemoryBankOwner): Promise<CanonicalTag[]> {
     const sql = this.sql();
-    const rows = await sql`
-      SELECT id, canonical_name, description, category, order_sensitive,
-             usage_count, last_used_at
-      FROM memory_tags
-      ORDER BY usage_count DESC, canonical_name ASC
-      LIMIT ${limit}
-    `;
+    const rows = owner
+      ? await sql`
+          SELECT id, canonical_name, description, category, order_sensitive,
+                 usage_count, last_used_at
+          FROM memory_tags
+          WHERE memory_bank_id = ${owner.memoryBankId}
+          ORDER BY usage_count DESC, canonical_name ASC
+          LIMIT ${limit}
+        `
+      : await sql`
+          SELECT id, canonical_name, description, category, order_sensitive,
+                 usage_count, last_used_at
+          FROM memory_tags
+          ORDER BY usage_count DESC, canonical_name ASC
+          LIMIT ${limit}
+        `;
     return rows.map((r: any) => ({
       id: r.id,
       canonicalName: r.canonical_name,
@@ -382,23 +496,33 @@ export class PostgresTagRegistry {
    * Get canonical tag names for use in LLM prompts.
    * Returns up to `limit` most-used tag names.
    */
-  async getCanonicalTagNames(limit = 50): Promise<string[]> {
-    const tags = await this.getAllCanonicalTags(limit);
+  async getCanonicalTagNames(limit = 50, owner?: MemoryBankOwner): Promise<string[]> {
+    const tags = await this.getAllCanonicalTags(limit, owner);
     return tags.map((t) => t.canonicalName);
   }
 
   /**
    * Get tags linked to a specific memory.
    */
-  async getMemoryTagNames(memoryId: string): Promise<string[]> {
+  async getMemoryTagNames(memoryId: string, owner?: MemoryBankOwner): Promise<string[]> {
     const sql = this.sql();
-    const rows = await sql`
-      SELECT mt.canonical_name
-      FROM memory_tag_links mtl
-      JOIN memory_tags mt ON mt.id = mtl.tag_id
-      WHERE mtl.memory_id = ${memoryId}
-      ORDER BY mt.canonical_name
-    `;
+    const rows = owner
+      ? await sql`
+          SELECT mt.canonical_name
+          FROM memory_tag_links mtl
+          JOIN memory_tags mt ON mt.id = mtl.tag_id
+          WHERE mtl.memory_id = ${memoryId}
+            AND mtl.memory_bank_id = ${owner.memoryBankId}
+            AND mt.memory_bank_id = ${owner.memoryBankId}
+          ORDER BY mt.canonical_name
+        `
+      : await sql`
+          SELECT mt.canonical_name
+          FROM memory_tag_links mtl
+          JOIN memory_tags mt ON mt.id = mtl.tag_id
+          WHERE mtl.memory_id = ${memoryId}
+          ORDER BY mt.canonical_name
+        `;
     return rows.map((r: any) => r.canonical_name);
   }
 
@@ -408,19 +532,33 @@ export class PostgresTagRegistry {
    */
   async getRelatedMemoryIds(
     memoryId: string,
-    limit = 20
+    limit = 20,
+    owner?: MemoryBankOwner
   ): Promise<Array<{ memoryId: string; sharedTagCount: number }>> {
     const sql = this.sql();
-    const rows = await sql`
-      SELECT mtl2.memory_id, COUNT(*) as shared_count
-      FROM memory_tag_links mtl1
-      JOIN memory_tag_links mtl2 ON mtl1.tag_id = mtl2.tag_id
-      WHERE mtl1.memory_id = ${memoryId}
-        AND mtl2.memory_id != ${memoryId}
-      GROUP BY mtl2.memory_id
-      ORDER BY shared_count DESC
-      LIMIT ${limit}
-    `;
+    const rows = owner
+      ? await sql`
+          SELECT mtl2.memory_id, COUNT(*) as shared_count
+          FROM memory_tag_links mtl1
+          JOIN memory_tag_links mtl2 ON mtl1.tag_id = mtl2.tag_id
+          WHERE mtl1.memory_id = ${memoryId}
+            AND mtl1.memory_bank_id = ${owner.memoryBankId}
+            AND mtl2.memory_bank_id = ${owner.memoryBankId}
+            AND mtl2.memory_id != ${memoryId}
+          GROUP BY mtl2.memory_id
+          ORDER BY shared_count DESC
+          LIMIT ${limit}
+        `
+      : await sql`
+          SELECT mtl2.memory_id, COUNT(*) as shared_count
+          FROM memory_tag_links mtl1
+          JOIN memory_tag_links mtl2 ON mtl1.tag_id = mtl2.tag_id
+          WHERE mtl1.memory_id = ${memoryId}
+            AND mtl2.memory_id != ${memoryId}
+          GROUP BY mtl2.memory_id
+          ORDER BY shared_count DESC
+          LIMIT ${limit}
+        `;
     return rows.map((r: any) => ({
       memoryId: r.memory_id,
       sharedTagCount: Number(r.shared_count),
@@ -432,7 +570,7 @@ export class PostgresTagRegistry {
    * Processes memories in batches. Idempotent.
    */
   async backfillFromExistingTags(
-    args: number | { batchSize?: number; profileId?: string } = 100
+    args: number | { batchSize?: number; profileId?: string; owner?: MemoryBankOwner } = 100
   ): Promise<{
     processed: number;
     created: number;
@@ -442,6 +580,7 @@ export class PostgresTagRegistry {
     const sql = this.sql();
     const batchSize = typeof args === "number" ? args : (args.batchSize ?? 100);
     const profileIdFilter = typeof args === "number" ? "" : (args.profileId ?? "");
+    const owner = typeof args === "number" ? undefined : args.owner;
     let processed = 0;
     let created = 0;
     let linked = 0;
@@ -450,13 +589,22 @@ export class PostgresTagRegistry {
     // Get all memories with tags
     let offset = 0;
     while (true) {
-      const rows = await sql`
-        SELECT id, tags FROM memories
-        WHERE tags IS NOT NULL AND tags != ''
-          AND (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
-        ORDER BY id
-        LIMIT ${batchSize} OFFSET ${offset}
-      `;
+      const rows = owner
+        ? await sql`
+            SELECT id, tags FROM memories
+            WHERE tags IS NOT NULL AND tags != ''
+              AND api_key_id = ${owner.apiKeyId}
+              AND memory_bank_id = ${owner.memoryBankId}
+            ORDER BY id
+            LIMIT ${batchSize} OFFSET ${offset}
+          `
+        : await sql`
+            SELECT id, tags FROM memories
+            WHERE tags IS NOT NULL AND tags != ''
+              AND (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
+            ORDER BY id
+            LIMIT ${batchSize} OFFSET ${offset}
+          `;
       if (rows.length === 0) break;
 
       for (const row of rows) {
@@ -465,12 +613,12 @@ export class PostgresTagRegistry {
           .map((t: string) => t.trim())
           .filter(Boolean);
         for (const raw of rawTags) {
-          const { tagId, isNew } = await this.resolveOrCreateTag(raw);
+          const { tagId, isNew } = await this.resolveOrCreateTag(raw, owner);
           if (isNew) created++;
         }
 
         // Link to memory
-        await this.linkMemoryTags(row.id, rawTags);
+        await this.linkMemoryTags(row.id, rawTags, owner);
         linked += rawTags.length;
         processed++;
       }

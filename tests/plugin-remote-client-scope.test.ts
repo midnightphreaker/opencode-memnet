@@ -20,7 +20,7 @@ function runScenario() {
   const script = `
 import { mock } from "bun:test";
 
-const urls = [];
+const requests = [];
 
 mock.module(${JSON.stringify(loggerUrl)}, () => ({
   log: () => {},
@@ -30,8 +30,12 @@ mock.module(${JSON.stringify(loggerUrl)}, () => ({
 }));
 
 const originalFetch = globalThis.fetch;
-globalThis.fetch = async (url) => {
-  urls.push(String(url));
+globalThis.fetch = async (url, init) => {
+  const request = new Request(url, init);
+  requests.push({
+    url: String(url),
+    memoryBankId: request.headers.get("X-Memory-Bank-ID"),
+  });
   return new Response(JSON.stringify({ success: true, data: { items: [] } }), {
     status: 200,
     headers: { "Content-Type": "application/json" },
@@ -43,23 +47,19 @@ try {
   const client = new RemoteMemoryClient("https://memory.example", "test-key", "client-id");
 
   await client.searchMemories("database migration", "opencode_project_current", "project", {
-    profileId: "phrkr",
-    repoId: "repo_123",
+    memoryBankId: "bank-1",
   });
   await client.searchMemories("database migration", "opencode_project_current", "all-projects", {
-    profileId: "phrkr",
-    repoId: "repo_123",
+    memoryBankId: "bank-1",
   });
   await client.listMemories("opencode_project_current", 5, "project", {
-    profileId: "phrkr",
-    repoId: "repo_123",
+    memoryBankId: "bank-1",
   });
   await client.listMemories("opencode_project_current", 5, "all-projects", {
-    profileId: "phrkr",
-    repoId: "repo_123",
+    memoryBankId: "bank-1",
   });
 
-  console.log(JSON.stringify({ urls }));
+  console.log(JSON.stringify({ requests }));
 } finally {
   globalThis.fetch = originalFetch;
 }
@@ -82,19 +82,36 @@ try {
   };
 }
 
-describe("RemoteMemoryClient memory scope query parameters", () => {
-  it("sends tag for project scope and omits tag for all-projects scope", () => {
+describe("RemoteMemoryClient Memory Bank routing", () => {
+  it("sends X-Memory-Bank-ID while keeping project tag query behavior", () => {
     const result = runScenario();
 
     if (result.exitCode !== 0) {
       throw new Error(result.stderr || result.stdout);
     }
-    expect(result.parsed.urls).toEqual([
-      "https://memory.example/api/search?q=database+migration&tag=opencode_project_current&profileId=phrkr&repoId=repo_123&pageSize=20",
-      "https://memory.example/api/search?q=database+migration&profileId=phrkr&pageSize=20",
-      "https://memory.example/api/memories?tag=opencode_project_current&profileId=phrkr&repoId=repo_123&pageSize=5",
-      "https://memory.example/api/memories?profileId=phrkr&pageSize=5",
+    expect(result.parsed.requests).toEqual([
+      {
+        url: "https://memory.example/api/search?q=database+migration&tag=opencode_project_current&pageSize=20",
+        memoryBankId: "bank-1",
+      },
+      {
+        url: "https://memory.example/api/search?q=database+migration&pageSize=20",
+        memoryBankId: "bank-1",
+      },
+      {
+        url: "https://memory.example/api/memories?tag=opencode_project_current&pageSize=5",
+        memoryBankId: "bank-1",
+      },
+      {
+        url: "https://memory.example/api/memories?pageSize=5",
+        memoryBankId: "bank-1",
+      },
     ]);
-    expect(result.parsed.urls.some((url: string) => url.includes("repoId=repo_123"))).toBe(true);
+    expect(
+      result.parsed.requests.some((request: { url: string }) => request.url.includes("profileId="))
+    ).toBe(false);
+    expect(
+      result.parsed.requests.some((request: { url: string }) => request.url.includes("repoId="))
+    ).toBe(false);
   });
 });

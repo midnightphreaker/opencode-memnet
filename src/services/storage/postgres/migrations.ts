@@ -43,6 +43,22 @@ function vectorColumnType(): string {
   return getVectorCast(vectorType, dimensions);
 }
 
+const V1_DATA_TABLES = [
+  "memory_tag_links",
+  "memory_tag_aliases",
+  "memory_tags",
+  "user_profile_changelogs",
+  "user_profiles",
+  "user_prompts",
+  "memories",
+  "profile_repo_links",
+  "git_repositories",
+  "ai_messages",
+  "ai_sessions",
+  "clients",
+  "profile_api_keys",
+] as const;
+
 // ── Migration definitions ──
 
 export const migrations: Migration[] = [
@@ -435,7 +451,7 @@ export const migrations: Migration[] = [
   },
   {
     version: 14,
-    description: "Create generated profile API key table",
+    description: "Create legacy API key table",
     transactional: true,
     up: async (sql) => {
       await sql`
@@ -451,6 +467,164 @@ export const migrations: Migration[] = [
         CREATE INDEX IF NOT EXISTS idx_profile_api_keys_last_used
         ON profile_api_keys (last_used_at)
       `;
+    },
+  },
+  {
+    version: 15,
+    description: "Create v2 auth and Memory Bank ownership schema",
+    transactional: true,
+    up: async (sql) => {
+      let v1DataRowCount = 0;
+      for (const table of V1_DATA_TABLES) {
+        const existsRows = await sql`
+          SELECT to_regclass(${`public.${table}`}) IS NOT NULL AS exists
+        `;
+        if (!existsRows[0]?.exists) continue;
+        const countRows = await sql.unsafe(`SELECT COUNT(*)::bigint AS count FROM ${table}`);
+        v1DataRowCount += Number(countRows[0]?.count ?? 0);
+      }
+      if (v1DataRowCount > 0) {
+        throw new Error(
+          "v2 clean start required: run scripts/v2-clean-start.ts before startup migration 15"
+        );
+      }
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS user_api_keys (
+          id UUID PRIMARY KEY,
+          name TEXT NOT NULL UNIQUE,
+          description TEXT NOT NULL,
+          api_key_hash TEXT NOT NULL UNIQUE,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          last_used_at TIMESTAMPTZ,
+          revoked_at TIMESTAMPTZ
+        )
+      `;
+
+      await sql`
+        CREATE TABLE IF NOT EXISTS memory_banks (
+          id UUID PRIMARY KEY,
+          api_key_id UUID NOT NULL REFERENCES user_api_keys(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          description TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          UNIQUE (api_key_id, name)
+        )
+      `;
+
+      await sql`CREATE INDEX IF NOT EXISTS idx_user_api_keys_revoked ON user_api_keys (revoked_at)`;
+      await sql`CREATE INDEX IF NOT EXISTS idx_memory_banks_api_key ON memory_banks (api_key_id)`;
+
+      await sql`
+        ALTER TABLE memories
+          ADD COLUMN IF NOT EXISTS api_key_id UUID NOT NULL REFERENCES user_api_keys(id),
+          ADD COLUMN IF NOT EXISTS memory_bank_id UUID NOT NULL REFERENCES memory_banks(id),
+          ALTER COLUMN profile_id DROP NOT NULL
+      `;
+      await sql`
+        ALTER TABLE user_prompts
+          ADD COLUMN IF NOT EXISTS api_key_id UUID NOT NULL REFERENCES user_api_keys(id),
+          ADD COLUMN IF NOT EXISTS memory_bank_id UUID NOT NULL REFERENCES memory_banks(id),
+          ALTER COLUMN profile_id DROP NOT NULL,
+          ALTER COLUMN repo_id DROP NOT NULL
+      `;
+      await sql`
+        ALTER TABLE user_profiles
+          ADD COLUMN IF NOT EXISTS api_key_id UUID NOT NULL REFERENCES user_api_keys(id),
+          ADD COLUMN IF NOT EXISTS memory_bank_id UUID NOT NULL REFERENCES memory_banks(id),
+          ALTER COLUMN profile_id DROP NOT NULL
+      `;
+      await sql`
+        ALTER TABLE user_profile_changelogs
+          ADD COLUMN IF NOT EXISTS api_key_id UUID NOT NULL REFERENCES user_api_keys(id),
+          ADD COLUMN IF NOT EXISTS memory_bank_id UUID NOT NULL REFERENCES memory_banks(id)
+      `;
+      await sql`
+        ALTER TABLE ai_sessions
+          ADD COLUMN IF NOT EXISTS api_key_id UUID NOT NULL REFERENCES user_api_keys(id),
+          ADD COLUMN IF NOT EXISTS memory_bank_id UUID NOT NULL REFERENCES memory_banks(id)
+      `;
+      await sql`
+        ALTER TABLE ai_messages
+          ADD COLUMN IF NOT EXISTS api_key_id UUID NOT NULL REFERENCES user_api_keys(id),
+          ADD COLUMN IF NOT EXISTS memory_bank_id UUID NOT NULL REFERENCES memory_banks(id),
+          ADD COLUMN IF NOT EXISTS session_id TEXT
+      `;
+
+      await sql`
+        ALTER TABLE memory_tags
+          ADD COLUMN IF NOT EXISTS memory_bank_id UUID NOT NULL REFERENCES memory_banks(id)
+      `;
+      await sql`
+        ALTER TABLE memory_tag_links
+          ADD COLUMN IF NOT EXISTS memory_bank_id UUID NOT NULL REFERENCES memory_banks(id)
+      `;
+      await sql`
+        ALTER TABLE memory_tag_aliases
+          ADD COLUMN IF NOT EXISTS memory_bank_id UUID NOT NULL REFERENCES memory_banks(id)
+      `;
+      await sql`ALTER TABLE memory_tags DROP CONSTRAINT IF EXISTS memory_tags_canonical_name_key`;
+      await sql`ALTER TABLE memory_tag_aliases DROP CONSTRAINT IF EXISTS memory_tag_aliases_normalized_alias_key`;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_tags_bank_canonical
+        ON memory_tags (memory_bank_id, canonical_name)
+      `;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_tag_aliases_bank_alias
+        ON memory_tag_aliases (memory_bank_id, normalized_alias)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_memory_tag_links_bank
+        ON memory_tag_links (memory_bank_id, memory_id)
+      `;
+
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_user_prompts_bank_capture_queue
+        ON user_prompts (memory_bank_id, captured, created_at ASC)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_user_prompts_bank_learning_queue
+        ON user_prompts (memory_bank_id, user_learning_captured, created_at ASC)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_user_prompts_bank_linked_memory
+        ON user_prompts (memory_bank_id, linked_memory_id)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_user_prompts_bank_session_created
+        ON user_prompts (memory_bank_id, session_id, created_at DESC)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_ai_sessions_bank_updated
+        ON ai_sessions (memory_bank_id, updated_at DESC)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_ai_messages_bank_session_created
+        ON ai_messages (memory_bank_id, session_id, created_at ASC)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_memories_bank_scope_hash_created
+        ON memories (memory_bank_id, scope, scope_hash, created_at DESC)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_memories_bank_container_created
+        ON memories (memory_bank_id, container_tag, created_at DESC)
+      `;
+      await sql`
+        CREATE INDEX IF NOT EXISTS idx_memories_bank_created
+        ON memories (memory_bank_id, created_at DESC)
+      `;
+
+      await sql`SET LOCAL hnsw.ef_search = 100`;
+      await sql.unsafe(`
+        -- Vector-search acceptance criteria:
+        -- WHERE memory_bank_id = $bank is required before returning pgvector results.
+        -- EXPLAIN fixtures should include multiple small banks and one larger bank.
+        -- hnsw.ef_search is tuned with accepted candidate limit 200 and latency budget p95 250ms.
+        SELECT 1
+      `);
     },
   },
 ];

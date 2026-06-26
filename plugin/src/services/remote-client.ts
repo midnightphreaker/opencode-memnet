@@ -1,7 +1,11 @@
 // plugin/src/services/remote-client.ts
 import { CLIENT_CONFIG } from "../../../shared/client-config.js";
-import { rewriteClientApiKeySource } from "../../../shared/client-config.js";
 import { log, logDebug, logWarn } from "../../../shared/logger.js";
+import type {
+  ClientConnectResponseDTO,
+  CreateMemoryBankRequestDTO,
+  MemoryBankDTO,
+} from "../../../shared/types.js";
 
 const DEFAULT_TIMEOUT = 30_000;
 const DEFAULT_AUTO_CAPTURE_TIMEOUT = 180_000;
@@ -15,6 +19,7 @@ interface ApiResponse<T = any> {
 interface RequestOptions {
   timeoutMs?: number;
   logTimeoutAsDebug?: boolean;
+  memoryBankId?: string;
 }
 
 export class RemoteMemoryClient {
@@ -73,6 +78,9 @@ export class RemoteMemoryClient {
       if (this.apiKey) {
         headers.Authorization = `Bearer ${this.apiKey}`;
       }
+      if (options.memoryBankId) {
+        headers["X-Memory-Bank-ID"] = options.memoryBankId;
+      }
 
       const response = await fetch(url.toString(), {
         method,
@@ -129,13 +137,14 @@ export class RemoteMemoryClient {
   async getContext(params: {
     sessionID?: string;
     projectTag: string;
-    profileId: string;
     repoId: string;
+    memoryBankId?: string;
     maxMemories?: number;
     excludeCurrentSession?: boolean;
     maxAgeDays?: number | null;
   }): Promise<ApiResponse<{ context: string; memories: any[]; profileInjected: boolean }>> {
-    return this.request("POST", "/api/context/inject", params);
+    const { memoryBankId, ...body } = params;
+    return this.request("POST", "/api/context/inject", body, undefined, { memoryBankId });
   }
 
   // ─── Auto-Capture ───────────────────────────────────────
@@ -143,14 +152,16 @@ export class RemoteMemoryClient {
   async autoCapture(params: {
     sessionID: string;
     projectTag: string;
-    profileId: string;
     repoId: string;
+    memoryBankId?: string;
     projectMetadata: Record<string, unknown>;
     conversationMessages: any[];
     userPrompt: string;
     promptMessageId: string;
   }): Promise<ApiResponse<{ captured: boolean; memoryId?: string }>> {
-    return this.request("POST", "/api/auto-capture", params, undefined, {
+    const { memoryBankId, ...body } = params;
+    return this.request("POST", "/api/auto-capture", body, undefined, {
+      memoryBankId,
       timeoutMs: DEFAULT_AUTO_CAPTURE_TIMEOUT,
       logTimeoutAsDebug: true,
     });
@@ -162,7 +173,7 @@ export class RemoteMemoryClient {
     query: string,
     containerTag: string,
     scope: string = "project",
-    params?: { profileId?: string; repoId?: string }
+    params?: { memoryBankId?: string }
   ): Promise<{
     success: boolean;
     error?: string;
@@ -170,13 +181,17 @@ export class RemoteMemoryClient {
     total: number;
     timing: number;
   }> {
-    const res = await this.request("GET", "/api/search", undefined, {
-      q: query,
-      tag: scope === "all-projects" ? undefined : containerTag,
-      profileId: params?.profileId,
-      repoId: scope === "all-projects" ? undefined : params?.repoId,
-      pageSize: "20",
-    });
+    const res = await this.request(
+      "GET",
+      "/api/search",
+      undefined,
+      {
+        q: query,
+        tag: scope === "all-projects" ? undefined : containerTag,
+        pageSize: "20",
+      },
+      { memoryBankId: params?.memoryBankId }
+    );
     if (!res.success) return { success: false, error: res.error, results: [], total: 0, timing: 0 };
     const items = (res.data as any)?.items ?? [];
     const memItems = items
@@ -198,35 +213,50 @@ export class RemoteMemoryClient {
     containerTag: string,
     metadata?: Record<string, unknown>
   ): Promise<ApiResponse<{ id: string }>> {
-    return this.request("POST", "/api/memories", {
-      content,
-      containerTag,
-      type: metadata?.type,
-      tags: metadata?.tags,
-      profileId: metadata?.profileId,
-      repoId: metadata?.repoId,
-      localProjectPath: metadata?.localProjectPath,
-      gitRepoUrl: metadata?.gitRepoUrl,
-      repoNickname: metadata?.repoNickname,
-    });
+    const memoryBankId =
+      typeof metadata?.memoryBankId === "string" ? metadata.memoryBankId : undefined;
+    return this.request(
+      "POST",
+      "/api/memories",
+      {
+        content,
+        containerTag,
+        type: metadata?.type,
+        tags: metadata?.tags,
+        localProjectPath: metadata?.localProjectPath,
+        gitRepoUrl: metadata?.gitRepoUrl,
+        repoNickname: metadata?.repoNickname,
+      },
+      undefined,
+      { memoryBankId }
+    );
   }
 
-  async deleteMemory(memoryId: string): Promise<ApiResponse<void>> {
-    return this.request("DELETE", `/api/memories/${memoryId}`);
+  async deleteMemory(
+    memoryId: string,
+    params?: { memoryBankId?: string }
+  ): Promise<ApiResponse<void>> {
+    return this.request("DELETE", `/api/memories/${memoryId}`, undefined, undefined, {
+      memoryBankId: params?.memoryBankId,
+    });
   }
 
   async listMemories(
     containerTag: string,
     limit: number = 20,
     scope: string = "project",
-    params?: { profileId?: string; repoId?: string }
+    params?: { memoryBankId?: string }
   ): Promise<{ success: boolean; error?: string; memories: any[]; pagination: any }> {
-    const res = await this.request("GET", "/api/memories", undefined, {
-      tag: scope === "all-projects" ? undefined : containerTag,
-      profileId: params?.profileId,
-      repoId: scope === "all-projects" ? undefined : params?.repoId,
-      pageSize: String(limit),
-    });
+    const res = await this.request(
+      "GET",
+      "/api/memories",
+      undefined,
+      {
+        tag: scope === "all-projects" ? undefined : containerTag,
+        pageSize: String(limit),
+      },
+      { memoryBankId: params?.memoryBankId }
+    );
     if (!res.success) return { success: false, error: res.error, memories: [], pagination: {} };
     const items = (res.data as any)?.items ?? [];
     const memories = items
@@ -236,8 +266,6 @@ export class RemoteMemoryClient {
         summary: i.content,
         createdAt: i.createdAt,
         metadata: i.metadata,
-        profileId: i.profileId,
-        repoId: i.repoId,
         localProjectPath: i.localProjectPath,
         gitRepoUrl: i.gitRepoUrl,
         repoNickname: i.repoNickname,
@@ -258,15 +286,19 @@ export class RemoteMemoryClient {
     sessionID: string,
     containerTag: string,
     limit: number = 10,
-    params?: { profileId?: string; repoId?: string }
+    params?: { memoryBankId?: string }
   ): Promise<{ success: boolean; error?: string; results: any[]; total: number; timing: number }> {
-    const res = await this.request("GET", "/api/search", undefined, {
-      q: sessionID,
-      tag: containerTag,
-      profileId: params?.profileId,
-      repoId: params?.repoId,
-      pageSize: String(limit),
-    });
+    const res = await this.request(
+      "GET",
+      "/api/search",
+      undefined,
+      {
+        q: sessionID,
+        tag: containerTag,
+        pageSize: String(limit),
+      },
+      { memoryBankId: params?.memoryBankId }
+    );
     if (!res.success) return { success: false, error: res.error, results: [], total: 0, timing: 0 };
     const items = (res.data as any)?.items ?? [];
     const results = items
@@ -277,8 +309,6 @@ export class RemoteMemoryClient {
         similarity: i.similarity ?? 0,
         tags: i.tags,
         metadata: i.metadata,
-        profileId: i.profileId,
-        repoId: i.repoId,
         localProjectPath: i.localProjectPath,
         gitRepoUrl: i.gitRepoUrl,
         repoNickname: i.repoNickname,
@@ -289,10 +319,10 @@ export class RemoteMemoryClient {
 
   // ─── User Profile ───────────────────────────────────────
 
-  async getUserProfile(profileId?: string): Promise<ApiResponse<any>> {
-    const query: Record<string, string> = {};
-    if (profileId) query.profileId = profileId;
-    return this.request("GET", "/api/user-profile", undefined, query);
+  async getUserProfile(params?: { memoryBankId?: string }): Promise<ApiResponse<any>> {
+    return this.request("GET", "/api/user-profile", undefined, undefined, {
+      memoryBankId: params?.memoryBankId,
+    });
   }
 
   // ─── Client Identity ──────────────────────────────────
@@ -300,40 +330,18 @@ export class RemoteMemoryClient {
   async clientConnect(
     clientId: string,
     metadata: Record<string, unknown>
-  ): Promise<
-    ApiResponse<{
-      firstTime: boolean;
-      daysSinceLastSeen: number | null;
-      welcomeBack: boolean;
-      stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
-      principal: { kind: "admin" } | { kind: "profile"; profileId: string; displayName?: string };
-      enrollment?: { profileId: string; apiKey: string };
-    }>
-  > {
-    const result = await this.request<{
-      firstTime: boolean;
-      daysSinceLastSeen: number | null;
-      welcomeBack: boolean;
-      stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
-      principal: { kind: "admin" } | { kind: "profile"; profileId: string; displayName?: string };
-      enrollment?: { profileId: string; apiKey: string };
-    }>("POST", "/api/client/connect", {
+  ): Promise<ApiResponse<ClientConnectResponseDTO>> {
+    return this.request<ClientConnectResponseDTO>("POST", "/api/client/connect", {
       clientId,
-      profileId: CLIENT_CONFIG.profileId,
       metadata,
+      includeStats: false,
     });
-    if (result.success && result.data?.enrollment?.apiKey) {
-      this.setApiKey(result.data.enrollment.apiKey);
-      try {
-        await rewriteClientApiKeySource(result.data.enrollment.apiKey);
-      } catch (error) {
-        logWarn("Failed to persist enrolled profile API key", {
-          profileId: result.data.enrollment.profileId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    return result;
+  }
+
+  async createMemoryBank(
+    args: CreateMemoryBankRequestDTO
+  ): Promise<ApiResponse<{ memoryBank: MemoryBankDTO }>> {
+    return this.request("POST", "/api/memory-banks", args);
   }
 
   setApiKey(apiKey: string): void {

@@ -1,16 +1,19 @@
-import { randomBytes } from "node:crypto";
 import { embeddingService } from "./embedding.js";
-import { log, logInfo, logDebug, logError } from "./logger.js";
-import { getServerConfig } from "../server-config.js";
+import { log, logError } from "./logger.js";
 import { CONFIG } from "../config.js";
 import type { MemoryType } from "../types/index.js";
-import { getConfiguredProfileById, principalResponse, type Principal } from "./profile-auth.js";
+import type {
+  AuthService,
+  Principal as AuthPrincipal,
+  UserApiKeyPrincipal,
+} from "./auth-service.js";
+import { principalResponse } from "./auth-service.js";
 import {
   createMemoryRepository,
   createUserPromptRepository,
   createUserProfileRepository,
   createClientRepository,
-  createProfileApiKeyRepository,
+  createMemoryBankRepository,
   createTagRegistry,
 } from "./storage/factory.js";
 import { stripPrivateContent } from "./privacy.js";
@@ -23,7 +26,8 @@ import type {
   MemoryRecord,
   MemoryScopeKind,
   ClientRepository,
-  ProfileApiKeyRepository,
+  MemoryBankRepository,
+  MemoryBankRow,
 } from "./storage/types.js";
 import {
   getApiMigrationProgress,
@@ -42,7 +46,7 @@ const promptRepo: UserPromptRepository = createUserPromptRepository();
 const profileRepo: UserProfileRepository = createUserProfileRepository();
 const tagRegistry = createTagRegistry();
 let clientRepo: ClientRepository | null = null;
-let profileApiKeyRepo: ProfileApiKeyRepository | null = null;
+let memoryBankRepo: MemoryBankRepository | null = null;
 
 // Repositories are singletons from the factory, but initialize() (which runs
 // DB migrations) must be called before first use.  The LocalMemoryClient does
@@ -57,11 +61,11 @@ async function ensureInit(): Promise<void> {
       await profileRepo.initialize();
       clientRepo = createClientRepository();
       await clientRepo.initialize();
-      profileApiKeyRepo = createProfileApiKeyRepository();
-      await profileApiKeyRepo.initialize();
+      memoryBankRepo = createMemoryBankRepository();
+      await memoryBankRepo.initialize();
     })().catch((err) => {
       clientRepo = null as any;
-      profileApiKeyRepo = null as any;
+      memoryBankRepo = null as any;
       _initPromise = null;
       throw err;
     });
@@ -110,15 +114,11 @@ interface PaginatedResponse<T> {
 }
 
 function ensurePrincipalCanAccessProfile(
-  principal: Principal | undefined,
-  profileId: string | undefined
+  principal: AuthPrincipal | undefined,
+  _profileId: string | undefined
 ): ApiResponse<never> | null {
   if (!principal || principal.kind === "admin") return null;
-  if (principal.kind === "newuser") {
-    return { success: false, error: "NEWUSER_API_KEY is only valid for profile enrollment" };
-  }
-  if (profileId === principal.profileId) return null;
-  return { success: false, error: "Profile key cannot access another profile" };
+  return { success: false, error: "User API keys require Memory Bank scoped routes" };
 }
 
 function safeToISOString(timestamp: any): string {
@@ -134,6 +134,18 @@ function safeToISOString(timestamp: any): string {
   } catch {
     return new Date().toISOString();
   }
+}
+
+function formatMemoryBank(bank: MemoryBankRow) {
+  return {
+    id: bank.id,
+    apiKeyId: bank.apiKeyId,
+    name: bank.name,
+    description: bank.description,
+    shortcut: bank.shortcut,
+    createdAt: safeToISOString(bank.createdAt),
+    updatedAt: safeToISOString(bank.updatedAt),
+  };
 }
 
 function extractScopeFromTag(tag: string): { scope: "project"; hash: string } {
@@ -175,22 +187,30 @@ function matchesRequestedScope(
 }
 
 export async function handleListTags(
-  profileId?: string
+  scopeOrProfileId?: MemoryBankRequestScope | string
 ): Promise<ApiResponse<{ project: TagInfo[] }>> {
   try {
     await ensureInit();
+    const requestScope = isMemoryBankRequestScope(scopeOrProfileId) ? scopeOrProfileId : undefined;
+    const profileId = typeof scopeOrProfileId === "string" ? scopeOrProfileId : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
     // Tags are stored as SQLite metadata; embedding model is not needed.
     // Calling warmup() here would block on local transformer init in the worker
     // thread and hang every read API. Only handlers that compute similarity
     // (e.g. handleSearch) should warm up the embedding service.
-    const allTags = await memoryRepo.getDistinctTags({ scope: "project", profileId });
+    const allTags = await memoryRepo.getDistinctTags({ scope: "project", profileId, ...owner });
     const projectTags: TagInfo[] = allTags
       .filter((t) => t.tag.includes("_project_"))
       .filter((t) => !profileId || t.profileId === profileId)
+      .filter(
+        (t) => !owner || (t.apiKeyId === owner.apiKeyId && t.memoryBankId === owner.memoryBankId)
+      )
       .map((t) => ({
         tag: t.tag,
         profileId: t.profileId,
         repoId: t.repoId,
+        apiKeyId: t.apiKeyId,
+        memoryBankId: t.memoryBankId,
         localProjectPath: t.localProjectPath,
         gitRepoUrl: t.gitRepoUrl,
         repoNickname: t.repoNickname,
@@ -217,11 +237,14 @@ export async function handleListMemories(
   page: number = 1,
   pageSize: number = 20,
   includePrompts: boolean = true,
-  profileId: string = "default",
+  scopeOrProfileId: MemoryBankRequestScope | string = "default",
   repoId?: string
 ): Promise<ApiResponse<PaginatedResponse<Memory | any>>> {
   try {
     await ensureInit();
+    const requestScope = isMemoryBankRequestScope(scopeOrProfileId) ? scopeOrProfileId : undefined;
+    const profileId = typeof scopeOrProfileId === "string" ? scopeOrProfileId : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
     // Listing only reads SQLite rows; no vector ops happen here.
     // See handleListTags comment - keep embedding init out of read paths.
     let memoryRows: MemoryRow[];
@@ -234,6 +257,7 @@ export async function handleListMemories(
         limit: 10000,
         profileId,
         repoId,
+        ...owner,
       });
     } else {
       // #10: Cap at 1000 rows when no tag filter to prevent unbounded load / OOM.
@@ -247,6 +271,7 @@ export async function handleListMemories(
         limit: 1000,
         profileId,
         repoId,
+        ...owner,
       });
       // No client-side filter needed — SQL does it
     }
@@ -272,10 +297,12 @@ export async function handleListMemories(
 
     let timeline: any[] = memoriesWithType;
     if (includePrompts) {
-      const scope = tag ? await getProjectScopeFromTag(tag, profileId) : { profileId, repoId };
+      const scope =
+        tag && !requestScope ? await getProjectScopeFromTag(tag, profileId) : { profileId, repoId };
       const prompts = await promptRepo.getCapturedPrompts({
-        profileId: scope?.profileId ?? profileId,
+        profileId: scopeProfileId(requestScope, scope?.profileId ?? profileId),
         repoId: scope?.repoId ?? repoId,
+        ...owner,
       });
       const promptsWithType = prompts.map((p) => ({
         type: "prompt" as const,
@@ -375,17 +402,20 @@ export async function handleListMemories(
   }
 }
 
-export async function handleAddMemory(data: {
-  content: string;
-  containerTag: string;
-  type?: MemoryType;
-  tags?: string[];
-  profileId: string;
-  repoId?: string;
-  localProjectPath?: string;
-  gitRepoUrl?: string;
-  repoNickname?: string;
-}): Promise<ApiResponse<{ id: string }>> {
+export async function handleAddMemory(
+  data: {
+    content: string;
+    containerTag: string;
+    type?: MemoryType;
+    tags?: string[];
+    profileId?: string;
+    repoId?: string;
+    localProjectPath?: string;
+    gitRepoUrl?: string;
+    repoNickname?: string;
+  },
+  scope?: MemoryBankRequestScope
+): Promise<ApiResponse<{ id: string }>> {
   try {
     if (!data.content || !data.containerTag) {
       return { success: false, error: "content and containerTag are required" };
@@ -399,7 +429,8 @@ export async function handleAddMemory(data: {
     await ensureInit();
     await embeddingService.warmup();
 
-    if (!data.profileId) {
+    const owner = scope ? ownerScope(scope) : undefined;
+    if (!data.profileId && !owner) {
       return { success: false, error: "profileId is required" };
     }
 
@@ -429,6 +460,7 @@ export async function handleAddMemory(data: {
       updatedAt: now,
       metadata: JSON.stringify({ source: "api" }),
       profileId: data.profileId,
+      ...owner,
       repoId: data.repoId,
       localProjectPath: data.localProjectPath,
       gitRepoUrl: data.gitRepoUrl,
@@ -445,7 +477,8 @@ export async function handleAddMemory(data: {
           record.tags
             .split(",")
             .map((t: string) => t.trim())
-            .filter(Boolean)
+            .filter(Boolean),
+          owner
         );
       } catch (err) {
         logError("api-handlers: failed to link memory tags in registry", {
@@ -472,12 +505,17 @@ export async function handleAddMemory(data: {
 export async function handleDeleteMemory(
   id: string,
   cascade: boolean = false,
-  principal?: Principal
+  principalOrScope?: AuthPrincipal | MemoryBankRequestScope
 ): Promise<ApiResponse<{ deletedPrompt: boolean }>> {
   try {
     await ensureInit();
     if (!id) return { success: false, error: "id is required" };
-    const memory = await memoryRepo.getById(id);
+    const requestScope = isMemoryBankRequestScope(principalOrScope) ? principalOrScope : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
+    const principal: AuthPrincipal | undefined = requestScope
+      ? undefined
+      : (principalOrScope as AuthPrincipal | undefined);
+    const memory = await memoryRepo.getById(id, owner);
     if (!memory) return { success: false, error: "Memory not found" };
     const accessError = ensurePrincipalCanAccessProfile(principal, memory.profileId);
     if (accessError) return accessError;
@@ -495,7 +533,7 @@ export async function handleDeleteMemory(
           : memory.metadata;
       const linkedPromptId = metadata?.promptId as string | undefined;
       if (linkedPromptId) {
-        const promptResult = await handleDeletePrompt(linkedPromptId, false, principal);
+        const promptResult = await handleDeletePrompt(linkedPromptId, false, principalOrScope);
         if (promptResult.success) {
           deletedPrompt = true;
         } else if (promptResult.error !== "Prompt not found") {
@@ -503,7 +541,7 @@ export async function handleDeleteMemory(
         }
       }
     }
-    await memoryRepo.delete(id);
+    await memoryRepo.delete(id, owner);
     return {
       success: true,
       data: { deletedPrompt },
@@ -517,7 +555,7 @@ export async function handleDeleteMemory(
 export async function handleBulkDelete(
   ids: string[],
   cascade: boolean = false,
-  principal?: Principal
+  principalOrScope?: AuthPrincipal | MemoryBankRequestScope
 ): Promise<ApiResponse<{ deleted: number; total: number; failedIds?: string[] }>> {
   try {
     if (!ids || ids.length === 0) return { success: false, error: "ids array is required" };
@@ -528,7 +566,7 @@ export async function handleBulkDelete(
       let deleted = 0;
       const failedIds: string[] = [];
       for (const id of ids) {
-        const result = await handleDeleteMemory(id, cascade, principal);
+        const result = await handleDeleteMemory(id, cascade, principalOrScope);
         if (result.success) deleted++;
         else failedIds.push(id);
       }
@@ -537,7 +575,7 @@ export async function handleBulkDelete(
     let deleted = 0;
     const failedIds: string[] = [];
     for (const id of ids) {
-      const result = await handleDeleteMemory(id, false, principal);
+      const result = await handleDeleteMemory(id, false, principalOrScope);
       if (result.success) deleted++;
       else failedIds.push(id);
     }
@@ -551,13 +589,18 @@ export async function handleBulkDelete(
 export async function handleUpdateMemory(
   id: string,
   data: { content?: string; type?: MemoryType; tags?: string[]; containerTag?: string },
-  principal?: Principal
+  principalOrScope?: AuthPrincipal | MemoryBankRequestScope
 ): Promise<ApiResponse<void>> {
   try {
     await ensureInit();
     if (!id) return { success: false, error: "id is required" };
     await embeddingService.warmup();
-    const existingMemory = await memoryRepo.getById(id);
+    const requestScope = isMemoryBankRequestScope(principalOrScope) ? principalOrScope : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
+    const principal: AuthPrincipal | undefined = requestScope
+      ? undefined
+      : (principalOrScope as AuthPrincipal | undefined);
+    const existingMemory = await memoryRepo.getById(id, owner);
     if (!existingMemory) return { success: false, error: "Memory not found" };
     const accessError = ensurePrincipalCanAccessProfile(principal, existingMemory.profileId);
     if (accessError) return accessError;
@@ -598,6 +641,7 @@ export async function handleUpdateMemory(
           : JSON.stringify(existingMemory.metadata)
         : undefined,
       profileId: existingMemory.profileId,
+      ...owner,
       repoId: existingMemory.repoId,
       localProjectPath: existingMemory.localProjectPath,
       gitRepoUrl: existingMemory.gitRepoUrl,
@@ -612,9 +656,9 @@ export async function handleUpdateMemory(
         const tagList = data.tags
           ? data.tags.map((t: string) => t.trim().toLowerCase()).filter(Boolean)
           : [];
-        await tagRegistry.unlinkMemoryTags(id);
+        await tagRegistry.unlinkMemoryTags(id, owner);
         if (tagList.length > 0) {
-          await tagRegistry.linkMemoryTags(id, tagList);
+          await tagRegistry.linkMemoryTags(id, tagList, owner);
         }
       } catch (err) {
         logError("api-handlers: failed to update memory tags in registry", {
@@ -669,12 +713,43 @@ interface FormattedMemory {
 
 type SearchResultItem = FormattedPrompt | FormattedMemory;
 
+export type MemoryBankRequestScope = {
+  principal: AuthPrincipal;
+  memoryBank: MemoryBankRow;
+};
+
+export function ownerScope(scope: MemoryBankRequestScope): {
+  apiKeyId: string;
+  memoryBankId: string;
+} {
+  return {
+    apiKeyId: scope.memoryBank.apiKeyId,
+    memoryBankId: scope.memoryBank.id,
+  };
+}
+
+function isMemoryBankRequestScope(value: unknown): value is MemoryBankRequestScope {
+  return (
+    typeof value === "object" && value !== null && "principal" in value && "memoryBank" in value
+  );
+}
+
+function scopeProfileId(scope: MemoryBankRequestScope | undefined, fallback?: string): string {
+  return scope?.memoryBank.id ?? fallback ?? "default";
+}
+
+function ownerFromJobScope(scope: JobScope): ReturnType<typeof ownerScope> | undefined {
+  return scope.kind === "memory-bank"
+    ? { apiKeyId: scope.apiKeyId, memoryBankId: scope.memoryBankId }
+    : undefined;
+}
+
 export async function handleSearch(
   query: string,
   tag?: string,
   page: number = 1,
   pageSize: number = 20,
-  profileId: string = "default",
+  scopeOrProfileId: MemoryBankRequestScope | string = "default",
   repoId?: string
 ): Promise<ApiResponse<PaginatedResponse<SearchResultItem>>> {
   try {
@@ -684,6 +759,9 @@ export async function handleSearch(
     const queryVector = await embeddingService.embedWithTimeout(query, { kind: "query" });
     let memoryResults: any[] = [];
     let promptResults: any[] = [];
+    const requestScope = isMemoryBankRequestScope(scopeOrProfileId) ? scopeOrProfileId : undefined;
+    const profileId = typeof scopeOrProfileId === "string" ? scopeOrProfileId : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
     let contextProfileId = profileId;
     let contextRepoId = repoId;
 
@@ -699,16 +777,18 @@ export async function handleSearch(
         queryText: query,
         profileId,
         repoId,
+        ...owner,
       });
       memoryResults.push(...results);
 
-      const projectScope = await getProjectScopeFromTag(tag, profileId);
+      const projectScope = requestScope ? undefined : await getProjectScopeFromTag(tag, profileId);
       contextProfileId = projectScope?.profileId ?? profileId;
       contextRepoId = projectScope?.repoId ?? repoId;
       promptResults = await promptRepo.searchPrompts({
         query,
-        profileId: contextProfileId,
+        profileId: scopeProfileId(requestScope, contextProfileId),
         repoId: contextRepoId,
+        ...owner,
         limit: pageSize * 2,
       });
     } else {
@@ -724,12 +804,14 @@ export async function handleSearch(
         queryText: query,
         profileId,
         repoId,
+        ...owner,
       });
       memoryResults.push(...results);
       promptResults = await promptRepo.searchPrompts({
         query,
-        profileId,
+        profileId: scopeProfileId(requestScope, profileId),
         repoId,
+        ...owner,
         limit: pageSize * 2,
       });
     }
@@ -791,9 +873,14 @@ export async function handleSearch(
     }
 
     if (missingPromptIds.size > 0) {
-      const extraPrompts = await promptRepo.getPromptsByIds(Array.from(missingPromptIds));
+      const extraPrompts = await promptRepo.getPromptsByIds(Array.from(missingPromptIds), owner);
       for (const p of extraPrompts) {
-        if (!matchesRequestedScope(p, contextProfileId, contextRepoId)) continue;
+        if (
+          owner
+            ? p.apiKeyId !== owner.apiKeyId || p.memoryBankId !== owner.memoryBankId
+            : !contextProfileId || !matchesRequestedScope(p, contextProfileId, contextRepoId)
+        )
+          continue;
         paginatedResults.push({
           type: "prompt",
           id: p.id,
@@ -812,10 +899,11 @@ export async function handleSearch(
 
     if (missingMemoryIds.size > 0) {
       for (const mid of missingMemoryIds) {
-        const m = await memoryRepo.getById(mid);
+        const m = await memoryRepo.getById(mid, owner);
         if (
           m &&
-          matchesRequestedScope(m, contextProfileId, contextRepoId) &&
+          (owner ||
+            (contextProfileId && matchesRequestedScope(m, contextProfileId, contextRepoId))) &&
           !paginatedResults.some((existing) => existing.id === m.id)
         ) {
           paginatedResults.push({
@@ -850,7 +938,7 @@ export async function handleSearch(
   }
 }
 
-export async function handleStats(profileId?: string): Promise<
+export async function handleStats(profileId?: string | MemoryBankRequestScope): Promise<
   ApiResponse<{
     total: number;
     byScope: { user: number; project: number };
@@ -859,11 +947,14 @@ export async function handleStats(profileId?: string): Promise<
 > {
   try {
     await ensureInit();
+    const requestScope = isMemoryBankRequestScope(profileId) ? profileId : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
+    const scopedProfileId = typeof profileId === "string" ? profileId : undefined;
     // Use COUNT(*) queries instead of loading all rows into memory.
     const [userCount, projectCount, typeCount] = await Promise.all([
-      memoryRepo.count({ scope: "user", profileId }),
-      memoryRepo.count({ scope: "project", profileId }),
-      memoryRepo.countByType({ profileId }),
+      memoryRepo.count({ scope: "user", profileId: scopedProfileId, ...owner }),
+      memoryRepo.count({ scope: "project", profileId: scopedProfileId, ...owner }),
+      memoryRepo.countByType({ profileId: scopedProfileId, ...owner }),
     ]);
     return {
       success: true,
@@ -881,16 +972,21 @@ export async function handleStats(profileId?: string): Promise<
 
 export async function handlePinMemory(
   id: string,
-  principal?: Principal
+  principalOrScope?: AuthPrincipal | MemoryBankRequestScope
 ): Promise<ApiResponse<void>> {
   try {
     await ensureInit();
     if (!id) return { success: false, error: "id is required" };
-    const memory = await memoryRepo.getById(id);
+    const requestScope = isMemoryBankRequestScope(principalOrScope) ? principalOrScope : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
+    const principal: AuthPrincipal | undefined = requestScope
+      ? undefined
+      : (principalOrScope as AuthPrincipal | undefined);
+    const memory = await memoryRepo.getById(id, owner);
     if (!memory) return { success: false, error: "Memory not found" };
     const accessError = ensurePrincipalCanAccessProfile(principal, memory.profileId);
     if (accessError) return accessError;
-    await memoryRepo.pin(id);
+    await memoryRepo.pin(id, owner);
     return { success: true };
   } catch (error) {
     log("handlePinMemory: error", { error: String(error) });
@@ -900,16 +996,21 @@ export async function handlePinMemory(
 
 export async function handleUnpinMemory(
   id: string,
-  principal?: Principal
+  principalOrScope?: AuthPrincipal | MemoryBankRequestScope
 ): Promise<ApiResponse<void>> {
   try {
     await ensureInit();
     if (!id) return { success: false, error: "id is required" };
-    const memory = await memoryRepo.getById(id);
+    const requestScope = isMemoryBankRequestScope(principalOrScope) ? principalOrScope : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
+    const principal: AuthPrincipal | undefined = requestScope
+      ? undefined
+      : (principalOrScope as AuthPrincipal | undefined);
+    const memory = await memoryRepo.getById(id, owner);
     if (!memory) return { success: false, error: "Memory not found" };
     const accessError = ensurePrincipalCanAccessProfile(principal, memory.profileId);
     if (accessError) return accessError;
-    await memoryRepo.unpin(id);
+    await memoryRepo.unpin(id, owner);
     return { success: true };
   } catch (error) {
     log("handleUnpinMemory: error", { error: String(error) });
@@ -920,21 +1021,26 @@ export async function handleUnpinMemory(
 export async function handleDeletePrompt(
   id: string,
   cascade: boolean = false,
-  principal?: Principal
+  principalOrScope?: AuthPrincipal | MemoryBankRequestScope
 ): Promise<ApiResponse<{ deletedMemory: boolean }>> {
   try {
     await ensureInit();
     if (!id) return { success: false, error: "id is required" };
-    const prompt = await promptRepo.getPromptById(id);
+    const requestScope = isMemoryBankRequestScope(principalOrScope) ? principalOrScope : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
+    const principal: AuthPrincipal | undefined = requestScope
+      ? undefined
+      : (principalOrScope as AuthPrincipal | undefined);
+    const prompt = await promptRepo.getPromptById(id, owner);
     if (!prompt) return { success: false, error: "Prompt not found" };
     const accessError = ensurePrincipalCanAccessProfile(principal, prompt.profileId);
     if (accessError) return accessError;
     let deletedMemory = false;
     if (cascade && prompt.linkedMemoryId) {
-      const result = await handleDeleteMemory(prompt.linkedMemoryId, false, principal);
+      const result = await handleDeleteMemory(prompt.linkedMemoryId, false, principalOrScope);
       if (result.success) deletedMemory = true;
     }
-    await promptRepo.deletePrompt(id);
+    await promptRepo.deletePrompt(id, owner);
     return { success: true, data: { deletedMemory } };
   } catch (error) {
     log("handleDeletePrompt: error", { error: String(error) });
@@ -945,13 +1051,13 @@ export async function handleDeletePrompt(
 export async function handleBulkDeletePrompts(
   ids: string[],
   cascade: boolean = false,
-  principal?: Principal
+  principalOrScope?: AuthPrincipal | MemoryBankRequestScope
 ): Promise<ApiResponse<{ deleted: number }>> {
   try {
     if (!ids || ids.length === 0) return { success: false, error: "ids array is required" };
     let deleted = 0;
     for (const id of ids) {
-      const result = await handleDeletePrompt(id, cascade, principal);
+      const result = await handleDeletePrompt(id, cascade, principalOrScope);
       if (result.success) deleted++;
     }
     return { success: true, data: { deleted } };
@@ -961,9 +1067,20 @@ export async function handleBulkDeletePrompts(
   }
 }
 
-export async function handleGetUserProfile(profileId?: string): Promise<ApiResponse<any>> {
+export async function handleGetUserProfile(
+  profileIdOrScope?: string | MemoryBankRequestScope,
+  maybeScope?: MemoryBankRequestScope
+): Promise<ApiResponse<any>> {
   try {
     await ensureInit();
+    const requestScope = isMemoryBankRequestScope(profileIdOrScope) ? profileIdOrScope : maybeScope;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
+    const profileId =
+      typeof profileIdOrScope === "string"
+        ? profileIdOrScope
+        : requestScope
+          ? scopeProfileId(requestScope)
+          : undefined;
     if (!profileId) {
       return {
         success: true,
@@ -975,7 +1092,7 @@ export async function handleGetUserProfile(profileId?: string): Promise<ApiRespo
       };
     }
 
-    const profile = await profileRepo.getActiveProfile(profileId);
+    const profile = await profileRepo.getActiveProfile(profileId, owner);
     if (!profile)
       return {
         success: true,
@@ -1006,13 +1123,22 @@ export async function handleGetUserProfile(profileId?: string): Promise<ApiRespo
 }
 
 export async function handleGetProfileChangelog(
-  profileId: string,
-  limit: number = 5
+  profileIdOrScope: string | MemoryBankRequestScope | undefined,
+  limit: number = 5,
+  maybeScope?: MemoryBankRequestScope
 ): Promise<ApiResponse<any[]>> {
   try {
     await ensureInit();
+    const requestScope = isMemoryBankRequestScope(profileIdOrScope) ? profileIdOrScope : maybeScope;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
+    const profileId =
+      typeof profileIdOrScope === "string"
+        ? profileIdOrScope
+        : requestScope
+          ? scopeProfileId(requestScope)
+          : undefined;
     if (!profileId) return { success: false, error: "profileId is required" };
-    const changelogs = await profileRepo.getProfileChangelogs(profileId, limit);
+    const changelogs = await profileRepo.getProfileChangelogs(profileId, limit, owner);
     const formattedChangelogs = changelogs.map((c) => ({
       id: c.id,
       profileId: c.profileId,
@@ -1030,12 +1156,17 @@ export async function handleGetProfileChangelog(
 
 export async function handleGetProfileSnapshot(
   changelogId: string,
-  principal?: Principal
+  principalOrScope?: AuthPrincipal | MemoryBankRequestScope
 ): Promise<ApiResponse<any>> {
   try {
     await ensureInit();
     if (!changelogId) return { success: false, error: "changelogId is required" };
-    const changelog = await profileRepo.getChangelogById(changelogId);
+    const requestScope = isMemoryBankRequestScope(principalOrScope) ? principalOrScope : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
+    const principal: AuthPrincipal | undefined = requestScope
+      ? undefined
+      : (principalOrScope as AuthPrincipal | undefined);
+    const changelog = await profileRepo.getChangelogById(changelogId, owner);
     if (!changelog) return { success: false, error: "Changelog not found" };
     const accessError = ensurePrincipalCanAccessProfile(principal, changelog.profileId);
     if (accessError) return accessError;
@@ -1054,16 +1185,26 @@ export async function handleGetProfileSnapshot(
   }
 }
 
-export async function handleRefreshProfile(profileId?: string): Promise<ApiResponse<any>> {
+export async function handleRefreshProfile(
+  profileIdOrScope?: string | MemoryBankRequestScope
+): Promise<ApiResponse<any>> {
   try {
     await ensureInit();
+    const requestScope = isMemoryBankRequestScope(profileIdOrScope) ? profileIdOrScope : undefined;
+    const owner = requestScope ? ownerScope(requestScope) : undefined;
+    const profileId =
+      typeof profileIdOrScope === "string"
+        ? profileIdOrScope
+        : requestScope
+          ? scopeProfileId(requestScope)
+          : undefined;
     if (!profileId) {
       return {
         success: false,
         error: "profileId is required",
       };
     }
-    const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning(profileId);
+    const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning(profileId, owner);
     return {
       success: true,
       data: {
@@ -1078,11 +1219,12 @@ export async function handleRefreshProfile(profileId?: string): Promise<ApiRespo
   }
 }
 
-export async function handleDetectTagMigration(): Promise<
-  ApiResponse<{ needsMigration: boolean; count: number }>
-> {
+export async function handleDetectTagMigration(
+  scope?: MemoryBankRequestScope
+): Promise<ApiResponse<{ needsMigration: boolean; count: number }>> {
   try {
     await ensureInit();
+    const owner = scope ? ownerScope(scope) : undefined;
 
     // Restore migration completion state from persisted marker
     const migrationProgress = getApiMigrationProgress();
@@ -1109,7 +1251,7 @@ export async function handleDetectTagMigration(): Promise<
       }
     }
 
-    const untaggedCount = await memoryRepo.countUntagged();
+    const untaggedCount = await memoryRepo.countUntagged(owner);
     const currentProgress = getApiMigrationProgress();
     if (untaggedCount === 0) {
       // Auto-reset stale migration state when no untagged memories remain
@@ -1164,7 +1306,8 @@ export async function handleGetTagMigrationProgress(): Promise<
 }
 
 export async function handleRunTagMigrationBatch(
-  _batchSize: number = 5
+  _batchSize: number = 5,
+  scope?: MemoryBankRequestScope
 ): Promise<ApiResponse<{ processed: number; total: number; hasMore: boolean }>> {
   // Delegate to the background service
   const { getMigrationProgress, runTagMigration } = await import("./tag-migration-service.js");
@@ -1176,7 +1319,7 @@ export async function handleRunTagMigrationBatch(
     };
   }
   // Fire and forget — the service loop handles retries
-  runTagMigration().catch((e) => {
+  runTagMigration(scope ? ownerScope(scope) : undefined).catch((e) => {
     logError("handleRunTagMigrationBatch: tag migration failed to start", { error: String(e) });
   });
   return { success: true, data: { processed: 0, total: 0, hasMore: true } };
@@ -1184,15 +1327,18 @@ export async function handleRunTagMigrationBatch(
 
 // ── New endpoints for server-client architecture ────────────
 
-export async function handleContextInject(data: {
-  sessionID?: string;
-  projectTag: string;
-  profileId: string;
-  repoId: string;
-  maxMemories?: number;
-  excludeCurrentSession?: boolean;
-  maxAgeDays?: number | null;
-}): Promise<
+export async function handleContextInject(
+  data: {
+    sessionID?: string;
+    projectTag: string;
+    profileId?: string;
+    repoId?: string;
+    maxMemories?: number;
+    excludeCurrentSession?: boolean;
+    maxAgeDays?: number | null;
+  },
+  scope?: MemoryBankRequestScope
+): Promise<
   ApiResponse<{
     context: string;
     memories: Array<{ id: string; summary: string; createdAt: string; similarity: number }>;
@@ -1202,19 +1348,22 @@ export async function handleContextInject(data: {
 > {
   try {
     await ensureInit();
+    const owner = scope ? ownerScope(scope) : undefined;
+    const profileId = scopeProfileId(scope, data.profileId);
 
     const maxMemories = data.maxMemories ?? CONFIG.chatMessage?.maxMemories ?? 3;
     const excludeCurrentSession = data.excludeCurrentSession ?? true;
     const maxAgeDays = data.maxAgeDays ?? null;
 
-    const { scope, hash } = extractScopeFromTag(data.projectTag);
+    const { scope: tagScope, hash } = extractScopeFromTag(data.projectTag);
     const rows = await memoryRepo.list({
-      scope: scope as MemoryScopeKind,
+      scope: tagScope as MemoryScopeKind,
       scopeHash: hash,
       containerTag: data.projectTag,
       limit: maxMemories * 3,
-      profileId: data.profileId,
+      profileId,
       repoId: data.repoId,
+      ...owner,
     });
 
     // Memories are listed in recency order (newest first) for context injection.
@@ -1249,8 +1398,8 @@ export async function handleContextInject(data: {
     let profileInjected = false;
     let profileStatus: string | undefined;
 
-    if (CONFIG.injectProfile && data.profileId) {
-      const profile = await profileRepo.getActiveProfile(data.profileId);
+    if (CONFIG.injectProfile && profileId) {
+      const profile = await profileRepo.getActiveProfile(profileId, owner);
       if (profile) {
         try {
           const profileData = JSON.parse(profile.profileData);
@@ -1286,7 +1435,7 @@ export async function handleContextInject(data: {
           profileInjected = false;
           profileStatus = "corrupt";
           log("handleContextInject: corrupt profile data detected", {
-            profileId: data.profileId,
+            profileId,
           });
         }
       }
@@ -1317,26 +1466,31 @@ export async function handleContextInject(data: {
 }
 
 // Phase 3: Full implementation — was stub in Phase 2
-export async function handleAutoCapture(data: {
-  sessionID: string;
-  projectTag: string;
-  profileId: string;
-  repoId: string;
-  projectMetadata: {
-    localProjectPath?: string;
-    gitRepoUrl?: string;
-    repoNickname?: string;
-  };
-  conversationMessages: Array<{
-    role: string;
-    parts: Array<{ type: string; text?: string; tool?: string; state?: any }>;
-  }>;
-  userPrompt: string;
-  promptMessageId: string;
-}): Promise<ApiResponse<{ captured: boolean; memoryId?: string }>> {
+export async function handleAutoCapture(
+  data: {
+    sessionID: string;
+    projectTag: string;
+    profileId?: string;
+    repoId?: string;
+    projectMetadata?: {
+      localProjectPath?: string;
+      gitRepoUrl?: string;
+      repoNickname?: string;
+    };
+    conversationMessages: Array<{
+      role: string;
+      parts: Array<{ type: string; text?: string; tool?: string; state?: any }>;
+    }>;
+    userPrompt: string;
+    promptMessageId: string;
+  },
+  scope?: MemoryBankRequestScope
+): Promise<ApiResponse<{ captured: boolean; memoryId?: string }>> {
   try {
     await ensureInit();
     await embeddingService.warmup();
+    const owner = scope ? ownerScope(scope) : undefined;
+    const profileId = scopeProfileId(scope, data.profileId);
 
     // Extract AI content from conversation messages
     const textResponses: string[] = [];
@@ -1374,14 +1528,15 @@ export async function handleAutoCapture(data: {
 
     // Get latest memory for context
     let latestMemory: string | null = null;
-    const { scope, hash } = extractScopeFromTag(data.projectTag);
+    const { scope: tagScope, hash } = extractScopeFromTag(data.projectTag);
     const recentRows = await memoryRepo.list({
-      scope: scope as MemoryScopeKind,
+      scope: tagScope as MemoryScopeKind,
       scopeHash: hash,
       containerTag: data.projectTag,
       limit: 1,
-      profileId: data.profileId,
+      profileId,
       repoId: data.repoId,
+      ...owner,
     });
     const firstRow = recentRows[0];
     if (firstRow && firstRow.content) {
@@ -1495,11 +1650,12 @@ export async function handleAutoCapture(data: {
         promptId: data.promptMessageId,
         captureTimestamp: now,
       }),
-      profileId: data.profileId,
+      profileId,
+      ...owner,
       repoId: data.repoId,
-      localProjectPath: data.projectMetadata.localProjectPath,
-      gitRepoUrl: data.projectMetadata.gitRepoUrl,
-      repoNickname: data.projectMetadata.repoNickname,
+      localProjectPath: data.projectMetadata?.localProjectPath,
+      gitRepoUrl: data.projectMetadata?.gitRepoUrl,
+      repoNickname: data.projectMetadata?.repoNickname,
     };
 
     // ── ISSUE-006: Retry logic for DB insert with exponential backoff ──
@@ -1537,7 +1693,7 @@ export async function handleAutoCapture(data: {
     // Dual-write: also store in canonical tag registry
     if (summaryResult.tags.length > 0) {
       try {
-        await tagRegistry.linkMemoryTags(id, summaryResult.tags);
+        await tagRegistry.linkMemoryTags(id, summaryResult.tags, owner);
       } catch (err) {
         logError("api-handlers: failed to link auto-capture tags in registry", {
           memoryId: id,
@@ -1555,23 +1711,26 @@ export async function handleAutoCapture(data: {
   }
 }
 
-export async function handleUserProfileLearn(data: {
-  profileId: string;
-  projectTag?: string;
-}): Promise<ApiResponse<{ updated: boolean }>> {
+export async function handleUserProfileLearn(
+  data: {
+    profileId?: string;
+    projectTag?: string;
+  },
+  scope?: MemoryBankRequestScope
+): Promise<ApiResponse<{ updated: boolean }>> {
   try {
     await ensureInit();
+    const owner = scope ? ownerScope(scope) : undefined;
+    const profileId = scopeProfileId(scope, data.profileId);
 
-    if (!data.profileId) {
+    if (!profileId) {
       return {
         success: false,
         error: "Cannot perform profile learning: profileId is required.",
       };
     }
-    const profileId = data.profileId;
-
     // Check if enough unanalyzed prompts exist
-    const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning(profileId);
+    const unanalyzedCount = await promptRepo.countUnanalyzedForUserLearning(profileId, owner);
     const threshold = CONFIG.userProfileAnalysisInterval;
 
     if (unanalyzedCount < threshold) {
@@ -1582,13 +1741,17 @@ export async function handleUserProfileLearn(data: {
     }
 
     // Fetch prompts for analysis
-    const prompts = await promptRepo.getPromptsForUserLearning({ profileId, limit: threshold });
+    const prompts = await promptRepo.getPromptsForUserLearning({
+      profileId,
+      limit: threshold,
+      ...owner,
+    });
     if (prompts.length === 0) {
       return { success: true, data: { updated: false } };
     }
 
     // Fetch existing profile (if any)
-    const existingProfile = await profileRepo.getActiveProfile(profileId);
+    const existingProfile = await profileRepo.getActiveProfile(profileId, owner);
 
     // Build existing profile JSON for the AI context
     let existingProfileJson: string | null = null;
@@ -1622,7 +1785,10 @@ export async function handleUserProfileLearn(data: {
             error: String(analyzeError),
           }
         );
-        await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+        await promptRepo.markMultipleAsUserLearningCaptured(
+          prompts.map((p) => p.id),
+          owner
+        );
         profileLearningAttempts.delete(profileAttemptKey);
         return { success: true, data: { updated: false } };
       }
@@ -1640,7 +1806,10 @@ export async function handleUserProfileLearn(data: {
 
     if (!updatedProfileData) {
       // AI returned nothing useful — mark prompts as analyzed so they don't loop
-      await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+      await promptRepo.markMultipleAsUserLearningCaptured(
+        prompts.map((p) => p.id),
+        owner
+      );
       profileLearningAttempts.delete(profileAttemptKey);
       return { success: true, data: { updated: false } };
     }
@@ -1654,7 +1823,10 @@ export async function handleUserProfileLearn(data: {
         log("Corrupt profile data, skipping learning cycle", {
           profileId: existingProfile.id,
         });
-        await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+        await promptRepo.markMultipleAsUserLearningCaptured(
+          prompts.map((p) => p.id),
+          owner
+        );
         return { success: true, data: { updated: false } };
       }
 
@@ -1666,14 +1838,18 @@ export async function handleUserProfileLearn(data: {
         existingProfile.id,
         mergedData,
         prompts.length,
-        changeSummary
+        changeSummary,
+        owner
       );
     } else {
-      await profileRepo.createProfile(profileId, updatedProfileData, prompts.length);
+      await profileRepo.createProfile(profileId, updatedProfileData, prompts.length, owner);
     }
 
     // Mark prompts as analyzed
-    await promptRepo.markMultipleAsUserLearningCaptured(prompts.map((p) => p.id));
+    await promptRepo.markMultipleAsUserLearningCaptured(
+      prompts.map((p) => p.id),
+      owner
+    );
 
     return { success: true, data: { updated: true } };
   } catch (error) {
@@ -1708,18 +1884,23 @@ export async function handleCleanup(args: { scope: JobScope; skipGuard?: boolean
     const retentionDays = CONFIG.autoCleanupRetentionDays ?? 90;
     const cutoff = Date.now() - retentionDays * 86_400_000;
     const profileId = args.scope.kind === "profile" ? args.scope.profileId : undefined;
+    const owner = ownerFromJobScope(args.scope);
 
     // Step 1: Delete old prompts & collect linked memory IDs (informational)
-    const promptResult = await promptRepo.deleteOldPrompts(
-      profileId ? { cutoffTime: cutoff, profileId } : { cutoffTime: cutoff }
-    );
+    const promptResult = await promptRepo.deleteOldPrompts({
+      cutoffTime: cutoff,
+      ...(profileId ? { profileId } : {}),
+      ...owner,
+    });
 
     // Step 2: Fetch stale memories (single batch of 1000; known limitation — see SPEC §3.4)
-    const oldMemories = await memoryRepo.listOlderThan(
-      profileId
-        ? { cutoffTime: cutoff, limit: 1000, offset: 0, profileId }
-        : { cutoffTime: cutoff, limit: 1000, offset: 0 }
-    );
+    const oldMemories = await memoryRepo.listOlderThan({
+      cutoffTime: cutoff,
+      limit: 1000,
+      offset: 0,
+      ...(profileId ? { profileId } : {}),
+      ...owner,
+    });
 
     // Step 3: Iterate, protect, delete, tally
     let deletedMemories = 0;
@@ -1736,7 +1917,7 @@ export async function handleCleanup(args: { scope: JobScope; skipGuard?: boolean
       if (mem.metadata?.promptId != null) continue;
 
       // Delete the memory
-      await memoryRepo.delete(mem.id);
+      await memoryRepo.delete(mem.id, owner);
       deletedMemories++;
 
       // Classify scope from containerTag
@@ -1786,7 +1967,11 @@ export async function handleDeduplicate(args: { scope: JobScope; skipGuard?: boo
     // getAllWithVectors() is explicitly designed for pairwise similarity checks
     // (see types.ts:143 comment).
     const profileId = args.scope.kind === "profile" ? args.scope.profileId : undefined;
-    const memories = await memoryRepo.getAllWithVectors(profileId ? { profileId } : undefined);
+    const owner = ownerFromJobScope(args.scope);
+    const memories = await memoryRepo.getAllWithVectors({
+      ...(profileId ? { profileId } : {}),
+      ...owner,
+    });
 
     if (memories.length === 0) {
       return {
@@ -1881,7 +2066,7 @@ export async function handleDeduplicate(args: { scope: JobScope; skipGuard?: boo
         // Delete all except the most recently updated
         for (let k = 1; k < indices.length; k++) {
           try {
-            await memoryRepo.delete(group[indices[k]!]!.id);
+            await memoryRepo.delete(group[indices[k]!]!.id, owner);
             duplicatesRemoved++;
           } catch (e) {
             const failedId = group[indices[k]!]!.id;
@@ -1947,7 +2132,7 @@ export function handleMigrationRun(_body: {
 
 // ── List all user profiles ───────────────────────────────
 
-export async function handleListUserProfiles(principal?: Principal): Promise<
+export async function handleListUserProfiles(principal?: AuthPrincipal): Promise<
   ApiResponse<{
     profiles: Array<{ profileId: string }>;
   }>
@@ -1958,14 +2143,9 @@ export async function handleListUserProfiles(principal?: Principal): Promise<
     const list = profiles.map((p) => ({
       profileId: p.profileId,
     }));
-    const visibleProfiles =
-      principal && principal.kind === "profile"
-        ? list.filter((profile) => profile.profileId === principal.profileId)
-        : list;
-
     return {
       success: true,
-      data: { profiles: visibleProfiles },
+      data: { profiles: list },
     };
   } catch (error) {
     log("handleListUserProfiles: error", { error: String(error) });
@@ -1990,120 +2170,130 @@ export async function handleResetTagMigration(): Promise<ApiResponse> {
 // ── Client Identity Handlers ───────────────────────────────
 
 export async function handleClientConnect(
-  data: {
-    clientId: string;
-    profileId?: string;
+  body: {
+    clientId?: string;
     metadata?: Record<string, unknown>;
+    includeStats?: boolean;
+    memoryBankId?: string;
   },
-  principal: Principal = { kind: "admin" }
+  principal: AuthPrincipal,
+  authService: AuthService
 ): Promise<
   ApiResponse<{
-    firstTime: boolean;
-    daysSinceLastSeen: number | null;
-    welcomeBack: boolean;
-    stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
-    principal: ReturnType<typeof principalResponse>;
-    enrollment?: { profileId: string; apiKey: string };
+    principal: UserApiKeyPrincipal;
+    memoryBanks: ReturnType<typeof formatMemoryBank>[];
+    requiresMemoryBank: boolean;
+    stats?: {
+      memoryBankId: string;
+      totalMemories: number;
+      memoriesToday: number;
+      totalPrompts: number;
+    };
   }>
 > {
   try {
-    if (!data.clientId) {
+    await ensureInit();
+    if (principal.kind === "admin") {
+      return { success: false, error: "User API key required for client connect" };
+    }
+    if (!body.clientId) {
       return { success: false, error: "clientId is required" };
     }
-    await ensureInit();
 
-    let effectivePrincipal = principal;
-    let enrollment: { profileId: string; apiKey: string } | undefined;
-    if (principal.kind === "newuser") {
-      const profileId = data.profileId?.trim();
-      if (!profileId) {
-        return { success: false, error: "profileId is required when using NEWUSER_API_KEY" };
+    await clientRepo!.upsertClient(body.clientId, body.metadata ?? {});
+    const banks = await memoryBankRepo!.listForApiKey(principal.apiKeyId);
+    let stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | undefined;
+    let statsMemoryBankId: string | undefined;
+    if (body.includeStats && body.memoryBankId) {
+      let requestedBank: MemoryBankRow;
+      try {
+        requestedBank = await authService.requireBankForPrincipal(principal, body.memoryBankId);
+      } catch {
+        return { success: false, error: "Memory Bank not found for API key" };
       }
-      const config = getServerConfig();
-      const existingStaticProfile = getConfiguredProfileById(config.configuredProfiles, profileId);
-      const existingGeneratedKey = await profileApiKeyRepo!.hasKeyForProfile(profileId);
-      if (existingStaticProfile || existingGeneratedKey) {
-        return {
-          success: false,
-          error:
-            "Profile already has an API key. Configure the client with that profile key instead of NEWUSER_API_KEY.",
-        };
-      }
-
-      const apiKey = `omnp_${randomBytes(32).toString("base64url")}`;
-      const created = await profileApiKeyRepo!.createKeyForProfile(
-        profileId,
-        apiKey,
-        data.clientId
-      );
-      if (!created) {
-        return {
-          success: false,
-          error:
-            "Profile already has an API key. Configure the client with that profile key instead of NEWUSER_API_KEY.",
-        };
-      }
-      effectivePrincipal = { kind: "profile", profileId };
-      enrollment = { profileId, apiKey };
-    }
-
-    const metadata = data.metadata ?? {};
-    const result = await clientRepo!.upsertClient(data.clientId, metadata);
-    const thresholdHours = getServerConfig().clientWelcomeBackThreshold;
-
-    let daysSinceLastSeen: number | null = null;
-    let welcomeBack = false;
-
-    if (result.previousLastSeen && thresholdHours > 0) {
-      const hoursSince = (Date.now() - result.previousLastSeen) / (1000 * 60 * 60);
-      daysSinceLastSeen = Math.round(hoursSince / 24);
-      if (hoursSince >= thresholdHours) {
-        welcomeBack = true;
-      }
-    }
-
-    // Log lifecycle event
-    const displayName = data.clientId.slice(0, 8);
-    if (result.firstTime) {
-      logInfo(`🆕 New client connected: ${displayName}`, {
-        clientId: data.clientId,
-        metadata,
+      stats = await clientRepo!.getClientStatsForBank({
+        clientId: body.clientId,
+        apiKeyId: requestedBank.apiKeyId,
+        memoryBankId: requestedBank.id,
       });
-    } else if (welcomeBack) {
-      logInfo(`👋 Welcome back: ${displayName} (last seen ${daysSinceLastSeen}d ago)`, {
-        clientId: data.clientId,
-        daysSinceLastSeen,
-      });
-    } else {
-      logDebug(`Client connected: ${displayName}`, {
-        clientId: data.clientId,
-        hoursSinceLast: result.previousLastSeen
-          ? Math.round((Date.now() - result.previousLastSeen) / (1000 * 60 * 60))
-          : null,
-      });
+      statsMemoryBankId = requestedBank.id;
     }
-
-    // Get stats
-    const stats = await clientRepo!.getClientStats(data.clientId);
 
     return {
       success: true,
       data: {
-        firstTime: result.firstTime,
-        daysSinceLastSeen,
-        welcomeBack,
-        stats: {
-          totalMemories: stats.totalMemories,
-          memoriesToday: stats.memoriesToday,
-          totalPrompts: stats.totalPrompts,
-        },
-        principal: principalResponse(effectivePrincipal),
-        ...(enrollment ? { enrollment } : {}),
+        principal,
+        memoryBanks: banks.map(formatMemoryBank),
+        requiresMemoryBank: banks.length === 0,
+        ...(stats && statsMemoryBankId
+          ? {
+              stats: {
+                memoryBankId: statsMemoryBankId,
+                totalMemories: stats.totalMemories,
+                memoriesToday: stats.memoriesToday,
+                totalPrompts: stats.totalPrompts,
+              },
+            }
+          : {}),
       },
     };
   } catch (error) {
     logError("handleClientConnect: error", { error: String(error) });
     return { success: false, error: "Internal server error" };
+  }
+}
+
+export async function handleAdminCreateUserApiKey(
+  authService: AuthService,
+  body: { name?: string; description?: string }
+): Promise<ApiResponse<any>> {
+  try {
+    const created = await authService.createUserApiKey({
+      name: body.name ?? "",
+      description: body.description ?? "",
+    });
+    return { success: true, data: created };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function handleAdminListUserApiKeys(
+  authService: AuthService
+): Promise<ApiResponse<any>> {
+  try {
+    return { success: true, data: { apiKeys: await authService.listUserApiKeys() } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function handleListMemoryBanksForApiKey(
+  authService: AuthService,
+  apiKeyId: string
+): Promise<ApiResponse<any>> {
+  try {
+    const banks = await authService.listMemoryBanksForApiKey(apiKeyId);
+    return { success: true, data: { memoryBanks: banks.map(formatMemoryBank) } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export async function handleCreateMemoryBankForApiKey(
+  authService: AuthService,
+  apiKeyId: string,
+  body: { name?: string; description?: string }
+): Promise<ApiResponse<any>> {
+  try {
+    const memoryBank = await authService.createMemoryBankForApiKey({
+      apiKeyId,
+      name: body.name ?? "",
+      description: body.description ?? "",
+    });
+    return { success: true, data: { memoryBank: formatMemoryBank(memoryBank) } };
+  } catch (error) {
+    return { success: false, error: error instanceof Error ? error.message : String(error) };
   }
 }
 

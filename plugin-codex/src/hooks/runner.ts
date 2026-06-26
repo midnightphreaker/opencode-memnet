@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { loadConfig, type CodexMemnetConfig } from "../config";
 import { getClientId } from "../identity";
-import { RemoteMemoryClient } from "../http-client";
+import { RemoteMemoryClient, type MemoryBankSummary } from "../http-client";
 import { getTags, type TagInfo } from "../tags";
 import { logHookDiagnostic } from "./logger";
 import { parseHookPayload, type ParsedHookPayload } from "./payload";
@@ -40,6 +40,7 @@ export type RunHookResult =
         | "context-empty"
         | "context-failed"
         | "capture-failed"
+        | "missing-memory-bank"
         | "unsupported-event";
     };
 
@@ -51,7 +52,7 @@ interface HookRuntime {
   clientId: string;
   http: RemoteMemoryClient;
   tags: TagInfo;
-  profileId?: string;
+  memoryBank: MemoryBankSummary;
 }
 
 export async function runHook(input: string, options: RunHookOptions = {}): Promise<RunHookResult> {
@@ -80,12 +81,22 @@ export async function runHook(input: string, options: RunHookOptions = {}): Prom
   });
   const tags = getTags(cwd);
 
-  const connect = await http.clientConnect(buildHookClientMetadata(tags), {
-    profileId: config.profileId ?? tags.profileId,
+  const connect = await http.clientConnect({
+    metadata: buildHookClientMetadata(tags),
+    includeStats: false,
   });
   if (!connect.success) {
     logHookDiagnostic(event, { reason: "connect-failed", error: connect.error });
     return { success: true, action: "skipped", reason: "connect-failed" };
+  }
+
+  const memoryBank = connect.data?.memoryBanks?.[0];
+  if (!memoryBank && event !== "PostCompact") {
+    logHookDiagnostic(event, { reason: "missing-memory-bank" });
+    return { success: true, action: "skipped", reason: "missing-memory-bank" };
+  }
+  if (!memoryBank) {
+    return { success: true, action: "connected" };
   }
 
   const runtime: HookRuntime = {
@@ -96,7 +107,7 @@ export async function runHook(input: string, options: RunHookOptions = {}): Prom
     clientId,
     http,
     tags,
-    profileId: resolveProfileId(config, tags, connect.data?.principal),
+    memoryBank,
   };
 
   switch (event) {
@@ -116,15 +127,19 @@ async function injectContext(
   runtime: HookRuntime,
   event: "SessionStart" | "UserPromptSubmit"
 ): Promise<RunHookResult> {
-  const response = await runtime.http.getContext({
-    sessionID: runtime.payload.sessionID,
-    projectTag: runtime.tags.projectTag,
-    profileId: runtime.profileId,
-    repoId: runtime.tags.repoId,
-    maxMemories: runtime.config.context.maxMemories,
-    excludeCurrentSession: runtime.config.context.excludeCurrentSession,
-    maxAgeDays: runtime.config.context.maxAgeDays,
-  });
+  const response = await runtime.http.getContext(
+    {
+      sessionID: runtime.payload.sessionID,
+      projectTag: runtime.tags.projectTag,
+      repoId: runtime.tags.repoId,
+      maxMemories: runtime.config.context.maxMemories,
+      excludeCurrentSession: runtime.config.context.excludeCurrentSession,
+      maxAgeDays: runtime.config.context.maxAgeDays,
+    },
+    {
+      memoryBankId: runtime.memoryBank.id,
+    }
+  );
 
   if (!response.success) {
     logHookDiagnostic(event, { reason: "context-failed", error: response.error });
@@ -178,16 +193,20 @@ async function captureFromTranscript(
     return { success: true, action: "skipped", reason: "transcript-unusable" };
   }
 
-  const response = await runtime.http.autoCapture({
-    sessionID: runtime.payload.sessionID ?? transcript.sessionID ?? "unknown",
-    projectTag: runtime.tags.projectTag,
-    profileId: runtime.profileId,
-    repoId: runtime.tags.repoId,
-    projectMetadata: projectMetadata(runtime.tags),
-    conversationMessages: transcript.messages,
-    userPrompt: transcript.latestUserPrompt,
-    promptMessageId: transcript.promptMessageId,
-  });
+  const response = await runtime.http.autoCapture(
+    {
+      sessionID: runtime.payload.sessionID ?? transcript.sessionID ?? "unknown",
+      projectTag: runtime.tags.projectTag,
+      repoId: runtime.tags.repoId,
+      projectMetadata: projectMetadata(runtime.tags),
+      conversationMessages: transcript.messages,
+      userPrompt: transcript.latestUserPrompt,
+      promptMessageId: transcript.promptMessageId,
+    },
+    {
+      memoryBankId: runtime.memoryBank.id,
+    }
+  );
 
   if (!response.success) {
     logHookDiagnostic(runtime.event ?? "unknown", {
@@ -227,20 +246,6 @@ function normalizeEvent(value: string | undefined): HookEvent | undefined {
     return value;
   }
   return undefined;
-}
-
-function resolveProfileId(
-  config: CodexMemnetConfig,
-  tags: TagInfo,
-  principal:
-    | { kind: "admin" }
-    | { kind: "profile"; profileId: string; displayName?: string }
-    | undefined
-): string | undefined {
-  if (principal?.kind === "profile") {
-    return principal.profileId;
-  }
-  return config.profileId ?? tags.profileId;
 }
 
 function buildHookClientMetadata(tags: TagInfo): Record<string, unknown> {

@@ -6,7 +6,7 @@
 import { CONFIG } from "../config.js";
 import { log, logError } from "./logger.js";
 import { embeddingService } from "./embedding.js";
-import type { MemoryRecord } from "./storage/types.js";
+import type { MemoryBankOwner, MemoryRecord } from "./storage/types.js";
 
 // ── Migration state (consolidated single source of truth) ──
 // CONCURRENCY NOTE: These module-level variables assume a single-user / single-process model.
@@ -108,7 +108,8 @@ const MAX_EXISTING_TAGS_HINT = 25;
 async function tagMemory(
   memory: MemoryRecord,
   existingTags: string[],
-  provider: any
+  provider: any,
+  owner?: MemoryBankOwner
 ): Promise<string[] | null> {
   // Only include a limited sample of existing tags to avoid the LLM over-tagging
   // from a large tag vocabulary. Pick up to MAX_EXISTING_TAGS_HINT tags.
@@ -119,7 +120,7 @@ async function tagMemory(
   try {
     const { createTagRegistry } = await import("./storage/factory.js");
     const registry = createTagRegistry();
-    const tagNames = await registry.getCanonicalTagNames(25);
+    const tagNames = await registry.getCanonicalTagNames(25, owner);
     if (tagNames.length > 0) {
       existingTagsStr = tagNames.join(", ");
     }
@@ -198,7 +199,7 @@ Use these existing tags wherever they fit. Only propose a new tag if no existing
   return null; // gave up after retries
 }
 
-export async function runTagMigration(): Promise<void> {
+export async function runTagMigration(owner?: MemoryBankOwner): Promise<void> {
   if (_state.status === "running") return;
 
   _abortController = new AbortController();
@@ -211,7 +212,7 @@ export async function runTagMigration(): Promise<void> {
     const memoryRepo = createMemoryRepository();
 
     while (!signal.aborted) {
-      const untaggedCount = await memoryRepo.countUntagged();
+      const untaggedCount = await memoryRepo.countUntagged(owner);
       if (untaggedCount === 0) {
         _state = {
           status: "idle",
@@ -223,7 +224,7 @@ export async function runTagMigration(): Promise<void> {
         continue;
       }
 
-      const existingTags = await memoryRepo.getDistinctTagValues({ scope: "project" });
+      const existingTags = await memoryRepo.getDistinctTagValues({ scope: "project", ...owner });
 
       _state.status = "running";
       _state.total = untaggedCount; // initial estimate from countUntagged()
@@ -248,13 +249,13 @@ export async function runTagMigration(): Promise<void> {
       let consecutiveFailures = 0;
 
       while (!signal.aborted) {
-        const batch = await memoryRepo.getUntaggedProjectMemories(BATCH_SIZE, 0);
+        const batch = await memoryRepo.getUntaggedProjectMemories(BATCH_SIZE, 0, owner);
         if (batch.length === 0) break;
 
         for (const mem of batch) {
           if (signal.aborted) break;
 
-          const tags = await tagMemory(mem, existingTags, provider);
+          const tags = await tagMemory(mem, existingTags, provider, owner);
 
           if (tags && tags.length > 0) {
             // Reset failure counter on success
@@ -263,7 +264,7 @@ export async function runTagMigration(): Promise<void> {
             // Write tags immediately (separate from vector update)
             const tagsStr = tags.join(",");
             try {
-              await memoryRepo.updateTagsOnly(mem.id, tagsStr, Date.now());
+              await memoryRepo.updateTagsOnly(mem.id, tagsStr, Date.now(), owner);
             } catch (e) {
               const msg = `Failed to save tags for ${mem.id}: ${String(e)}`;
               _state.errors.push(msg);
@@ -281,7 +282,7 @@ export async function runTagMigration(): Promise<void> {
               });
               const tagsVector = await embeddingService.embedWithTimeout(tagsStr, { kind: "tags" });
 
-              await memoryRepo.updateVectorsOnly(mem.id, vector, tagsVector, Date.now());
+              await memoryRepo.updateVectorsOnly(mem.id, vector, tagsVector, Date.now(), owner);
             } catch (e) {
               const msg = `Failed to update vectors for ${mem.id}: ${String(e)}`;
               _state.errors.push(msg);
@@ -296,7 +297,7 @@ export async function runTagMigration(): Promise<void> {
             try {
               const { createTagRegistry } = await import("./storage/factory.js");
               const registry = createTagRegistry();
-              await registry.linkMemoryTags(mem.id, tags);
+              await registry.linkMemoryTags(mem.id, tags, owner);
             } catch (err) {
               logError("tag-migration: failed to link tags in registry", {
                 memoryId: mem.id,
@@ -336,7 +337,7 @@ export async function runTagMigration(): Promise<void> {
       if (consecutiveFailures < MIGRATION_MAX_FAILURES) {
         let vectorProcessed = 0;
         while (!signal.aborted) {
-          const vectorBatch = await memoryRepo.getMemoriesWithoutVectors(BATCH_SIZE, 0);
+          const vectorBatch = await memoryRepo.getMemoriesWithoutVectors(BATCH_SIZE, 0, owner);
           if (vectorBatch.length === 0) break;
 
           for (const mem of vectorBatch) {
@@ -351,7 +352,7 @@ export async function runTagMigration(): Promise<void> {
                 ? await embeddingService.embedWithTimeout(tagsStr, { kind: "tags" })
                 : undefined;
 
-              await memoryRepo.updateVectorsOnly(mem.id, vector, tagsVector, Date.now());
+              await memoryRepo.updateVectorsOnly(mem.id, vector, tagsVector, Date.now(), owner);
               vectorProcessed++;
             } catch (e) {
               logError("tag-migration: Phase 2 vector generation failed", {
@@ -368,7 +369,7 @@ export async function runTagMigration(): Promise<void> {
       }
 
       // Check if we're done
-      const remaining = await memoryRepo.countUntagged();
+      const remaining = await memoryRepo.countUntagged(owner);
       if (remaining === 0) {
         _state = { status: "idle", processed: totalProcessed, total: totalProcessed, errors: [] };
         await sleep(5000);

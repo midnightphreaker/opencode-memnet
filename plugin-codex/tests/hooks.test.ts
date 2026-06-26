@@ -10,6 +10,7 @@ import { parseTranscript } from "../src/hooks/transcript";
 interface RecordedRequest {
   url: URL;
   method: string;
+  headers: Headers;
   body?: unknown;
 }
 
@@ -29,13 +30,37 @@ function writeProjectConfig(cwd: string, options: { captureEnabled?: boolean } =
     JSON.stringify({
       serverUrl: "http://server.test",
       apiKey: "test-api-key",
-      profileId: "profile-1",
       capture: { enabled: options.captureEnabled ?? true },
     })
   );
 }
 
-function createRecorder() {
+function connectData(memoryBanks = [memoryBank()]) {
+  return {
+    principal: {
+      kind: "user-api-key",
+      apiKeyId: "key-1",
+      apiKeyName: "opencode",
+      apiKeyDescription: "OpenCode agent memory access",
+    },
+    memoryBanks,
+    requiresMemoryBank: memoryBanks.length === 0,
+  };
+}
+
+function memoryBank() {
+  return {
+    id: "bank-1",
+    apiKeyId: "key-1",
+    name: "project",
+    description: "Work done on project repo",
+    shortcut: "opencode>project",
+    createdAt: "2026-06-26T00:00:00.000Z",
+    updatedAt: "2026-06-26T00:00:00.000Z",
+  };
+}
+
+function createRecorder(options: { memoryBanks?: ReturnType<typeof memoryBank>[] } = {}) {
   const requests: RecordedRequest[] = [];
   const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
     const request = new Request(input, init);
@@ -43,8 +68,12 @@ function createRecorder() {
     requests.push({
       url: new URL(request.url),
       method: request.method,
+      headers: request.headers,
       body: request.body ? await request.json() : undefined,
     });
+    if (pathname === "/api/client/connect") {
+      return Response.json({ success: true, data: connectData(options.memoryBanks) });
+    }
     if (pathname === "/api/context/inject") {
       return Response.json({
         success: true,
@@ -67,10 +96,14 @@ function createFailingRecorder(failPath: string) {
     requests.push({
       url: new URL(request.url),
       method: request.method,
+      headers: request.headers,
       body: request.body ? await request.json() : undefined,
     });
     if (new URL(request.url).pathname === failPath) {
       return Response.json({ success: false, error: "server rejected" });
+    }
+    if (new URL(request.url).pathname === "/api/client/connect") {
+      return Response.json({ success: true, data: connectData() });
     }
     return Response.json({ success: true, data: { ok: true } });
   };
@@ -262,7 +295,7 @@ describe("runHook", () => {
 
       expect(requests[0].body).toMatchObject({
         clientId: "client-1",
-        profileId: "profile-1",
+        includeStats: false,
         metadata: {
           client: "codex",
           runtime: "codex-cli",
@@ -277,19 +310,77 @@ describe("runHook", () => {
       expect("projectPath" in connectMetadata).toBe(false);
       expect("userEmail" in connectMetadata).toBe(false);
       expect("userName" in connectMetadata).toBe(false);
+      expect(JSON.stringify(requests[0].body)).not.toContain("profileId");
 
       const body = requests[1].body as Record<string, unknown>;
       const repoId = body.repoId;
+      expect(requests[1].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
       expect(body).toMatchObject({
         sessionID: "session-1",
         projectTag: expect.any(String),
-        profileId: "profile-1",
         repoId: expect.any(String),
         maxMemories: 5,
         excludeCurrentSession: true,
         maxAgeDays: null,
       });
       expect(repoId).toMatch(/^repo_/);
+      expect(JSON.stringify(body)).not.toContain("profileId");
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  test("no-bank startup skips context and capture with missing-memory-bank", async () => {
+    const cwd = tempProject();
+    writeProjectConfig(cwd);
+    const transcriptPath = join(cwd, "transcript.jsonl");
+    writeFileSync(
+      transcriptPath,
+      [
+        JSON.stringify({
+          session_id: "session-1",
+          message: {
+            role: "user",
+            id: "prompt-1",
+            parts: [{ type: "text", text: "remember this" }],
+          },
+        }),
+        JSON.stringify({ message: { role: "assistant", parts: [{ type: "text", text: "Done" }] } }),
+      ].join("\n")
+    );
+    const { requests, fetcher } = createRecorder({ memoryBanks: [] });
+
+    try {
+      const sessionStart = await runHook(
+        JSON.stringify({
+          hook_event_name: "SessionStart",
+          session_id: "session-1",
+        }),
+        { cwd, clientId: "client-1", fetcher }
+      );
+      const stop = await runHook(
+        JSON.stringify({
+          hook_event_name: "Stop",
+          session_id: "session-1",
+          transcript_path: transcriptPath,
+        }),
+        { cwd, clientId: "client-1", fetcher }
+      );
+
+      expect(sessionStart).toEqual({
+        success: true,
+        action: "skipped",
+        reason: "missing-memory-bank",
+      });
+      expect(stop).toEqual({ success: true, action: "skipped", reason: "missing-memory-bank" });
+      expect(requests.map((request) => request.url.pathname)).toEqual([
+        "/api/client/connect",
+        "/api/client/connect",
+      ]);
+      expect(requests[0].body).toMatchObject({ includeStats: false });
+      expect(requests[1].body).toMatchObject({ includeStats: false });
+      expect(JSON.stringify(sessionStart)).not.toContain("test-api-key");
+      expect(JSON.stringify(stop)).not.toContain("test-api-key");
     } finally {
       cleanup(cwd);
     }
@@ -386,7 +477,6 @@ describe("runHook", () => {
       expect(requests[1].body).toMatchObject({
         sessionID: "session-1",
         projectTag: expect.any(String),
-        profileId: "profile-1",
         repoId: expect.any(String),
         conversationMessages: [
           { role: "user", parts: [{ type: "text", text: "remember this" }] },
@@ -395,6 +485,8 @@ describe("runHook", () => {
         userPrompt: "remember this",
         promptMessageId: "prompt-1",
       });
+      expect(requests[1].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
+      expect(JSON.stringify(requests[1].body)).not.toContain("profileId");
     } finally {
       cleanup(cwd);
     }

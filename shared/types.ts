@@ -18,3 +18,37 @@ export interface MemoryMetadata {
 }
 
 export type AIProviderType = "openai-chat";
+
+export interface UserApiKeyPrincipalDTO {
+  kind: "user-api-key";
+  apiKeyId: string;
+  apiKeyName: string;
+  apiKeyDescription: string;
+}
+
+export interface MemoryBankDTO {
+  id: string;
+  apiKeyId: string;
+  name: string;
+  description: string;
+  shortcut: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClientConnectResponseDTO {
+  principal: UserApiKeyPrincipalDTO;
+  memoryBanks: MemoryBankDTO[];
+  requiresMemoryBank: boolean;
+  stats?: {
+    memoryBankId: string;
+    totalMemories: number;
+    memoriesToday: number;
+    totalPrompts: number;
+  };
+}
+
+export interface CreateMemoryBankRequestDTO {
+  name: string;
+  description: string;
+}

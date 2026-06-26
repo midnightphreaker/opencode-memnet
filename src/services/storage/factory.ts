@@ -15,18 +15,22 @@ import type {
   ClientRepository,
   ClientRow,
   MemoryRecord,
+  MemoryBankRepository,
+  MemoryBankRow,
+  MemoryBankOwner,
   MemoryRepository,
   MemoryRow,
   MemorySearchOptions,
   SearchResult,
   TagInfo,
+  UserApiKeyRepository,
+  UserApiKeyRow,
   UserProfileChangelogRow,
   UserProfileData,
   UserProfileRepository,
   UserProfileRow,
   UserPromptRepository,
   UserPromptRow,
-  ProfileApiKeyRepository,
 } from "./types.js";
 
 // ── Singleton instances (lazily created, cached for the process lifetime) ──
@@ -36,7 +40,8 @@ let promptRepo: UserPromptRepository | null = null;
 let profileRepo: UserProfileRepository | null = null;
 let sessionRepo: AISessionRepository | null = null;
 let clientRepo: ClientRepository | null = null;
-let profileApiKeyRepo: ProfileApiKeyRepository | null = null;
+let userApiKeyRepo: UserApiKeyRepository | null = null;
+let memoryBankRepo: MemoryBankRepository | null = null;
 let tagRegistry: PostgresTagRegistry | null = null;
 
 export function createMemoryRepository(): MemoryRepository {
@@ -69,10 +74,16 @@ export function createClientRepository(): ClientRepository {
   return clientRepo;
 }
 
-export function createProfileApiKeyRepository(): ProfileApiKeyRepository {
-  if (profileApiKeyRepo) return profileApiKeyRepo;
-  profileApiKeyRepo = new PostgresProfileApiKeyRepositoryLazy();
-  return profileApiKeyRepo;
+export function createUserApiKeyRepository(): UserApiKeyRepository {
+  if (userApiKeyRepo) return userApiKeyRepo;
+  userApiKeyRepo = new PostgresUserApiKeyRepositoryLazy();
+  return userApiKeyRepo;
+}
+
+export function createMemoryBankRepository(): MemoryBankRepository {
+  if (memoryBankRepo) return memoryBankRepo;
+  memoryBankRepo = new PostgresMemoryBankRepositoryLazy();
+  return memoryBankRepo;
 }
 
 export function createTagRegistry(): PostgresTagRegistry {
@@ -90,20 +101,24 @@ export async function initializeStorage(): Promise<{
   profileRepo: UserProfileRepository;
   sessionRepo: AISessionRepository;
   clientRepo: ClientRepository;
+  userApiKeyRepo: UserApiKeyRepository;
+  memoryBankRepo: MemoryBankRepository;
 }> {
   const mem = createMemoryRepository();
   const prompt = createUserPromptRepository();
   const profile = createUserProfileRepository();
   const session = createAISessionRepository();
   const client = createClientRepository();
-  const profileApiKey = createProfileApiKeyRepository();
+  const userApiKey = createUserApiKeyRepository();
+  const memoryBank = createMemoryBankRepository();
 
   await mem.initialize();
   await prompt.initialize();
   await profile.initialize();
   await session.initialize();
   await client.initialize();
-  await profileApiKey.initialize();
+  await userApiKey.initialize();
+  await memoryBank.initialize();
 
   return {
     memoryRepo: mem,
@@ -111,6 +126,8 @@ export async function initializeStorage(): Promise<{
     profileRepo: profile,
     sessionRepo: session,
     clientRepo: client,
+    userApiKeyRepo: userApiKey,
+    memoryBankRepo: memoryBank,
   };
 }
 
@@ -138,9 +155,13 @@ export async function closeStorage(): Promise<void> {
     await clientRepo.close();
     clientRepo = null;
   }
-  if (profileApiKeyRepo) {
-    await profileApiKeyRepo.close();
-    profileApiKeyRepo = null;
+  if (userApiKeyRepo) {
+    await userApiKeyRepo.close();
+    userApiKeyRepo = null;
+  }
+  if (memoryBankRepo) {
+    await memoryBankRepo.close();
+    memoryBankRepo = null;
   }
 }
 
@@ -228,34 +249,49 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
   ): Promise<MemoryRecord[]> {
     return (await this.repo()).getAllWithVectors(args);
   }
-  async countUntagged(): Promise<number> {
-    return (await this.repo()).countUntagged();
+  async countUntagged(owner?: MemoryBankOwner): Promise<number> {
+    return (await this.repo()).countUntagged(owner);
   }
-  async getUntaggedProjectMemories(limit?: number, offset?: number): Promise<MemoryRecord[]> {
-    return (await this.repo()).getUntaggedProjectMemories(limit, offset);
+  async getUntaggedProjectMemories(
+    limit?: number,
+    offset?: number,
+    owner?: MemoryBankOwner
+  ): Promise<MemoryRecord[]> {
+    return (await this.repo()).getUntaggedProjectMemories(limit, offset, owner);
   }
   async updateTagsAndVectors(
     id: string,
     tags: string,
     vector: Float32Array,
     tagsVector: Float32Array | undefined,
-    updatedAt: number
+    updatedAt: number,
+    owner?: MemoryBankOwner
   ): Promise<void> {
-    await (await this.repo()).updateTagsAndVectors(id, tags, vector, tagsVector, updatedAt);
+    await (await this.repo()).updateTagsAndVectors(id, tags, vector, tagsVector, updatedAt, owner);
   }
-  async updateTagsOnly(id: string, tags: string, updatedAt: number): Promise<void> {
-    await (await this.repo()).updateTagsOnly(id, tags, updatedAt);
+  async updateTagsOnly(
+    id: string,
+    tags: string,
+    updatedAt: number,
+    owner?: MemoryBankOwner
+  ): Promise<void> {
+    await (await this.repo()).updateTagsOnly(id, tags, updatedAt, owner);
   }
   async updateVectorsOnly(
     id: string,
     vector: Float32Array,
     tagsVector: Float32Array | undefined,
-    updatedAt: number
+    updatedAt: number,
+    owner?: MemoryBankOwner
   ): Promise<void> {
-    await (await this.repo()).updateVectorsOnly(id, vector, tagsVector, updatedAt);
+    await (await this.repo()).updateVectorsOnly(id, vector, tagsVector, updatedAt, owner);
   }
-  async getMemoriesWithoutVectors(limit?: number, offset?: number): Promise<MemoryRecord[]> {
-    return (await this.repo()).getMemoriesWithoutVectors(limit, offset);
+  async getMemoriesWithoutVectors(
+    limit?: number,
+    offset?: number,
+    owner?: MemoryBankOwner
+  ): Promise<MemoryRecord[]> {
+    return (await this.repo()).getMemoriesWithoutVectors(limit, offset, owner);
   }
 }
 
@@ -283,54 +319,67 @@ class PostgresUserPromptRepositoryLazy implements UserPromptRepository {
   async savePrompt(args: Parameters<UserPromptRepository["savePrompt"]>[0]): Promise<string> {
     return (await this.repo()).savePrompt(args);
   }
-  async getLastUncapturedPrompt(sessionId: string): Promise<UserPromptRow | null> {
-    return (await this.repo()).getLastUncapturedPrompt(sessionId);
+  async getLastUncapturedPrompt(
+    sessionId: string,
+    owner?: MemoryBankOwner
+  ): Promise<UserPromptRow | null> {
+    return (await this.repo()).getLastUncapturedPrompt(sessionId, owner);
   }
-  async deletePrompt(promptId: string): Promise<void> {
-    await (await this.repo()).deletePrompt(promptId);
+  async deletePrompt(promptId: string, owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).deletePrompt(promptId, owner);
   }
-  async markAsCaptured(promptId: string): Promise<void> {
-    await (await this.repo()).markAsCaptured(promptId);
+  async markAsCaptured(promptId: string, owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).markAsCaptured(promptId, owner);
   }
-  async claimPrompt(promptId: string): Promise<boolean> {
-    return (await this.repo()).claimPrompt(promptId);
+  async claimPrompt(promptId: string, owner?: MemoryBankOwner): Promise<boolean> {
+    return (await this.repo()).claimPrompt(promptId, owner);
   }
-  async releasePrompt(promptId: string): Promise<void> {
-    await (await this.repo()).releasePrompt(promptId);
+  async releasePrompt(promptId: string, owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).releasePrompt(promptId, owner);
   }
-  async countUncapturedPrompts(): Promise<number> {
-    return (await this.repo()).countUncapturedPrompts();
+  async countUncapturedPrompts(owner?: MemoryBankOwner): Promise<number> {
+    return (await this.repo()).countUncapturedPrompts(owner);
   }
-  async getUncapturedPrompts(limit: number): Promise<UserPromptRow[]> {
-    return (await this.repo()).getUncapturedPrompts(limit);
+  async getUncapturedPrompts(limit: number, owner?: MemoryBankOwner): Promise<UserPromptRow[]> {
+    return (await this.repo()).getUncapturedPrompts(limit, owner);
   }
-  async markMultipleAsCaptured(promptIds: string[]): Promise<void> {
-    await (await this.repo()).markMultipleAsCaptured(promptIds);
+  async markMultipleAsCaptured(promptIds: string[], owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).markMultipleAsCaptured(promptIds, owner);
   }
-  async countUnanalyzedForUserLearning(profileId: string): Promise<number> {
-    return (await this.repo()).countUnanalyzedForUserLearning(profileId);
+  async countUnanalyzedForUserLearning(
+    profileId: string,
+    owner?: MemoryBankOwner
+  ): Promise<number> {
+    return (await this.repo()).countUnanalyzedForUserLearning(profileId, owner);
   }
   async getPromptsForUserLearning(
     args: Parameters<UserPromptRepository["getPromptsForUserLearning"]>[0]
   ): Promise<UserPromptRow[]> {
     return (await this.repo()).getPromptsForUserLearning(args);
   }
-  async markAsUserLearningCaptured(promptId: string): Promise<void> {
-    await (await this.repo()).markAsUserLearningCaptured(promptId);
+  async markAsUserLearningCaptured(promptId: string, owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).markAsUserLearningCaptured(promptId, owner);
   }
-  async markMultipleAsUserLearningCaptured(promptIds: string[]): Promise<void> {
-    await (await this.repo()).markMultipleAsUserLearningCaptured(promptIds);
+  async markMultipleAsUserLearningCaptured(
+    promptIds: string[],
+    owner?: MemoryBankOwner
+  ): Promise<void> {
+    await (await this.repo()).markMultipleAsUserLearningCaptured(promptIds, owner);
   }
   async deleteOldPrompts(
     args: Parameters<UserPromptRepository["deleteOldPrompts"]>[0]
   ): Promise<{ deleted: number; linkedMemoryIds: string[] }> {
     return (await this.repo()).deleteOldPrompts(args);
   }
-  async linkMemoryToPrompt(promptId: string, memoryId: string): Promise<void> {
-    await (await this.repo()).linkMemoryToPrompt(promptId, memoryId);
+  async linkMemoryToPrompt(
+    promptId: string,
+    memoryId: string,
+    owner?: MemoryBankOwner
+  ): Promise<void> {
+    await (await this.repo()).linkMemoryToPrompt(promptId, memoryId, owner);
   }
-  async getPromptById(promptId: string): Promise<UserPromptRow | null> {
-    return (await this.repo()).getPromptById(promptId);
+  async getPromptById(promptId: string, owner?: MemoryBankOwner): Promise<UserPromptRow | null> {
+    return (await this.repo()).getPromptById(promptId, owner);
   }
   async getCapturedPrompts(
     args: Parameters<UserPromptRepository["getCapturedPrompts"]>[0]
@@ -342,8 +391,8 @@ class PostgresUserPromptRepositoryLazy implements UserPromptRepository {
   ): Promise<UserPromptRow[]> {
     return (await this.repo()).searchPrompts(args);
   }
-  async getPromptsByIds(ids: string[]): Promise<UserPromptRow[]> {
-    return (await this.repo()).getPromptsByIds(ids);
+  async getPromptsByIds(ids: string[], owner?: MemoryBankOwner): Promise<UserPromptRow[]> {
+    return (await this.repo()).getPromptsByIds(ids, owner);
   }
 }
 
@@ -368,11 +417,14 @@ class PostgresUserProfileRepositoryLazy implements UserProfileRepository {
   async close(): Promise<void> {
     await (await this.repo()).close();
   }
-  async getActiveProfile(profileId: string): Promise<UserProfileRow | null> {
-    return (await this.repo()).getActiveProfile(profileId);
+  async getActiveProfile(
+    profileId: string,
+    owner?: MemoryBankOwner
+  ): Promise<UserProfileRow | null> {
+    return (await this.repo()).getActiveProfile(profileId, owner);
   }
-  async getProfileById(profileId: string): Promise<UserProfileRow | null> {
-    return (await this.repo()).getProfileById(profileId);
+  async getProfileById(profileId: string, owner?: MemoryBankOwner): Promise<UserProfileRow | null> {
+    return (await this.repo()).getProfileById(profileId, owner);
   }
   async getAllActiveProfiles(): Promise<UserProfileRow[]> {
     return (await this.repo()).getAllActiveProfiles();
@@ -380,34 +432,40 @@ class PostgresUserProfileRepositoryLazy implements UserProfileRepository {
   async createProfile(
     profileId: string,
     profileData: UserProfileData,
-    promptsAnalyzed: number
+    promptsAnalyzed: number,
+    ownership?: { apiKeyId?: string; memoryBankId?: string }
   ): Promise<string> {
-    return (await this.repo()).createProfile(profileId, profileData, promptsAnalyzed);
+    return (await this.repo()).createProfile(profileId, profileData, promptsAnalyzed, ownership);
   }
   async updateProfile(
     profileId: string,
     profileData: UserProfileData,
     additionalPromptsAnalyzed: number,
-    changeSummary: string
+    changeSummary: string,
+    ownership?: { apiKeyId?: string; memoryBankId?: string }
   ): Promise<void> {
     await (
       await this.repo()
-    ).updateProfile(profileId, profileData, additionalPromptsAnalyzed, changeSummary);
+    ).updateProfile(profileId, profileData, additionalPromptsAnalyzed, changeSummary, ownership);
   }
-  async deleteProfile(profileId: string): Promise<void> {
-    await (await this.repo()).deleteProfile(profileId);
+  async deleteProfile(profileId: string, owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).deleteProfile(profileId, owner);
   }
-  async applyConfidenceDecay(profileId: string): Promise<void> {
-    await (await this.repo()).applyConfidenceDecay(profileId);
+  async applyConfidenceDecay(profileId: string, owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).applyConfidenceDecay(profileId, owner);
   }
   async getProfileChangelogs(
     profileId: string,
-    limit?: number
+    limit?: number,
+    owner?: MemoryBankOwner
   ): Promise<UserProfileChangelogRow[]> {
-    return (await this.repo()).getProfileChangelogs(profileId, limit);
+    return (await this.repo()).getProfileChangelogs(profileId, limit, owner);
   }
-  async getChangelogById(changelogId: string): Promise<UserProfileChangelogRow | null> {
-    return (await this.repo()).getChangelogById(changelogId);
+  async getChangelogById(
+    changelogId: string,
+    owner?: MemoryBankOwner
+  ): Promise<UserProfileChangelogRow | null> {
+    return (await this.repo()).getChangelogById(changelogId, owner);
   }
 
   mergeProfileData(existing: UserProfileData, updates: Partial<UserProfileData>): UserProfileData {
@@ -440,12 +498,18 @@ class PostgresAISessionRepositoryLazy implements AISessionRepository {
   async close(): Promise<void> {
     await (await this.repo()).close();
   }
-  async getSession(sessionId: string, provider: string): Promise<AISessionRow | null> {
-    return (await this.repo()).getSession(sessionId, provider);
+  async getSession(
+    sessionId: string,
+    provider: string,
+    owner?: MemoryBankOwner
+  ): Promise<AISessionRow | null> {
+    return (await this.repo()).getSession(sessionId, provider, owner);
   }
   async createSession(params: {
     provider: string;
     sessionId: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
     conversationId?: string;
     metadata?: Record<string, any>;
   }): Promise<AISessionRow> {
@@ -454,12 +518,13 @@ class PostgresAISessionRepositoryLazy implements AISessionRepository {
   async updateSession(
     sessionId: string,
     provider: string,
-    updates: { conversationId?: string; metadata?: Record<string, any> }
+    updates: { conversationId?: string; metadata?: Record<string, any> },
+    owner?: MemoryBankOwner
   ): Promise<void> {
-    await (await this.repo()).updateSession(sessionId, provider, updates);
+    await (await this.repo()).updateSession(sessionId, provider, updates, owner);
   }
-  async deleteSession(sessionId: string, provider: string): Promise<void> {
-    await (await this.repo()).deleteSession(sessionId, provider);
+  async deleteSession(sessionId: string, provider: string, owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).deleteSession(sessionId, provider, owner);
   }
   async cleanupExpiredSessions(): Promise<number> {
     return (await this.repo()).cleanupExpiredSessions();
@@ -469,14 +534,14 @@ class PostgresAISessionRepositoryLazy implements AISessionRepository {
   ): Promise<number> {
     return (await this.repo()).addMessage(message);
   }
-  async getMessages(aiSessionId: string): Promise<AIMessageRow[]> {
-    return (await this.repo()).getMessages(aiSessionId);
+  async getMessages(aiSessionId: string, owner?: MemoryBankOwner): Promise<AIMessageRow[]> {
+    return (await this.repo()).getMessages(aiSessionId, owner);
   }
-  async getLastSequence(aiSessionId: string): Promise<number> {
-    return (await this.repo()).getLastSequence(aiSessionId);
+  async getLastSequence(aiSessionId: string, owner?: MemoryBankOwner): Promise<number> {
+    return (await this.repo()).getLastSequence(aiSessionId, owner);
   }
-  async clearMessages(aiSessionId: string): Promise<void> {
-    await (await this.repo()).clearMessages(aiSessionId);
+  async clearMessages(aiSessionId: string, owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).clearMessages(aiSessionId, owner);
   }
 }
 
@@ -518,15 +583,24 @@ class PostgresClientRepositoryLazy implements ClientRepository {
   }> {
     return (await this.repo()).getClientStats(id);
   }
+  async getClientStatsForBank(
+    args: Parameters<ClientRepository["getClientStatsForBank"]>[0]
+  ): Promise<{
+    totalMemories: number;
+    memoriesToday: number;
+    totalPrompts: number;
+  }> {
+    return (await this.repo()).getClientStatsForBank(args);
+  }
 }
 
-class PostgresProfileApiKeyRepositoryLazy implements ProfileApiKeyRepository {
-  private target: Promise<ProfileApiKeyRepository> | null = null;
+class PostgresUserApiKeyRepositoryLazy implements UserApiKeyRepository {
+  private target: Promise<UserApiKeyRepository> | null = null;
 
-  private async repo(): Promise<ProfileApiKeyRepository> {
+  private async repo(): Promise<UserApiKeyRepository> {
     if (!this.target) {
-      this.target = import("./postgres/profile-api-key-repository.js")
-        .then(({ PostgresProfileApiKeyRepository }) => new PostgresProfileApiKeyRepository())
+      this.target = import("./postgres/user-api-key-repository.js")
+        .then(({ PostgresUserApiKeyRepository }) => new PostgresUserApiKeyRepository())
         .catch((err) => {
           this.target = null;
           throw err;
@@ -541,20 +615,77 @@ class PostgresProfileApiKeyRepositoryLazy implements ProfileApiKeyRepository {
   async close(): Promise<void> {
     await (await this.repo()).close();
   }
-  async hasKeyForProfile(profileId: string): Promise<boolean> {
-    return (await this.repo()).hasKeyForProfile(profileId);
+  async create(args: Parameters<UserApiKeyRepository["create"]>[0]): Promise<UserApiKeyRow> {
+    return (await this.repo()).create(args);
   }
-  async createKeyForProfile(
-    profileId: string,
-    apiKey: string,
-    createdByClientId?: string
-  ): Promise<boolean> {
-    return (await this.repo()).createKeyForProfile(profileId, apiKey, createdByClientId);
+  async list(): Promise<UserApiKeyRow[]> {
+    return (await this.repo()).list();
   }
-  async findProfileByApiKey(apiKey: string): Promise<{ profileId: string } | null> {
-    return (await this.repo()).findProfileByApiKey(apiKey);
+  async getById(id: string): Promise<UserApiKeyRow | null> {
+    return (await this.repo()).getById(id);
   }
-  async touchLastUsed(profileId: string): Promise<void> {
-    await (await this.repo()).touchLastUsed(profileId);
+  async findByApiKey(apiKeyValue: string): Promise<UserApiKeyRow | null> {
+    return (await this.repo()).findByApiKey(apiKeyValue);
+  }
+  async touchLastUsed(id: string): Promise<void> {
+    await (await this.repo()).touchLastUsed(id);
+  }
+  async update(args: Parameters<UserApiKeyRepository["update"]>[0]): Promise<UserApiKeyRow | null> {
+    return (await this.repo()).update(args);
+  }
+  async revoke(id: string): Promise<boolean> {
+    return (await this.repo()).revoke(id);
+  }
+}
+
+class PostgresMemoryBankRepositoryLazy implements MemoryBankRepository {
+  private target: Promise<MemoryBankRepository> | null = null;
+
+  private async repo(): Promise<MemoryBankRepository> {
+    if (!this.target) {
+      this.target = import("./postgres/memory-bank-repository.js")
+        .then(({ PostgresMemoryBankRepository }) => new PostgresMemoryBankRepository())
+        .catch((err) => {
+          this.target = null;
+          throw err;
+        });
+    }
+    return this.target;
+  }
+
+  async initialize(): Promise<void> {
+    await (await this.repo()).initialize();
+  }
+  async close(): Promise<void> {
+    await (await this.repo()).close();
+  }
+  async create(args: Parameters<MemoryBankRepository["create"]>[0]): Promise<MemoryBankRow> {
+    return (await this.repo()).create(args);
+  }
+  async listForApiKey(apiKeyId: string): Promise<MemoryBankRow[]> {
+    return (await this.repo()).listForApiKey(apiKeyId);
+  }
+  async getForApiKey(
+    args: Parameters<MemoryBankRepository["getForApiKey"]>[0]
+  ): Promise<MemoryBankRow | null> {
+    return (await this.repo()).getForApiKey(args);
+  }
+  async getById(memoryBankId: string): Promise<MemoryBankRow | null> {
+    return (await this.repo()).getById(memoryBankId);
+  }
+  async update(args: Parameters<MemoryBankRepository["update"]>[0]): Promise<MemoryBankRow | null> {
+    return (await this.repo()).update(args);
+  }
+  async countRowsForBank(id: string): Promise<{
+    memories: number;
+    prompts: number;
+    profileLearning: number;
+    aiSessions: number;
+    aiMessages: number;
+  }> {
+    return (await this.repo()).countRowsForBank(id);
+  }
+  async delete(id: string): Promise<boolean> {
+    return (await this.repo()).delete(id);
   }
 }

@@ -1,16 +1,5 @@
-// src/server-config.ts
-import { randomBytes } from "node:crypto";
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
-import {
-  loadConfiguredProfiles,
-  profileKeyMatchesApiKey,
-  profileKeyMatchesServerKey,
-  type ConfiguredProfile,
-} from "./services/profile-auth.js";
+import { CONFIG } from "./config.js";
 import { resolveSecretValue } from "./services/secret-resolver.js";
-
-const NEWUSER_API_KEY_FILE = "/tmp/opencode-memnet-newuser-api-key";
-const SERVER_API_KEY_FILE = "/tmp/opencode-memnet-server-api-key";
 
 /**
  * Parse a duration string like "24h", "7d", "1w" into hours.
@@ -36,11 +25,6 @@ export interface ServerConfig {
   port: number;
   host: string;
   serverApiKey: string;
-  serverApiKeyGenerated: boolean;
-  serverApiKeyFile: string | null;
-  newUserApiKey: string;
-  newUserApiKeyGenerated: boolean;
-  newUserApiKeyFile: string | null;
   postgres: {
     url: string;
     ssl: boolean | "require";
@@ -85,12 +69,6 @@ export interface ServerConfig {
   userProfileChangelogRetentionCount: number;
   autoCleanupRetentionDays: number;
   webServerAllowedOrigin: string;
-  /** @deprecated Removed. API routes always require SERVER_API_KEY or a profile key. */
-  disableWebuiAuth: boolean;
-  /** @deprecated Removed. API routes always require SERVER_API_KEY or a profile key. */
-  disableClientAuth: boolean;
-  profileKeysFile?: string;
-  configuredProfiles: ConfiguredProfile[];
   logLevel: "debug" | "info" | "warn" | "error";
   clientWelcomeBackThreshold: number;
   /** @internal When true, tag migration is skipped because LLM config is missing */
@@ -117,73 +95,17 @@ function getEmbeddingDimensions(model: string): number {
 
 let _config: ServerConfig | null = null;
 
-function shouldResetGeneratedKeys(env: NodeJS.ProcessEnv): boolean {
-  return env.OPENCODEMEMNET_RESET_KEYS === "TRUE";
-}
-
-function resolveFileBackedApiKey(options: {
-  envName: "SERVER_API_KEY" | "NEWUSER_API_KEY";
-  envValue: string | undefined;
-  file: string;
-  reset: boolean;
-  purpose: string;
-}): {
-  key: string;
-  generated: boolean;
-  file: string | null;
-} {
-  const configured = options.envValue?.trim();
-  if (configured) return { key: configured, generated: false, file: null };
-
-  if (!options.reset && existsSync(options.file)) {
-    const stored = readFileSync(options.file, "utf-8").trim();
-    if (stored) {
-      chmodSync(options.file, 0o600);
-      console.warn(
-        `[opencode-memnet] ${options.envName} was not configured; reusing persistent ${options.purpose} key from ${options.file}. Set OPENCODEMEMNET_RESET_KEYS=TRUE to rotate generated keys.`
-      );
-      return { key: stored, generated: true, file: options.file };
-    }
-  }
-
-  const key = randomBytes(32).toString("base64url");
-  writeFileSync(options.file, `${key}\n`, { mode: 0o600 });
-  chmodSync(options.file, 0o600);
-  console.warn(
-    `[opencode-memnet] ${options.envName} was not configured; ${
-      options.reset ? "reset and generated" : "generated"
-    } a persistent ${options.purpose} key at ${options.file}. Read this file inside the container. Set OPENCODEMEMNET_RESET_KEYS=TRUE to rotate generated keys.`
-  );
-  return { key, generated: true, file: options.file };
-}
-
 export function initServerConfig(): ServerConfig {
   if (_config) return _config;
   const env = process.env;
-  const resetGeneratedKeys = shouldResetGeneratedKeys(env);
-  const serverApiKey = resolveFileBackedApiKey({
-    envName: "SERVER_API_KEY",
-    envValue: env.SERVER_API_KEY,
-    file: SERVER_API_KEY_FILE,
-    reset: resetGeneratedKeys,
-    purpose: "admin",
-  });
-  const newUserApiKey = resolveFileBackedApiKey({
-    envName: "NEWUSER_API_KEY",
-    envValue: env.NEWUSER_API_KEY,
-    file: NEWUSER_API_KEY_FILE,
-    reset: resetGeneratedKeys,
-    purpose: "bootstrap enrollment",
-  });
+  const configFile = CONFIG;
+  const envServerApiKey = resolveSecretValue(env.SERVER_API_KEY || "")?.trim() ?? "";
+  const configFileServerApiKey = resolveSecretValue(configFile.server?.apiKey || "")?.trim() ?? "";
+  const configuredServerApiKey = envServerApiKey || configFileServerApiKey;
   _config = {
     port: parseInt(env.SERVER_PORT || "4747"),
     host: env.SERVER_HOST || "0.0.0.0",
-    serverApiKey: serverApiKey.key,
-    serverApiKeyGenerated: serverApiKey.generated,
-    serverApiKeyFile: serverApiKey.file,
-    newUserApiKey: newUserApiKey.key,
-    newUserApiKeyGenerated: newUserApiKey.generated,
-    newUserApiKeyFile: newUserApiKey.file,
+    serverApiKey: configuredServerApiKey,
     postgres: {
       url: resolveSecretValue(env.POSTGRES_URL) || "",
       ssl: env.POSTGRES_SSL === "false" ? false : (env.POSTGRES_SSL as "require") || "require",
@@ -225,6 +147,7 @@ export function initServerConfig(): ServerConfig {
         : env.MEMORY_TEMPERATURE
           ? parseFloat(env.MEMORY_TEMPERATURE)
           : 0.3,
+    memoryExtraParams: undefined,
     opencodeProvider: env.OPENCODE_PROVIDER || undefined,
     opencodeModel: env.OPENCODE_MODEL || undefined,
     autoCaptureMaxIterations: parseInt(env.AUTO_CAPTURE_MAX_ITERATIONS || "5"),
@@ -239,10 +162,6 @@ export function initServerConfig(): ServerConfig {
     userProfileChangelogRetentionCount: parseInt(env.USER_PROFILE_CHANGELOG_RETENTION || "5"),
     autoCleanupRetentionDays: parseInt(env.AUTO_CLEANUP_RETENTION_DAYS || "90"),
     webServerAllowedOrigin: env.WEB_SERVER_ALLOWED_ORIGIN || "*",
-    disableWebuiAuth: env.DISABLE_WEBUI_AUTH === "true",
-    disableClientAuth: env.DISABLE_CLIENT_AUTH === "true",
-    profileKeysFile: env.PROFILE_KEYS_FILE || undefined,
-    configuredProfiles: loadConfiguredProfiles(env.PROFILE_KEYS_FILE || undefined),
     logLevel:
       (env.LOG_LEVEL as "debug" | "info" | "warn" | "error") ||
       (env.DEBUG === "true" || env.DEBUG === "1" ? "debug" : "info"),
@@ -258,7 +177,6 @@ export function getServerConfig(): ServerConfig {
 
 export function validateServerConfig(config: ServerConfig): string[] {
   const errors: string[] = [];
-  const configuredProfiles = config.configuredProfiles ?? [];
   if (!config.postgres.url?.trim()) errors.push("POSTGRES_URL is required");
   else if (
     !config.postgres.url.startsWith("postgresql://") &&
@@ -269,26 +187,8 @@ export function validateServerConfig(config: ServerConfig): string[] {
   if (!config.embeddingApiUrl) errors.push("EMBEDDING_API_URL is required");
   if (!config.embeddingModel) errors.push("EMBEDDING_MODEL is required");
   if (!config.embeddingApiKey) errors.push("EMBEDDING_API_KEY is required (or OPENAI_API_KEY)");
-  if (!config.serverApiKey) {
+  if (!config.serverApiKey?.trim()) {
     errors.push("SERVER_API_KEY is required");
-  }
-  if (config.disableWebuiAuth) {
-    errors.push("DISABLE_WEBUI_AUTH has been removed; use SERVER_API_KEY or profile keys");
-  }
-  if (config.disableClientAuth) {
-    errors.push("DISABLE_CLIENT_AUTH has been removed; use SERVER_API_KEY or profile keys");
-  }
-  if (config.profileKeysFile && configuredProfiles.length === 0) {
-    errors.push("PROFILE_KEYS_FILE must contain at least one profile key");
-  }
-  if (profileKeyMatchesServerKey(configuredProfiles, config.serverApiKey)) {
-    errors.push("PROFILE_KEYS_FILE contains a profile apiKey that matches SERVER_API_KEY");
-  }
-  if (config.newUserApiKey && config.serverApiKey && config.newUserApiKey === config.serverApiKey) {
-    errors.push("NEWUSER_API_KEY must not match SERVER_API_KEY");
-  }
-  if (profileKeyMatchesApiKey(configuredProfiles, config.newUserApiKey)) {
-    errors.push("NEWUSER_API_KEY must not match any PROFILE_KEYS_FILE apiKey");
   }
 
   // Validate LLM provider config for tag migration

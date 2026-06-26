@@ -27,8 +27,6 @@ services:
     # Example: "0.0.0.0:4747:4747"  → access from any machine on the network
     ports:
       - "${EXTERNAL_HOST:-127.0.0.1}:${HOST_PORT:-4747}:${SERVER_PORT:-4747}"
-    volumes:
-      - ./secrets:/run/secrets:ro
     environment:
       # ── Server ──
       # SERVER_HOST = IP the server binds to INSIDE the container (0.0.0.0 = all interfaces)
@@ -37,9 +35,6 @@ services:
       SERVER_HOST: ${SERVER_HOST:-0.0.0.0}
       # ── Security ──
       SERVER_API_KEY: ${SERVER_API_KEY:-}
-      NEWUSER_API_KEY: ${NEWUSER_API_KEY:-}
-      OPENCODEMEMNET_RESET_KEYS: ${OPENCODEMEMNET_RESET_KEYS:-false}
-      PROFILE_KEYS_FILE: ${PROFILE_KEYS_FILE:-}
       WEB_SERVER_ALLOWED_ORIGIN: ${WEB_SERVER_ALLOWED_ORIGIN:-*}
       # ── Logging ──
       LOG_LEVEL: ${LOG_LEVEL:-info}

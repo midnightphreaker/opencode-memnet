@@ -8,11 +8,13 @@
 import { getPostgresClient, closePostgresClient } from "./client.js";
 import { runPostgresMigrations } from "./migrations.js";
 import { CONFIG } from "../../../config.js";
-import type { AISessionRepository, AISessionRow, AIMessageRow } from "../types.js";
+import type { AISessionRepository, AISessionRow, AIMessageRow, MemoryBankOwner } from "../types.js";
 
 function rowToSessionRow(row: any): AISessionRow {
   return {
     id: row.id,
+    apiKeyId: row.api_key_id ?? undefined,
+    memoryBankId: row.memory_bank_id ?? undefined,
     provider: row.provider,
     sessionId: row.session_id,
     conversationId: row.conversation_id ?? undefined,
@@ -27,6 +29,8 @@ function rowToMessageRow(row: any): AIMessageRow {
   return {
     id: row.id,
     aiSessionId: row.ai_session_id,
+    apiKeyId: row.api_key_id ?? undefined,
+    memoryBankId: row.memory_bank_id ?? undefined,
     sequence: row.sequence,
     role: row.role,
     content: row.content,
@@ -46,8 +50,24 @@ export class PostgresAISessionRepository implements AISessionRepository {
     await closePostgresClient();
   }
 
-  async getSession(sessionId: string, provider: string): Promise<AISessionRow | null> {
+  async getSession(
+    sessionId: string,
+    provider: string,
+    owner?: MemoryBankOwner
+  ): Promise<AISessionRow | null> {
     const sql = getPostgresClient();
+    if (owner) {
+      const rows = await sql`
+        SELECT * FROM ai_sessions
+        WHERE session_id = ${sessionId}
+          AND provider = ${provider}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+          AND expires_at > ${Date.now()}
+      `;
+      if (rows.length === 0) return null;
+      return rowToSessionRow(rows[0]);
+    }
     const rows = await sql`
       SELECT * FROM ai_sessions
       WHERE session_id = ${sessionId} AND provider = ${provider} AND expires_at > ${Date.now()}
@@ -59,6 +79,8 @@ export class PostgresAISessionRepository implements AISessionRepository {
   async createSession(params: {
     provider: string;
     sessionId: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
     conversationId?: string;
     metadata?: Record<string, any>;
   }): Promise<AISessionRow> {
@@ -70,10 +92,11 @@ export class PostgresAISessionRepository implements AISessionRepository {
 
     const rows = await sql`
       INSERT INTO ai_sessions (
-        id, provider, session_id, conversation_id,
+        id, api_key_id, memory_bank_id, provider, session_id, conversation_id,
         metadata, created_at, updated_at, expires_at
       ) VALUES (
-        ${id}, ${params.provider}, ${params.sessionId},
+        ${id}, ${params.apiKeyId ?? null}, ${params.memoryBankId ?? null},
+        ${params.provider}, ${params.sessionId},
         ${params.conversationId ?? null},
         ${params.metadata ? sql.json(params.metadata) : null},
         ${now}, ${now}, ${expiresAt}
@@ -93,7 +116,8 @@ export class PostgresAISessionRepository implements AISessionRepository {
   async updateSession(
     sessionId: string,
     provider: string,
-    updates: { conversationId?: string; metadata?: Record<string, any> }
+    updates: { conversationId?: string; metadata?: Record<string, any> },
+    owner?: MemoryBankOwner
   ): Promise<void> {
     const sql = getPostgresClient();
     const now = Date.now();
@@ -118,6 +142,19 @@ export class PostgresAISessionRepository implements AISessionRepository {
 
     values.push(sessionId);
     values.push(provider);
+    if (owner) {
+      values.push(owner.apiKeyId);
+      values.push(owner.memoryBankId);
+      await sql.unsafe(
+        `UPDATE ai_sessions SET ${setClauses.join(", ")}
+         WHERE session_id = $${values.length - 3}
+           AND provider = $${values.length - 2}
+           AND api_key_id = $${values.length - 1}
+           AND memory_bank_id = $${values.length}`,
+        values
+      );
+      return;
+    }
 
     await sql.unsafe(
       `UPDATE ai_sessions SET ${setClauses.join(", ")} WHERE session_id = $${values.length - 1} AND provider = $${values.length}`,
@@ -125,8 +162,18 @@ export class PostgresAISessionRepository implements AISessionRepository {
     );
   }
 
-  async deleteSession(sessionId: string, provider: string): Promise<void> {
+  async deleteSession(sessionId: string, provider: string, owner?: MemoryBankOwner): Promise<void> {
     const sql = getPostgresClient();
+    if (owner) {
+      await sql`
+        DELETE FROM ai_sessions
+        WHERE session_id = ${sessionId}
+          AND provider = ${provider}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return;
+    }
     await sql`
       DELETE FROM ai_sessions WHERE session_id = ${sessionId} AND provider = ${provider}
     `;
@@ -150,10 +197,12 @@ export class PostgresAISessionRepository implements AISessionRepository {
       // Explicit sequence provided — use it directly
       await sql`
         INSERT INTO ai_messages (
-          ai_session_id, sequence, role, content,
+          ai_session_id, api_key_id, memory_bank_id, sequence, role, content,
           tool_calls, tool_call_id, content_blocks, created_at
         ) VALUES (
           ${message.aiSessionId},
+          ${message.apiKeyId ?? null},
+          ${message.memoryBankId ?? null},
           ${message.sequence},
           ${message.role},
           ${message.content},
@@ -174,10 +223,12 @@ export class PostgresAISessionRepository implements AISessionRepository {
       try {
         const rows = await sql`
           INSERT INTO ai_messages (
-            ai_session_id, sequence, role, content,
+            ai_session_id, api_key_id, memory_bank_id, sequence, role, content,
             tool_calls, tool_call_id, content_blocks, created_at
           ) VALUES (
             ${message.aiSessionId},
+            ${message.apiKeyId ?? null},
+            ${message.memoryBankId ?? null},
             COALESCE((SELECT MAX(sequence) FROM ai_messages WHERE ai_session_id = ${message.aiSessionId}), -1) + 1,
             ${message.role},
             ${message.content},
@@ -202,8 +253,18 @@ export class PostgresAISessionRepository implements AISessionRepository {
     throw new Error("Failed to assign message sequence after retries");
   }
 
-  async getMessages(aiSessionId: string): Promise<AIMessageRow[]> {
+  async getMessages(aiSessionId: string, owner?: MemoryBankOwner): Promise<AIMessageRow[]> {
     const sql = getPostgresClient();
+    if (owner) {
+      const rows = await sql`
+        SELECT * FROM ai_messages
+        WHERE ai_session_id = ${aiSessionId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+        ORDER BY sequence ASC
+      `;
+      return rows.map(rowToMessageRow);
+    }
     const rows = await sql`
       SELECT * FROM ai_messages
       WHERE ai_session_id = ${aiSessionId}
@@ -212,8 +273,18 @@ export class PostgresAISessionRepository implements AISessionRepository {
     return rows.map(rowToMessageRow);
   }
 
-  async getLastSequence(aiSessionId: string): Promise<number> {
+  async getLastSequence(aiSessionId: string, owner?: MemoryBankOwner): Promise<number> {
     const sql = getPostgresClient();
+    if (owner) {
+      const rows = await sql`
+        SELECT MAX(sequence) as max_seq FROM ai_messages
+        WHERE ai_session_id = ${aiSessionId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      const maxSeq = rows[0]?.max_seq;
+      return maxSeq != null ? Number(maxSeq) : -1;
+    }
     const rows = await sql`
       SELECT MAX(sequence) as max_seq FROM ai_messages WHERE ai_session_id = ${aiSessionId}
     `;
@@ -221,8 +292,17 @@ export class PostgresAISessionRepository implements AISessionRepository {
     return maxSeq != null ? Number(maxSeq) : -1;
   }
 
-  async clearMessages(aiSessionId: string): Promise<void> {
+  async clearMessages(aiSessionId: string, owner?: MemoryBankOwner): Promise<void> {
     const sql = getPostgresClient();
+    if (owner) {
+      await sql`
+        DELETE FROM ai_messages
+        WHERE ai_session_id = ${aiSessionId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return;
+    }
     await sql`DELETE FROM ai_messages WHERE ai_session_id = ${aiSessionId}`;
   }
 }

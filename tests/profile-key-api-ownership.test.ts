@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, mock } from "bun:test";
-import type { Principal } from "../src/services/profile-auth.js";
+import type { Principal } from "../src/services/auth-service.js";
 
+type Owner = { apiKeyId: string; memoryBankId: string };
 type TestMemory = {
   id: string;
   content: string;
@@ -12,92 +13,83 @@ type TestMemory = {
   metadata?: string | Record<string, unknown>;
   profileId?: string;
   repoId?: string;
+  apiKeyId: string;
+  memoryBankId: string;
 };
 
 type TestPrompt = {
   id: string;
   sessionId: string;
+  messageId: string;
   content: string;
   createdAt: number;
   profileId: string;
   repoId: string;
+  apiKeyId: string;
+  memoryBankId: string;
   localProjectPath: string | null;
   linkedMemoryId: string | null;
 };
 
-type TestChangelog = {
-  id: string;
-  profileId: string;
-  version: number;
-  changeType: string;
-  changeSummary: string;
-  profileDataSnapshot: string;
-  createdAt: number;
-};
-
 const memories = new Map<string, TestMemory>();
 const prompts = new Map<string, TestPrompt>();
-const changelogs = new Map<string, TestChangelog>();
 
 const calls = {
-  memoryDeletes: [] as string[],
-  memoryUpdates: [] as string[],
-  memoryPins: [] as string[],
-  memoryUnpins: [] as string[],
-  promptDeletes: [] as string[],
+  memoryDeletes: [] as Array<{ id: string; owner?: Owner }>,
+  memoryUpdates: [] as Array<{ id: string; owner?: Owner }>,
+  memoryPins: [] as Array<{ id: string; owner?: Owner }>,
+  memoryUnpins: [] as Array<{ id: string; owner?: Owner }>,
+  promptDeletes: [] as Array<{ id: string; owner?: Owner }>,
 };
+
+function ownerMatches(row: { apiKeyId: string; memoryBankId: string }, owner?: Owner): boolean {
+  return !owner || (row.apiKeyId === owner.apiKeyId && row.memoryBankId === owner.memoryBankId);
+}
 
 const memoryRepo = {
   initialize: async () => {},
-  getById: async (id: string) => memories.get(id),
-  delete: async (id: string) => {
-    calls.memoryDeletes.push(id);
-    memories.delete(id);
+  getById: async (id: string, owner?: Owner) => {
+    const row = memories.get(id);
+    return row && ownerMatches(row, owner) ? row : null;
   },
-  deleteMany: async (ids: string[]) => {
-    for (const id of ids) {
-      calls.memoryDeletes.push(id);
-      memories.delete(id);
-    }
-    return ids.length;
+  delete: async (id: string, owner?: Owner) => {
+    calls.memoryDeletes.push({ id, owner });
+    const row = memories.get(id);
+    if (!row || !ownerMatches(row, owner)) return false;
+    memories.delete(id);
+    return true;
   },
   update: async (record: TestMemory) => {
-    calls.memoryUpdates.push(record.id);
+    calls.memoryUpdates.push({
+      id: record.id,
+      owner:
+        record.apiKeyId && record.memoryBankId
+          ? { apiKeyId: record.apiKeyId, memoryBankId: record.memoryBankId }
+          : undefined,
+    });
+    const row = memories.get(record.id);
+    if (!row || !ownerMatches(row, record)) return;
     memories.set(record.id, record);
   },
-  pin: async (id: string) => {
-    calls.memoryPins.push(id);
+  pin: async (id: string, owner?: Owner) => {
+    calls.memoryPins.push({ id, owner });
   },
-  unpin: async (id: string) => {
-    calls.memoryUnpins.push(id);
+  unpin: async (id: string, owner?: Owner) => {
+    calls.memoryUnpins.push({ id, owner });
   },
 };
 
 const promptRepo = {
   initialize: async () => {},
-  getPromptById: async (id: string) => prompts.get(id),
-  deletePrompt: async (id: string) => {
-    calls.promptDeletes.push(id);
-    prompts.delete(id);
+  getPromptById: async (id: string, owner?: Owner) => {
+    const row = prompts.get(id);
+    return row && ownerMatches(row, owner) ? row : null;
   },
-};
-
-const profileRepo = {
-  initialize: async () => {},
-  getChangelogById: async (id: string) => changelogs.get(id),
-  getAllActiveProfiles: async () => [{ profileId: "phrkr" }, { profileId: "other" }],
-};
-
-const clientRepo = {
-  initialize: async () => {},
-};
-
-const profileApiKeyRepo = {
-  initialize: async () => {},
-  findProfileByApiKey: async () => null,
-  hasKeyForProfile: async () => false,
-  createKeyForProfile: async () => true,
-  touchLastUsed: async () => {},
+  deletePrompt: async (id: string, owner?: Owner) => {
+    calls.promptDeletes.push({ id, owner });
+    const row = prompts.get(id);
+    if (row && ownerMatches(row, owner)) prompts.delete(id);
+  },
 };
 
 mock.module("../src/services/embedding.js", () => ({
@@ -110,9 +102,10 @@ mock.module("../src/services/embedding.js", () => ({
 mock.module("../src/services/storage/factory.js", () => ({
   createMemoryRepository: () => memoryRepo,
   createUserPromptRepository: () => promptRepo,
-  createUserProfileRepository: () => profileRepo,
-  createClientRepository: () => clientRepo,
-  createProfileApiKeyRepository: () => profileApiKeyRepo,
+  createUserProfileRepository: () => ({ initialize: async () => {} }),
+  createClientRepository: () => ({ initialize: async () => {} }),
+  createUserApiKeyRepository: () => ({ initialize: async () => {} }),
+  createMemoryBankRepository: () => ({ initialize: async () => {} }),
   createTagRegistry: () => ({
     unlinkMemoryTags: async () => {},
     linkMemoryTags: async () => {},
@@ -123,37 +116,60 @@ const {
   handleBulkDelete,
   handleDeleteMemory,
   handleDeletePrompt,
-  handleGetProfileSnapshot,
   handlePinMemory,
   handleUnpinMemory,
   handleUpdateMemory,
-} = await import("../src/services/api-handlers.js?profile-key-api-ownership");
+} = await import("../src/services/api-handlers.js?memory-bank-api-ownership");
 
-const principal: Principal = { kind: "profile", profileId: "phrkr" };
+const principal: Principal = {
+  kind: "user-api-key",
+  apiKeyId: "key-1",
+  apiKeyName: "opencode",
+  apiKeyDescription: "OpenCode agent memory access",
+};
+const scope = {
+  principal,
+  memoryBank: {
+    id: "bank-1",
+    apiKeyId: "key-1",
+    apiKeyName: "opencode",
+    name: "repo",
+    description: "repo memory",
+    shortcut: "opencode>repo",
+    createdAt: 1,
+    updatedAt: 1,
+  },
+};
+const expectedOwner = { apiKeyId: "key-1", memoryBankId: "bank-1" };
 
-function memory(id: string, profileId: string, metadata?: TestMemory["metadata"]): TestMemory {
+function memory(id: string, bank = "bank-1", metadata?: TestMemory["metadata"]): TestMemory {
   return {
     id,
     content: `content for ${id}`,
-    containerTag: `${profileId}_project_repo`,
+    containerTag: "opencode_project_repo",
     type: "fact",
     tags: "tag",
     createdAt: 1,
     updatedAt: 1,
     metadata,
-    profileId,
+    profileId: bank,
     repoId: "repo",
+    apiKeyId: bank === "bank-1" ? "key-1" : "key-2",
+    memoryBankId: bank,
   };
 }
 
-function prompt(id: string, profileId: string, linkedMemoryId: string | null = null): TestPrompt {
+function prompt(id: string, bank = "bank-1", linkedMemoryId: string | null = null): TestPrompt {
   return {
     id,
     sessionId: `session-${id}`,
+    messageId: `message-${id}`,
     content: `prompt for ${id}`,
     createdAt: 1,
-    profileId,
+    profileId: bank,
     repoId: "repo",
+    apiKeyId: bank === "bank-1" ? "key-1" : "key-2",
+    memoryBankId: bank,
     localProjectPath: null,
     linkedMemoryId,
   };
@@ -162,7 +178,6 @@ function prompt(id: string, profileId: string, linkedMemoryId: string | null = n
 beforeEach(() => {
   memories.clear();
   prompts.clear();
-  changelogs.clear();
   calls.memoryDeletes = [];
   calls.memoryUpdates = [];
   calls.memoryPins = [];
@@ -170,47 +185,39 @@ beforeEach(() => {
   calls.promptDeletes = [];
 });
 
-describe("profile key API ownership checks", () => {
-  it("rejects unauthorized memory delete/update/pin/unpin without calling mutators", async () => {
-    memories.set("mem-other", memory("mem-other", "other"));
+describe("Memory Bank API ownership checks", () => {
+  it("treats cross-bank getById as not found for delete/update/pin/unpin", async () => {
+    memories.set("mem-other", memory("mem-other", "bank-2"));
 
-    const deleteResult = await handleDeleteMemory("mem-other", false, principal);
-    const updateResult = await handleUpdateMemory("mem-other", { content: "new" }, principal);
-    const pinResult = await handlePinMemory("mem-other", principal);
-    const unpinResult = await handleUnpinMemory("mem-other", principal);
+    expect(await handleDeleteMemory("mem-other", false, scope)).toEqual({
+      success: false,
+      error: "Memory not found",
+    });
+    expect(await handleUpdateMemory("mem-other", { content: "new" }, scope)).toEqual({
+      success: false,
+      error: "Memory not found",
+    });
+    expect(await handlePinMemory("mem-other", scope)).toEqual({
+      success: false,
+      error: "Memory not found",
+    });
+    expect(await handleUnpinMemory("mem-other", scope)).toEqual({
+      success: false,
+      error: "Memory not found",
+    });
 
-    expect(deleteResult).toEqual({
-      success: false,
-      error: "Profile key cannot access another profile",
-    });
-    expect(updateResult).toEqual({
-      success: false,
-      error: "Profile key cannot access another profile",
-    });
-    expect(pinResult).toEqual({
-      success: false,
-      error: "Profile key cannot access another profile",
-    });
-    expect(unpinResult).toEqual({
-      success: false,
-      error: "Profile key cannot access another profile",
-    });
     expect(calls.memoryDeletes).toEqual([]);
     expect(calls.memoryUpdates).toEqual([]);
     expect(calls.memoryPins).toEqual([]);
     expect(calls.memoryUnpins).toEqual([]);
   });
 
-  it("bulk deletes only memory records owned by the principal", async () => {
-    memories.set("mem-own-1", memory("mem-own-1", "phrkr"));
-    memories.set("mem-other", memory("mem-other", "other"));
-    memories.set("mem-own-2", memory("mem-own-2", "phrkr"));
+  it("passes bank owner into deleteMany-equivalent handler flow", async () => {
+    memories.set("mem-own-1", memory("mem-own-1"));
+    memories.set("mem-other", memory("mem-other", "bank-2"));
+    memories.set("mem-own-2", memory("mem-own-2"));
 
-    const result = await handleBulkDelete(
-      ["mem-own-1", "mem-other", "mem-own-2"],
-      false,
-      principal
-    );
+    const result = await handleBulkDelete(["mem-own-1", "mem-other", "mem-own-2"], false, scope);
 
     expect(result).toEqual({
       success: true,
@@ -220,53 +227,34 @@ describe("profile key API ownership checks", () => {
         failedIds: ["mem-other"],
       },
     });
-    expect(calls.memoryDeletes).toEqual(["mem-own-1", "mem-own-2"]);
+    expect(calls.memoryDeletes).toEqual([
+      { id: "mem-own-1", owner: expectedOwner },
+      { id: "mem-own-2", owner: expectedOwner },
+    ]);
   });
 
-  it("does not raw-delete another profile prompt during memory cascade", async () => {
-    memories.set("mem-own", memory("mem-own", "phrkr", { promptId: "prompt-other" }));
-    prompts.set("prompt-other", prompt("prompt-other", "other"));
+  it("does not delete prompts from another Memory Bank during memory cascade", async () => {
+    memories.set("mem-own", memory("mem-own", "bank-1", { promptId: "prompt-other" }));
+    prompts.set("prompt-other", prompt("prompt-other", "bank-2"));
 
-    const result = await handleDeleteMemory("mem-own", true, principal);
+    const result = await handleDeleteMemory("mem-own", true, scope);
 
-    expect(result).toEqual({
-      success: false,
-      error: "Profile key cannot access another profile",
-    });
+    expect(result).toEqual({ success: true, data: { deletedPrompt: false } });
     expect(calls.promptDeletes).toEqual([]);
-    expect(calls.memoryDeletes).toEqual([]);
+    expect(calls.memoryDeletes).toEqual([{ id: "mem-own", owner: expectedOwner }]);
   });
 
-  it("does not delete another profile memory during prompt cascade", async () => {
-    prompts.set("prompt-own", prompt("prompt-own", "phrkr", "mem-other"));
-    memories.set("mem-other", memory("mem-other", "other"));
+  it("does not delete memories from another Memory Bank during prompt cascade", async () => {
+    prompts.set("prompt-own", prompt("prompt-own", "bank-1", "mem-other"));
+    memories.set("mem-other", memory("mem-other", "bank-2"));
 
-    const result = await handleDeletePrompt("prompt-own", true, principal);
+    const result = await handleDeletePrompt("prompt-own", true, scope);
 
     expect(result).toEqual({
       success: true,
       data: { deletedMemory: false },
     });
     expect(calls.memoryDeletes).toEqual([]);
-    expect(calls.promptDeletes).toEqual(["prompt-own"]);
-  });
-
-  it("rejects profile snapshots owned by another profile", async () => {
-    changelogs.set("change-other", {
-      id: "change-other",
-      profileId: "other",
-      version: 1,
-      changeType: "update",
-      changeSummary: "changed",
-      profileDataSnapshot: "{}",
-      createdAt: 1,
-    });
-
-    const result = await handleGetProfileSnapshot("change-other", principal);
-
-    expect(result).toEqual({
-      success: false,
-      error: "Profile key cannot access another profile",
-    });
+    expect(calls.promptDeletes).toEqual([{ id: "prompt-own", owner: expectedOwner }]);
   });
 });

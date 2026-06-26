@@ -1,4 +1,4 @@
-// plugin/src/index-remote.ts — Thin remote client plugin
+// plugin/src/index-remote.ts - Thin remote client plugin
 import type { Plugin, PluginInput } from "@opencode-ai/plugin";
 import type { Part } from "@opencode-ai/sdk";
 import { tool } from "@opencode-ai/plugin";
@@ -7,33 +7,51 @@ import { getRemoteClient } from "./services/remote-client.js";
 import { getClientId, getClientMetadata } from "./client-identity.js";
 import { getTags, type TagsConfig } from "../../shared/tags.js";
 import { stripPrivateContent, isFullyPrivate } from "../../shared/privacy.js";
+import {
+  parseMagicMemoryBankPrompt,
+  stateKeyForMemoryBank,
+  suggestMemoryBank,
+} from "../../shared/memory-bank.js";
+import type { MemoryBankDTO } from "../../shared/types.js";
 
 import { isClientConfigured, CLIENT_CONFIG, initClientConfig } from "../../shared/client-config.js";
 import { log, logInfo, logWarn, logError, logDebug } from "../../shared/logger.js";
 
-// NOTE: Must match src/config.ts DEFAULTS.containerTagPrefix — if server changes this, update both places.
+type MemoryBankSummary = MemoryBankDTO;
+
+// NOTE: Must match src/config.ts DEFAULTS.containerTagPrefix. If server changes this, update both places.
 const TAGS_CONFIG: TagsConfig = {
   containerTagPrefix: "opencode",
   userEmailOverride: undefined,
   userNameOverride: undefined,
 };
 
+function chooseActiveMemoryBank(
+  _stateKey: string,
+  banks: MemoryBankSummary[]
+): MemoryBankSummary | null {
+  return banks[0] ?? null;
+}
+
+function missingMemoryBankError(): string {
+  return JSON.stringify({ success: false, error: "No active Memory Bank" });
+}
+
 export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   const { directory } = ctx;
   initClientConfig(directory);
 
   if (!isClientConfigured()) {
-    log("Remote plugin not configured — check serverUrl and apiKey in config.");
+    log("Remote plugin not configured - check serverUrl and apiKey in config.");
     return {};
   }
 
   const tags = await getTags(directory, TAGS_CONFIG);
   const clientId = getClientId();
   const client = getRemoteClient(clientId);
-  let effectiveProfileId = CLIENT_CONFIG.profileId;
   const repoId = tags.project.tag;
+  let activeMemoryBank: MemoryBankSummary | null = null;
 
-  // Connect to server — registers client and gets connection info
   let connectionInfo: Awaited<ReturnType<typeof client.clientConnect>>["data"] | null = null;
   try {
     const connectResult = await client.clientConnect(clientId, {
@@ -41,72 +59,46 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
     });
     if (connectResult.success && connectResult.data) {
       connectionInfo = connectResult.data;
-      if (connectionInfo.principal?.kind === "profile") {
-        effectiveProfileId = connectionInfo.principal.profileId;
-      }
-      if (connectionInfo.principal?.kind !== "profile") {
-        effectiveProfileId = effectiveProfileId ?? "default";
-      }
+      const banks = connectionInfo.memoryBanks ?? [];
+      const stateKey = stateKeyForMemoryBank({
+        serverUrl: CLIENT_CONFIG.serverUrl,
+        apiKeyName: connectionInfo.principal.apiKeyName,
+        cwd: directory,
+      });
+      activeMemoryBank = chooseActiveMemoryBank(stateKey, banks);
+
       logInfo("Plugin initialized", {
         project: tags.project.projectName || tags.project.tag,
-        profileId: effectiveProfileId,
+        apiKeyName: connectionInfo.principal.apiKeyName,
         clientId: clientId.slice(0, 8),
-        firstTime: connectionInfo.firstTime,
+        activeMemoryBank: activeMemoryBank?.id ?? null,
       });
 
-      // Show welcome toast
-      const displayName = clientId.slice(0, 8);
-      if (connectionInfo.firstTime) {
-        ctx.client?.tui
-          .showToast({
+      if (!activeMemoryBank && connectionInfo.requiresMemoryBank) {
+        const suggestion = suggestMemoryBank(directory);
+        await ctx.client?.session
+          .prompt({
+            path: { id: "current" },
             body: {
-              title: "Welcome to opencode-memnet!",
-              message: `New client registered: ${displayName}`,
-              variant: "info",
-              duration: 4000,
+              parts: [
+                {
+                  id: `prt-memory-bank-${Date.now()}`,
+                  type: "text",
+                  text: `No Memory Bank is active for ${connectionInfo.principal.apiKeyName}. Create one named ${suggestion.name} with description: ${suggestion.description}`,
+                },
+              ],
+              noReply: true,
             },
           })
           .catch((e) => {
-            logDebug("toast failed", { error: String(e) });
-          });
-      } else if (connectionInfo.welcomeBack && connectionInfo.stats) {
-        const days = connectionInfo.daysSinceLastSeen;
-        ctx.client?.tui
-          .showToast({
-            body: {
-              title: `Welcome back, ${displayName}!`,
-              message: `Last seen ${days}d ago | ${connectionInfo.stats.totalMemories} memories (${connectionInfo.stats.memoriesToday} today)`,
-              variant: "info",
-              duration: 5000,
-            },
-          })
-          .catch((e) => {
-            logDebug("toast failed", { error: String(e) });
-          });
-      } else if (connectionInfo.stats) {
-        ctx.client?.tui
-          .showToast({
-            body: {
-              title: `Welcome back, ${displayName}`,
-              message: `${connectionInfo.stats.totalMemories} memories | ${connectionInfo.stats.memoriesToday} new today`,
-              variant: "success",
-              duration: 3000,
-            },
-          })
-          .catch((e) => {
-            logDebug("toast failed", { error: String(e) });
+            logDebug("Memory Bank startup prompt failed", { error: String(e) });
           });
       }
     }
   } catch (err) {
     logWarn("Failed to connect to server on init", { error: String(err) });
   }
-  if (connectionInfo?.principal?.kind === "profile") {
-    effectiveProfileId = connectionInfo.principal.profileId;
-  }
-  if (connectionInfo?.principal?.kind !== "profile") {
-    effectiveProfileId = effectiveProfileId ?? "default";
-  }
+
   let idleTimeout: Timer | null = null;
   let captureInProgress = false;
   const customMessageInjectedSessions = new Set<string>();
@@ -114,11 +106,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
   return {
     "chat.message": async (input, output) => {
       if (!isClientConfigured()) return;
-      const profileId = effectiveProfileId ?? "default";
       const customMessageText = CLIENT_CONFIG.customMessage?.text ?? "";
       const hasCustomMessage =
         CLIENT_CONFIG.customMessage?.enabled === true && customMessageText.trim().length > 0;
-      if (!CLIENT_CONFIG.chatMessage.enabled && !hasCustomMessage) return;
       logDebug("chat.message hook fired", {
         sessionId: input.sessionID,
         partsCount: output.parts.length,
@@ -135,6 +125,27 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         if (textParts.length === 0) return;
         const userMessage = textParts.map((p) => p.text).join("\n");
         if (!userMessage.trim()) return;
+
+        const magic = parseMagicMemoryBankPrompt(userMessage);
+        // The shared parser describes created banks as "work relating to <name>".
+        if (magic) {
+          const created = await client.createMemoryBank(magic);
+          if (created.success && created.data?.memoryBank) {
+            activeMemoryBank = created.data.memoryBank;
+            const responsePart: Part = {
+              id: `prt-memory-bank-created-${Date.now()}`,
+              sessionID: input.sessionID,
+              messageID: output.message.id,
+              type: "text",
+              text: `Created and activated the \`${magic.name}\` Memory Bank. I set its description to \`${magic.description}\`. You should consider changing the description to make it more identifiable; ask me anytime to change it.`,
+              synthetic: true,
+            } as any;
+            output.parts.unshift(responsePart);
+          }
+          return;
+        }
+
+        if (!CLIENT_CONFIG.chatMessage.enabled && !hasCustomMessage) return;
 
         if (
           hasCustomMessage &&
@@ -158,13 +169,13 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           });
         }
 
-        if (!CLIENT_CONFIG.chatMessage.enabled) return;
+        if (!CLIENT_CONFIG.chatMessage.enabled || !activeMemoryBank) return;
 
         const ctxResult = await client.getContext({
           sessionID: input.sessionID,
           projectTag: tags.project.tag,
-          profileId,
           repoId,
+          memoryBankId: activeMemoryBank.id,
           maxMemories: CLIENT_CONFIG.chatMessage.maxMemories,
           excludeCurrentSession: CLIENT_CONFIG.chatMessage.excludeCurrentSession,
           maxAgeDays: CLIENT_CONFIG.chatMessage.maxAgeDays,
@@ -194,7 +205,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
 
     tool: {
       memory: tool({
-        description: `Manage and query project memory`,
+        description: "Manage and query project memory",
         args: {
           mode: tool.schema.enum(["add", "search", "profile", "list", "forget", "help"]).optional(),
           content: tool.schema.string().optional(),
@@ -205,11 +216,10 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           limit: tool.schema.number().optional(),
           scope: tool.schema.enum(["project", "all-projects"]).optional(),
         },
-        async execute(args, toolCtx) {
+        async execute(args) {
           if (!isClientConfigured()) {
             return JSON.stringify({ success: false, error: "Memory system not configured." });
           }
-          const profileId = effectiveProfileId ?? "default";
           logDebug("memory tool called", {
             mode: args.mode || "help",
             hasContent: !!args.content,
@@ -221,6 +231,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           const mode = args.mode || "help";
 
           try {
+            if (mode !== "help" && !activeMemoryBank) return missingMemoryBankError();
+
             switch (mode) {
               case "help":
                 return JSON.stringify({
@@ -254,8 +266,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                 const result = await client.addMemory(sanitized, tags.project.tag, {
                   type: args.type as any,
                   tags: parsedTags,
-                  profileId,
-                  repoId,
+                  memoryBankId: activeMemoryBank!.id,
                   localProjectPath: tags.project.projectPath,
                   gitRepoUrl: tags.project.gitRepoUrl,
                   repoNickname: tags.project.projectName,
@@ -273,7 +284,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                   args.query,
                   tags.project.tag,
                   args.scope ?? CLIENT_CONFIG.memory.defaultScope,
-                  { profileId, repoId }
+                  { memoryBankId: activeMemoryBank!.id }
                 );
                 return JSON.stringify({
                   success: res.success,
@@ -288,7 +299,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               }
 
               case "profile": {
-                const profileRes = await client.getUserProfile(profileId);
+                const profileRes = await client.getUserProfile({
+                  memoryBankId: activeMemoryBank!.id,
+                });
                 return JSON.stringify({ success: true, profile: profileRes.data ?? null });
               }
 
@@ -297,7 +310,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
                   tags.project.tag,
                   args.limit || 20,
                   args.scope ?? CLIENT_CONFIG.memory.defaultScope,
-                  { profileId, repoId }
+                  { memoryBankId: activeMemoryBank!.id }
                 );
                 return JSON.stringify({
                   success: res.success,
@@ -313,7 +326,9 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
               case "forget": {
                 if (!args.memoryId)
                   return JSON.stringify({ success: false, error: "memoryId required" });
-                const res = await client.deleteMemory(args.memoryId);
+                const res = await client.deleteMemory(args.memoryId, {
+                  memoryBankId: activeMemoryBank!.id,
+                });
                 return JSON.stringify({ success: res.success, message: "Memory removed" });
               }
 
@@ -329,16 +344,16 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
 
     event: async (input: { event: { type: string; properties?: any } }) => {
       const event = input.event;
-      const profileId = effectiveProfileId ?? "default";
-      logDebug(`event received`, { type: event.type, hasProperties: !!event.properties });
+      logDebug("event received", { type: event.type, hasProperties: !!event.properties });
 
       if (event.type === "session.idle") {
-        if (!isClientConfigured() || !CLIENT_CONFIG.autoCaptureEnabled) return;
+        if (!isClientConfigured() || !CLIENT_CONFIG.autoCaptureEnabled || !activeMemoryBank) return;
         const sessionID = event.properties?.sessionID;
         if (!sessionID) return;
         logDebug("session.idle event", {
           sessionId: sessionID,
           autoCaptureEnabled: CLIENT_CONFIG.autoCaptureEnabled,
+          activeMemoryBank: activeMemoryBank.id,
         });
 
         if (idleTimeout) clearTimeout(idleTimeout);
@@ -347,6 +362,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         idleTimeout = setTimeout(async () => {
           captureInProgress = true;
           try {
+            if (!activeMemoryBank) return;
             const messagesResponse = await ctx.client.session.messages({ path: { id: sessionID } });
             const messages = messagesResponse.data || [];
             const userMessages = messages.filter((m: any) => m.info.role === "user");
@@ -361,8 +377,8 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
             const result = await client.autoCapture({
               sessionID,
               projectTag: tags.project.tag,
-              profileId,
               repoId,
+              memoryBankId: activeMemoryBank.id,
               projectMetadata: {
                 localProjectPath: tags.project.projectPath,
                 gitRepoUrl: tags.project.gitRepoUrl,
@@ -405,21 +421,23 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
       }
 
       if (event.type === "session.compacted") {
+        if (!activeMemoryBank) return;
         const sessionID = event.properties?.sessionID;
         if (!sessionID) return;
         logDebug("session.compacted event", {
           sessionId: sessionID,
           projectTag: tags.project.tag,
+          activeMemoryBank: activeMemoryBank.id,
         });
         try {
           const memoriesResult = await client.searchMemoriesBySessionID(
             sessionID,
             tags.project.tag,
             10,
-            { profileId, repoId }
+            { memoryBankId: activeMemoryBank.id }
           );
           if (!memoriesResult.success || memoriesResult.results.length === 0) return;
-          let output = `## Restored Session Memory\n\n`;
+          let output = "## Restored Session Memory\n\n";
           memoriesResult.results.forEach((m: any, i: number) => {
             if (m.memory == null) return;
             output += `### Memory ${i + 1}\n${m.memory}\n\n`;

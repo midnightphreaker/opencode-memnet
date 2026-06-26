@@ -221,15 +221,14 @@ describe("getUntaggedProjectMemories interface contract", () => {
     expect("getUntaggedProjectMemories" in repo).toBe(true);
   });
 
-  it("factory proxy method signature matches expected (limit?, offset?)", async () => {
+  it("factory proxy method signature matches expected (limit?, offset?, owner?)", async () => {
     const { createMemoryRepository } = await import("../../src/services/storage/factory.js");
     const repo = createMemoryRepository();
 
     // Verify method name exists
     expect(typeof repo.getUntaggedProjectMemories).toBe("function");
 
-    // The function accepts limit and offset parameters (both optional with defaults)
-    // function.length is 2 because the proxy declares (limit?, offset?)
-    expect(repo.getUntaggedProjectMemories.length).toBe(2);
+    // The function accepts limit, offset, and optional Memory Bank owner parameters.
+    expect(repo.getUntaggedProjectMemories.length).toBe(3);
   });
 });

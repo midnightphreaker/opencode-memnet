@@ -294,12 +294,49 @@
             placeholder="Enter server API key..."
           />
         </div>
-        <div class="settings-field">
-          <label for="settings-profile" data-i18n="settings-profile-label">Profile</label>
-          <select id="settings-profile" disabled>
-            <option value="" data-i18n="settings-profile-loading">Enter API key first...</option>
-          </select>
-        </div>
+        <section id="api-key-admin-section" class="admin-section">
+          <h2 data-i18n="section-api-keys">User API Keys</h2>
+          <form id="api-key-form" class="admin-form">
+            <input
+              id="api-key-name"
+              type="text"
+              data-i18n-placeholder="placeholder-api-key-name"
+              required
+            />
+            <input
+              id="api-key-description"
+              type="text"
+              data-i18n-placeholder="placeholder-api-key-description"
+              required
+            />
+            <button type="submit" class="btn-primary" data-i18n="btn-create-api-key">
+              <i data-lucide="key" class="icon"></i> Create API Key
+            </button>
+          </form>
+          <div id="api-key-list" class="admin-list"></div>
+        </section>
+
+        <section id="memory-bank-admin-section" class="admin-section">
+          <h2 data-i18n="section-memory-banks">Memory Banks</h2>
+          <select id="memory-bank-select"></select>
+          <form id="memory-bank-form" class="admin-form">
+            <input
+              id="memory-bank-name"
+              type="text"
+              data-i18n-placeholder="placeholder-memory-bank-name"
+              required
+            />
+            <input
+              id="memory-bank-description"
+              type="text"
+              data-i18n-placeholder="placeholder-memory-bank-description"
+              required
+            />
+            <button type="submit" class="btn-primary" data-i18n="btn-create-memory-bank">
+              <i data-lucide="database" class="icon"></i> Create Memory Bank
+            </button>
+          </form>
+        </section>
         <div class="settings-actions">
           <button id="settings-save" class="btn-primary" data-i18n="settings-save">Save</button>
           <button id="settings-close" class="btn-cancel" data-i18n="btn-cancel">Cancel</button>
@@ -320,14 +357,7 @@
           </button>
         </div>
         <div class="sheet-body">
-          <div id="profile-selector-row" class="profile-selector-row" style="display: none">
-            <label for="profile-panel-select" data-i18n="profile-select-label">View profile:</label>
-            <select id="profile-panel-select">
-              <option value="" disabled selected data-i18n="settings-profile-loading">
-                Select a profile...
-              </option>
-            </select>
-          </div>
+          <div id="profile-selector-row" class="profile-selector-row" style="display: none"></div>
           <div style="margin-bottom: 12px; text-align: right">
             <button id="refresh-profile-btn" class="btn-secondary" data-i18n="btn-refresh">
               <i data-lucide="refresh-cw" class="icon"></i> Refresh
@@ -337,6 +367,21 @@
             <div class="loading" data-i18n="loading-profile">Loading profile...</div>
           </div>
         </div>
+      </div>
+    </div>
+
+    <div id="generated-key-modal" class="modal hidden">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3 data-i18n="modal-generated-key-title">Generated User API Key</h3>
+          <button class="modal-close" id="generated-key-close">
+            <i data-lucide="x" class="icon"></i>
+          </button>
+        </div>
+        <p class="modal-description" data-i18n="modal-generated-key-desc">
+          Copy this key now. It will not be shown again.
+        </p>
+        <pre id="generated-key-value" class="generated-key-value"></pre>
       </div>
     </div>
 

@@ -4,8 +4,12 @@ import { homedir } from "node:os";
 import { stripJsoncComments } from "./services/jsonc.js";
 import { resolveSecretValue } from "./services/secret-resolver.js";
 
-const CONFIG_DIR = join(homedir(), ".config", "opencode");
-const DATA_DIR = join(homedir(), ".opencode-memnet");
+function getHomeDir(): string {
+  return process.env.HOME || homedir();
+}
+
+const CONFIG_DIR = join(getHomeDir(), ".config", "opencode");
+const DATA_DIR = join(getHomeDir(), ".opencode-memnet");
 const CONFIG_FILES = [
   join(CONFIG_DIR, "opencode-memnet.jsonc"),
   join(CONFIG_DIR, "opencode-memnet.json"),
@@ -205,10 +209,10 @@ const DEFAULTS: Required<
 
 function expandPath(path: string): string {
   if (path.startsWith("~/")) {
-    return join(homedir(), path.slice(2));
+    return join(getHomeDir(), path.slice(2));
   }
   if (path === "~") {
-    return homedir();
+    return getHomeDir();
   }
   return path;
 }
@@ -515,8 +519,6 @@ function ensureConfigExists(): void {
   if (!existsSync(configPath)) {
     try {
       writeFileSync(configPath, CONFIG_TEMPLATE, "utf-8");
-      console.log(`\n✓ Created config template: ${configPath}`);
-      console.log("  Edit this file to customize opencode-memnet settings.\n");
     } catch {}
   }
 }

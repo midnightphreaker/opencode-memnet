@@ -1,6 +1,11 @@
 // src/server.ts — Standalone server entry point
 import { initServerConfig, validateServerConfig } from "./server-config.js";
-import { initializeStorage } from "./services/storage/factory.js";
+import {
+  createMemoryBankRepository,
+  createUserApiKeyRepository,
+  initializeStorage,
+} from "./services/storage/factory.js";
+import { AuthService } from "./services/auth-service.js";
 import { embeddingService } from "./services/embedding.js";
 import { setDbConnected } from "./services/health-handler.js";
 import { startWebServer, getActiveRequestCount } from "./services/web-server.js";
@@ -49,6 +54,11 @@ async function main(): Promise<void> {
 
   // 4. Start HTTP server
   try {
+    const authService = new AuthService({
+      serverApiKey: config.serverApiKey,
+      userApiKeyRepo: createUserApiKeyRepository(),
+      memoryBankRepo: createMemoryBankRepository(),
+    });
     const server = await startWebServer(
       {
         port: config.port,
@@ -56,11 +66,7 @@ async function main(): Promise<void> {
         enabled: true,
         allowedOrigin: config.webServerAllowedOrigin,
       },
-      config.serverApiKey,
-      {
-        configuredProfiles: config.configuredProfiles,
-        newUserApiKey: config.newUserApiKey,
-      }
+      authService
     );
 
     logInfo(`Server listening on http://${config.host}:${config.port}`);

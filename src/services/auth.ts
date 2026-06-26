@@ -1,34 +1,17 @@
-import {
-  findProfileByApiKey,
-  timingSafeEqualString,
-  type ConfiguredProfile,
-  type Principal,
-} from "./profile-auth.js";
-
-export type RouteKind = "webui" | "client";
+import type { AuthService, Principal } from "./auth-service.js";
 
 export interface AuthResult {
   principal: Principal;
 }
 
 export class AuthMiddleware {
-  private readonly apiKey: string;
-  private readonly configuredProfiles: ConfiguredProfile[];
-  private readonly newUserApiKey: string;
+  private readonly authService: Pick<AuthService, "authenticateBearer">;
 
-  constructor(
-    apiKey: string,
-    options?: {
-      configuredProfiles?: ConfiguredProfile[];
-      newUserApiKey?: string;
-    }
-  ) {
-    this.apiKey = apiKey;
-    this.configuredProfiles = options?.configuredProfiles ?? [];
-    this.newUserApiKey = options?.newUserApiKey ?? "";
+  constructor(authService: Pick<AuthService, "authenticateBearer">) {
+    this.authService = authService;
   }
 
-  authenticate(req: Request, _routeKind: RouteKind): AuthResult | Response {
+  async authenticate(req: Request): Promise<AuthResult | Response> {
     const authHeader = req.headers.get("Authorization");
 
     if (!authHeader) {
@@ -40,29 +23,9 @@ export class AuthMiddleware {
       return this.unauthorized("Invalid Authorization format. Use: Bearer <key>");
     }
 
-    const key = parts[1];
-    if (this.apiKey && timingSafeEqualString(key, this.apiKey)) {
-      return { principal: { kind: "admin" } };
-    }
-
-    if (this.newUserApiKey && timingSafeEqualString(key, this.newUserApiKey)) {
-      const url = new URL(req.url);
-      if (req.method.toUpperCase() === "POST" && url.pathname === "/api/client/connect") {
-        return { principal: { kind: "newuser" } };
-      }
-      return this.unauthorized("NEWUSER_API_KEY is only valid for POST /api/client/connect");
-    }
-
-    const profile = findProfileByApiKey(this.configuredProfiles, key);
-    if (profile) {
-      return {
-        principal: profile.displayName
-          ? { kind: "profile", profileId: profile.profileId, displayName: profile.displayName }
-          : { kind: "profile", profileId: profile.profileId },
-      };
-    }
-
-    return this.unauthorized("Invalid API key");
+    const principal = await this.authService.authenticateBearer(parts[1]);
+    if (!principal) return this.unauthorized("Invalid API key");
+    return { principal };
   }
 
   private unauthorized(message: string): Response {

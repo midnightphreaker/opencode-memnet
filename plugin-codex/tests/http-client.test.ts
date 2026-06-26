@@ -9,10 +9,14 @@ describe("RemoteMemoryClient", () => {
       return Response.json({
         success: true,
         data: {
-          firstTime: true,
-          welcomeBack: false,
-          daysSinceLastSeen: null,
-          stats: null,
+          principal: {
+            kind: "user-api-key",
+            apiKeyId: "key-1",
+            apiKeyName: "opencode",
+            apiKeyDescription: "OpenCode agent memory access",
+          },
+          memoryBanks: [],
+          requiresMemoryBank: true,
         },
       });
     };
@@ -24,13 +28,18 @@ describe("RemoteMemoryClient", () => {
       fetcher,
     });
 
-    await client.clientConnect({ client: "codex" });
+    await client.clientConnect({ metadata: { client: "codex" }, includeStats: false });
 
     expect(requests).toHaveLength(1);
     expect(requests[0].headers.get("Content-Type")).toBe("application/json");
     expect(requests[0].headers.get("Authorization")).toBe("Bearer secret");
     expect(requests[0].headers.get("X-Client-ID")).toBe("client-123");
     expect(new URL(requests[0].url).pathname).toBe("/api/client/connect");
+    expect(await requests[0].json()).toMatchObject({
+      clientId: "client-123",
+      includeStats: false,
+      metadata: { client: "codex" },
+    });
   });
 
   test("does not expose unsupported client nickname route", () => {
@@ -60,7 +69,6 @@ describe("RemoteMemoryClient", () => {
     await client.listMemories({
       tag: "project-tag",
       pageSize: 10,
-      profileId: "profile-1",
       repoId: undefined,
     });
 
@@ -69,8 +77,55 @@ describe("RemoteMemoryClient", () => {
     expect(url.pathname).toBe("/api/memories");
     expect(url.searchParams.get("tag")).toBe("project-tag");
     expect(url.searchParams.get("pageSize")).toBe("10");
-    expect(url.searchParams.get("profileId")).toBe("profile-1");
+    expect(url.searchParams.has("profileId")).toBe(false);
     expect(url.searchParams.has("repoId")).toBe(false);
+  });
+
+  test("sends X-Memory-Bank-ID on scoped memory requests", async () => {
+    const requests: Request[] = [];
+    const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+      requests.push(new Request(input, init));
+      return Response.json({ success: true, data: { ok: true } });
+    };
+    const client = new RemoteMemoryClient({
+      baseUrl: "http://server.test",
+      apiKey: "secret-api-key",
+      clientId: "client-123",
+      fetcher,
+    });
+
+    await client.addMemory(
+      { content: "remember this", containerTag: "project-tag", type: "fact" },
+      { memoryBankId: "bank-1" }
+    );
+    await client.listMemories({ tag: "project-tag", pageSize: 10 }, { memoryBankId: "bank-1" });
+    await client.searchMemories({ q: "remember", tag: "project-tag" }, { memoryBankId: "bank-1" });
+    await client.getContext(
+      { sessionID: "session-1", projectTag: "project-tag", repoId: "repo-1" },
+      { memoryBankId: "bank-1" }
+    );
+    await client.autoCapture(
+      {
+        sessionID: "session-1",
+        projectTag: "project-tag",
+        repoId: "repo-1",
+        conversationMessages: [],
+        userPrompt: "remember",
+        promptMessageId: "prompt-1",
+      },
+      { memoryBankId: "bank-1" }
+    );
+    await client.getUserProfile({ memoryBankId: "bank-1" });
+
+    expect(requests.map((request) => request.headers.get("X-Memory-Bank-ID"))).toEqual([
+      "bank-1",
+      "bank-1",
+      "bank-1",
+      "bank-1",
+      "bank-1",
+      "bank-1",
+    ]);
+    expect(JSON.stringify(requests)).not.toContain("secret-api-key");
   });
 
   test("sanitizes HTTP errors and DELETE memory ids", async () => {

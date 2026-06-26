@@ -10,6 +10,7 @@ import { runPostgresMigrations } from "./migrations.js";
 import { mergeProfileData } from "./profile-utils.js";
 import { CONFIG } from "../../../config.js";
 import type {
+  MemoryBankOwner,
   UserProfileRepository,
   UserProfileRow,
   UserProfileChangelogRow,
@@ -40,6 +41,8 @@ function rowToProfileRow(row: any): UserProfileRow {
   return {
     id: row.id,
     profileId: row.profile_id,
+    apiKeyId: row.api_key_id ?? undefined,
+    memoryBankId: row.memory_bank_id ?? undefined,
     profileData,
     version: row.version,
     createdAt: Number(row.created_at),
@@ -60,6 +63,8 @@ function rowToChangelogRow(row: any): UserProfileChangelogRow {
   return {
     id: row.id,
     profileId: row.profile_id,
+    apiKeyId: row.api_key_id ?? undefined,
+    memoryBankId: row.memory_bank_id ?? undefined,
     version: row.version,
     changeType: row.change_type,
     changeSummary: row.change_summary,
@@ -79,8 +84,24 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
     await closePostgresClient();
   }
 
-  async getActiveProfile(profileId: string): Promise<UserProfileRow | null> {
+  async getActiveProfile(
+    profileId: string,
+    owner?: MemoryBankOwner
+  ): Promise<UserProfileRow | null> {
     const sql = getPostgresClient();
+    if (owner) {
+      const scopedProfileId = owner.memoryBankId;
+      const rows = await sql`
+        SELECT * FROM user_profiles
+        WHERE profile_id = ${scopedProfileId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+          AND is_active = true
+        LIMIT 1
+      `;
+      if (rows.length === 0) return null;
+      return rowToProfileRow(rows[0]);
+    }
     const rows = await sql`
       SELECT * FROM user_profiles
       WHERE profile_id = ${profileId} AND is_active = true
@@ -90,8 +111,18 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
     return rowToProfileRow(rows[0]);
   }
 
-  async getProfileById(profileId: string): Promise<UserProfileRow | null> {
+  async getProfileById(profileId: string, owner?: MemoryBankOwner): Promise<UserProfileRow | null> {
     const sql = getPostgresClient();
+    if (owner) {
+      const rows = await sql`
+        SELECT * FROM user_profiles
+        WHERE id = ${profileId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      if (rows.length === 0) return null;
+      return rowToProfileRow(rows[0]);
+    }
     const rows = await sql`
       SELECT * FROM user_profiles WHERE id = ${profileId}
     `;
@@ -110,28 +141,35 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
   async createProfile(
     profileId: string,
     profileData: UserProfileData,
-    promptsAnalyzed: number
+    promptsAnalyzed: number,
+    ownership?: { apiKeyId?: string; memoryBankId?: string }
   ): Promise<string> {
     const sql = getPostgresClient();
     const id = `profile_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const now = Date.now();
+    const storedProfileId =
+      ownership?.apiKeyId && ownership.memoryBankId ? ownership.memoryBankId : profileId;
 
     const cleanedData: UserProfileData = {
       preferences: ensureArray(profileData.preferences),
       patterns: ensureArray(profileData.patterns),
       workflows: ensureArray(profileData.workflows),
     };
+    const owner =
+      ownership?.apiKeyId && ownership.memoryBankId
+        ? { apiKeyId: ownership.apiKeyId, memoryBankId: ownership.memoryBankId }
+        : undefined;
 
     // #6: Wrap profile + changelog in a transaction so a changelog failure
     // rolls back the profile INSERT and we never end up with an orphan profile.
     await sql.begin(async (tx) => {
       await tx`
         INSERT INTO user_profiles (
-          id, profile_id,
+          id, profile_id, api_key_id, memory_bank_id,
           profile_data, version, created_at, last_analyzed_at,
           total_prompts_analyzed, is_active
         ) VALUES (
-          ${id}, ${profileId},
+          ${id}, ${storedProfileId}, ${ownership?.apiKeyId ?? null}, ${ownership?.memoryBankId ?? null},
           ${tx.json(cleanedData as any)}, 1, ${now}, ${now},
           ${promptsAnalyzed}, true
         )
@@ -139,7 +177,7 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
       `;
 
       // Add creation changelog inside same transaction
-      await this.addChangelog(tx, id, 1, "create", "Initial profile creation", cleanedData);
+      await this.addChangelog(tx, id, 1, "create", "Initial profile creation", cleanedData, owner);
     });
 
     return id;
@@ -149,7 +187,8 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
     profileId: string,
     profileData: UserProfileData,
     additionalPromptsAnalyzed: number,
-    changeSummary: string
+    changeSummary: string,
+    ownership?: { apiKeyId?: string; memoryBankId?: string }
   ): Promise<void> {
     const sql = getPostgresClient();
     const now = Date.now();
@@ -159,37 +198,70 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
       patterns: ensureArray(profileData.patterns),
       workflows: ensureArray(profileData.workflows),
     };
+    const owner =
+      ownership?.apiKeyId && ownership.memoryBankId
+        ? { apiKeyId: ownership.apiKeyId, memoryBankId: ownership.memoryBankId }
+        : undefined;
 
     // #6: Wrap UPDATE + changelog INSERT in a transaction so a changelog
     // failure rolls back the version bump and we never have a version with
     // no matching changelog entry.
     await sql.begin(async (tx) => {
       // Atomic version increment — avoids read-modify-write race.
-      const result = await tx`
-        UPDATE user_profiles SET
-          profile_data = ${tx.json(cleanedData as any)},
-          version = version + 1,
-          last_analyzed_at = ${now},
-          total_prompts_analyzed = total_prompts_analyzed + ${additionalPromptsAnalyzed}
-        WHERE id = ${profileId}
-        RETURNING version
-      `;
+      const result = owner
+        ? await tx`
+            UPDATE user_profiles SET
+              profile_data = ${tx.json(cleanedData as any)},
+              version = version + 1,
+              last_analyzed_at = ${now},
+              total_prompts_analyzed = total_prompts_analyzed + ${additionalPromptsAnalyzed}
+            WHERE id = ${profileId}
+              AND api_key_id = ${owner.apiKeyId}
+              AND memory_bank_id = ${owner.memoryBankId}
+            RETURNING version
+          `
+        : await tx`
+            UPDATE user_profiles SET
+              profile_data = ${tx.json(cleanedData as any)},
+              version = version + 1,
+              last_analyzed_at = ${now},
+              total_prompts_analyzed = total_prompts_analyzed + ${additionalPromptsAnalyzed}
+            WHERE id = ${profileId}
+            RETURNING version
+          `;
 
       if (result.length === 0) return; // profile doesn't exist — nothing to update
 
       const newVersion = Number(result[0]!.version);
 
-      await this.addChangelog(tx, profileId, newVersion, "update", changeSummary, cleanedData);
-      await this.cleanupOldChangelogs(tx, profileId);
+      await this.addChangelog(
+        tx,
+        profileId,
+        newVersion,
+        "update",
+        changeSummary,
+        cleanedData,
+        owner
+      );
+      await this.cleanupOldChangelogs(tx, profileId, owner);
     });
   }
 
-  async deleteProfile(profileId: string): Promise<void> {
+  async deleteProfile(profileId: string, owner?: MemoryBankOwner): Promise<void> {
     const sql = getPostgresClient();
+    if (owner) {
+      await sql`
+        DELETE FROM user_profiles
+        WHERE id = ${profileId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return;
+    }
     await sql`DELETE FROM user_profiles WHERE id = ${profileId}`;
   }
 
-  async applyConfidenceDecay(profileId: string): Promise<void> {
+  async applyConfidenceDecay(profileId: string, owner?: MemoryBankOwner): Promise<void> {
     const sql = getPostgresClient();
     const now = Date.now();
     const decayThresholdMs = CONFIG.userProfileConfidenceDecayDays * 24 * 60 * 60 * 1000;
@@ -198,9 +270,16 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
 
     for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
       // Read current profile data + version for optimistic locking (#9)
-      const rows = await sql`
-        SELECT profile_data, version FROM user_profiles WHERE id = ${profileId}
-      `;
+      const rows = owner
+        ? await sql`
+            SELECT profile_data, version FROM user_profiles
+            WHERE id = ${profileId}
+              AND api_key_id = ${owner.apiKeyId}
+              AND memory_bank_id = ${owner.memoryBankId}
+          `
+        : await sql`
+            SELECT profile_data, version FROM user_profiles WHERE id = ${profileId}
+          `;
       if (rows.length === 0) return;
 
       const profileData: UserProfileData =
@@ -246,14 +325,26 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
       // rolls back the version bump and we never have a version with no changelog.
       let txResult: { committed: boolean } = { committed: false };
       await sql.begin(async (tx) => {
-        const result = await tx`
-          UPDATE user_profiles
-          SET profile_data = ${tx.json(cleanedData as any)},
-              version = version + 1,
-              last_analyzed_at = ${now}
-          WHERE id = ${profileId} AND version = ${expectedVersion}
-          RETURNING version
-        `;
+        const result = owner
+          ? await tx`
+              UPDATE user_profiles
+              SET profile_data = ${tx.json(cleanedData as any)},
+                  version = version + 1,
+                  last_analyzed_at = ${now}
+              WHERE id = ${profileId}
+                AND version = ${expectedVersion}
+                AND api_key_id = ${owner.apiKeyId}
+                AND memory_bank_id = ${owner.memoryBankId}
+              RETURNING version
+            `
+          : await tx`
+              UPDATE user_profiles
+              SET profile_data = ${tx.json(cleanedData as any)},
+                  version = version + 1,
+                  last_analyzed_at = ${now}
+              WHERE id = ${profileId} AND version = ${expectedVersion}
+              RETURNING version
+            `;
 
         if (result.length === 0) return; // concurrent modification — will retry
 
@@ -264,9 +355,10 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
           newVersion,
           "decay",
           "Applied confidence decay to preferences",
-          cleanedData
+          cleanedData,
+          owner
         );
-        await this.cleanupOldChangelogs(tx, profileId);
+        await this.cleanupOldChangelogs(tx, profileId, owner);
         txResult = { committed: true };
       });
 
@@ -281,9 +373,23 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
 
   async getProfileChangelogs(
     profileId: string,
-    limit: number = 10
+    limit: number = 10,
+    owner?: MemoryBankOwner
   ): Promise<UserProfileChangelogRow[]> {
     const sql = getPostgresClient();
+    if (owner) {
+      const profile = await this.getActiveProfile(profileId, owner);
+      if (!profile) return [];
+      const rows = await sql`
+        SELECT * FROM user_profile_changelogs
+        WHERE profile_id = ${profile.id}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+        ORDER BY version DESC
+        LIMIT ${limit}
+      `;
+      return rows.map(rowToChangelogRow);
+    }
     const rows = await sql`
       SELECT * FROM user_profile_changelogs
       WHERE profile_id = ${profileId}
@@ -293,8 +399,22 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
     return rows.map(rowToChangelogRow);
   }
 
-  async getChangelogById(changelogId: string): Promise<UserProfileChangelogRow | null> {
+  async getChangelogById(
+    changelogId: string,
+    owner?: MemoryBankOwner
+  ): Promise<UserProfileChangelogRow | null> {
     const sql = getPostgresClient();
+    if (owner) {
+      const rows = await sql`
+        SELECT * FROM user_profile_changelogs
+        WHERE id = ${changelogId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+        LIMIT 1
+      `;
+      if (rows.length === 0) return null;
+      return rowToChangelogRow(rows[0]);
+    }
     const rows = await sql`
       SELECT * FROM user_profile_changelogs
       WHERE id = ${changelogId}
@@ -320,25 +440,49 @@ export class PostgresUserProfileRepository implements UserProfileRepository {
     version: number,
     changeType: string,
     changeSummary: string,
-    profileData: UserProfileData
+    profileData: UserProfileData,
+    ownership?: { apiKeyId?: string; memoryBankId?: string }
   ): Promise<void> {
     const id = `changelog_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
     const now = Date.now();
 
     await sql`
       INSERT INTO user_profile_changelogs (
-        id, profile_id, version, change_type, change_summary,
+        id, profile_id, api_key_id, memory_bank_id, version, change_type, change_summary,
         profile_data_snapshot, created_at
       ) VALUES (
-        ${id}, ${profileId}, ${version}, ${changeType}, ${changeSummary},
+        ${id}, ${profileId}, ${ownership?.apiKeyId ?? null}, ${ownership?.memoryBankId ?? null},
+        ${version}, ${changeType}, ${changeSummary},
         ${sql.json(profileData as any)}, ${now}
       )
       ON CONFLICT (id) DO NOTHING
     `;
   }
 
-  private async cleanupOldChangelogs(sql: any, profileId: string): Promise<void> {
+  private async cleanupOldChangelogs(
+    sql: any,
+    profileId: string,
+    owner?: MemoryBankOwner
+  ): Promise<void> {
     const retentionCount = CONFIG.userProfileChangelogRetentionCount;
+
+    if (owner) {
+      await sql`
+        DELETE FROM user_profile_changelogs
+        WHERE profile_id = ${profileId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+          AND id NOT IN (
+            SELECT id FROM user_profile_changelogs
+            WHERE profile_id = ${profileId}
+              AND api_key_id = ${owner.apiKeyId}
+              AND memory_bank_id = ${owner.memoryBankId}
+            ORDER BY version DESC
+            LIMIT ${retentionCount}
+          )
+      `;
+      return;
+    }
 
     await sql`
       DELETE FROM user_profile_changelogs

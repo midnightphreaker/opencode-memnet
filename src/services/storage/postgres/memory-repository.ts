@@ -63,6 +63,8 @@ function rowToMemoryRow(row: any): MemoryRow {
     metadata: parseMetadata(row.metadata),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+    apiKeyId: row.api_key_id ?? undefined,
+    memoryBankId: row.memory_bank_id ?? undefined,
     profileId: row.profile_id,
     repoId: row.repo_id ?? undefined,
     localProjectPath: row.local_project_path ?? undefined,
@@ -81,6 +83,8 @@ function rowToSearchResult(row: any): SearchResult {
     tags: tagsStr ? tagsStr.split(",").map((t: string) => t.trim()) : [],
     metadata: parseMetadata(row.metadata),
     containerTag: row.container_tag ?? undefined,
+    apiKeyId: row.api_key_id ?? undefined,
+    memoryBankId: row.memory_bank_id ?? undefined,
     profileId: row.profile_id ?? undefined,
     repoId: row.repo_id ?? undefined,
     localProjectPath: row.local_project_path ?? undefined,
@@ -120,6 +124,8 @@ function rowToMemoryRecord(row: any): MemoryRecord {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
     metadata: typeof row.metadata === "string" ? row.metadata : JSON.stringify(row.metadata ?? {}),
+    apiKeyId: row.api_key_id ?? undefined,
+    memoryBankId: row.memory_bank_id ?? undefined,
     profileId: row.profile_id,
     repoId: row.repo_id ?? undefined,
     localProjectPath: row.local_project_path ?? undefined,
@@ -196,6 +202,29 @@ async function executeSearchQuery(
   const scopeHashFilter = options.scopeHash || "";
   const containerTagFilter = options.includeAllContainers ? "" : options.containerTag;
   const repoId = options.repoId ?? "";
+  const apiKeyId = options.apiKeyId ?? "";
+  const memoryBankId = options.memoryBankId ?? "";
+  const values: any[] = [
+    queryLiteral,
+    options.scope,
+    scopeHashFilter,
+    containerTagFilter,
+    candidateLimit,
+    options.profileId,
+    repoId,
+  ];
+  const ownershipFilter = memoryBankId
+    ? (() => {
+        values.push(memoryBankId, apiKeyId);
+        return `
+          AND memory_bank_id = $8::uuid
+          AND api_key_id = $9::uuid
+`;
+      })()
+    : `
+          AND profile_id = $6
+          AND ($7::text = '' OR repo_id = $7)
+`;
 
   return sql.unsafe(
     `
@@ -206,8 +235,7 @@ async function executeSearchQuery(
         WHERE scope = $2
           AND ($3::text = '' OR scope_hash = $3)
           AND ($4::text = '' OR container_tag = $4)
-          AND profile_id = $6
-          AND ($7::text = '' OR repo_id = $7)
+${ownershipFilter}
         ORDER BY vector <=> $1::${vectorCast}
         LIMIT $5
       )
@@ -218,8 +246,7 @@ async function executeSearchQuery(
         WHERE scope = $2
           AND ($3::text = '' OR scope_hash = $3)
           AND ($4::text = '' OR container_tag = $4)
-          AND profile_id = $6
-          AND ($7::text = '' OR repo_id = $7)
+${ownershipFilter}
           AND tags_vector IS NOT NULL
         ORDER BY tags_vector <=> $1::${vectorCast}
         LIMIT $5
@@ -235,15 +262,7 @@ async function executeSearchQuery(
     FROM memories m
     JOIN candidates c ON c.id = m.id
     `,
-    [
-      queryLiteral,
-      options.scope,
-      scopeHashFilter,
-      containerTagFilter,
-      candidateLimit,
-      options.profileId,
-      repoId,
-    ]
+    values
   );
 }
 
@@ -281,7 +300,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       INSERT INTO memories (
         id, scope, scope_hash, content, vector, tags_vector,
         container_tag, tags, type, created_at, updated_at,
-        metadata, profile_id, repo_id, local_project_path,
+        metadata, api_key_id, memory_bank_id, profile_id, repo_id, local_project_path,
         git_repo_url, repo_nickname, is_pinned
       ) VALUES (
         ${record.id},
@@ -296,7 +315,9 @@ export class PostgresMemoryRepository implements MemoryRepository {
         ${record.createdAt},
         ${record.updatedAt},
         ${sql.json(metadata as any)},
-        ${record.profileId},
+        ${record.apiKeyId ?? null},
+        ${record.memoryBankId ?? null},
+        ${record.profileId ?? null},
         ${record.repoId ?? null},
         ${record.localProjectPath ?? null},
         ${record.gitRepoUrl ?? null},
@@ -307,17 +328,42 @@ export class PostgresMemoryRepository implements MemoryRepository {
     `;
   }
 
-  async delete(memoryId: string): Promise<boolean> {
+  async delete(
+    memoryId: string,
+    owner?: { apiKeyId: string; memoryBankId: string }
+  ): Promise<boolean> {
     const sql = getPostgresClient();
+    if (owner) {
+      const rows = await sql`
+        DELETE FROM memories
+        WHERE id = ${memoryId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+        RETURNING id
+      `;
+      return rows.length > 0;
+    }
     const rows = await sql`
       DELETE FROM memories WHERE id = ${memoryId} RETURNING id
     `;
     return rows.length > 0;
   }
 
-  async deleteMany(ids: string[]): Promise<number> {
+  async deleteMany(
+    ids: string[],
+    owner?: { apiKeyId: string; memoryBankId: string }
+  ): Promise<number> {
     const sql = getPostgresClient();
     if (!ids.length) return 0;
+    if (owner) {
+      const result = await sql`
+        DELETE FROM memories
+        WHERE id IN ${sql(ids)}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return result.count;
+    }
     const result = await sql`DELETE FROM memories WHERE id IN ${sql(ids)}`;
     return result.count;
   }
@@ -341,6 +387,33 @@ export class PostgresMemoryRepository implements MemoryRepository {
       ? "'" + vectorToPgLiteral(record.tagsVector) + "'::" + vectorCast
       : null;
 
+    if (record.apiKeyId && record.memoryBankId) {
+      await sql`
+        UPDATE memories SET
+          scope = ${scope},
+          scope_hash = ${hash},
+          content = ${record.content},
+          vector = ${sql.unsafe(vectorLit)},
+          tags_vector = ${tagsVectorLit ? sql.unsafe(tagsVectorLit) : null},
+          container_tag = ${record.containerTag},
+          tags = ${record.tags ?? null},
+          type = ${record.type ?? null},
+          updated_at = ${record.updatedAt},
+          metadata = ${sql.json(metadata as any)},
+          api_key_id = ${record.apiKeyId},
+          memory_bank_id = ${record.memoryBankId},
+          profile_id = ${record.profileId ?? null},
+          repo_id = ${record.repoId ?? null},
+          local_project_path = ${record.localProjectPath ?? null},
+          git_repo_url = ${record.gitRepoUrl ?? null},
+          repo_nickname = ${record.repoNickname ?? null}
+        WHERE id = ${record.id}
+          AND api_key_id = ${record.apiKeyId}
+          AND memory_bank_id = ${record.memoryBankId}
+      `;
+      return;
+    }
+
     await sql`
       UPDATE memories SET
         scope = ${scope},
@@ -353,7 +426,9 @@ export class PostgresMemoryRepository implements MemoryRepository {
         type = ${record.type ?? null},
         updated_at = ${record.updatedAt},
         metadata = ${sql.json(metadata as any)},
-        profile_id = ${record.profileId},
+        api_key_id = ${record.apiKeyId ?? null},
+        memory_bank_id = ${record.memoryBankId ?? null},
+        profile_id = ${record.profileId ?? null},
         repo_id = ${record.repoId ?? null},
         local_project_path = ${record.localProjectPath ?? null},
         git_repo_url = ${record.gitRepoUrl ?? null},
@@ -362,8 +437,21 @@ export class PostgresMemoryRepository implements MemoryRepository {
     `;
   }
 
-  async getById(memoryId: string): Promise<MemoryRow | null> {
+  async getById(
+    memoryId: string,
+    owner?: { apiKeyId: string; memoryBankId: string }
+  ): Promise<MemoryRow | null> {
     const sql = getPostgresClient();
+    if (owner) {
+      const rows = await sql`
+        SELECT * FROM memories
+        WHERE id = ${memoryId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      if (rows.length === 0) return null;
+      return rowToMemoryRow(rows[0]);
+    }
     const rows = await sql`
       SELECT * FROM memories WHERE id = ${memoryId}
     `;
@@ -415,17 +503,49 @@ export class PostgresMemoryRepository implements MemoryRepository {
     includeAllContainers?: boolean;
     containerTagFilter?: string;
     limit: number;
-    profileId: string;
+    profileId?: string;
     repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<MemoryRow[]> {
     const sql = getPostgresClient();
     const scopeHashFilter = args.scopeHash || "";
     const containerTagFilter = args.includeAllContainers ? "" : args.containerTag;
+    const profileIdFilter = args.profileId ?? "";
     const repoIdFilter = args.repoId ?? "";
 
     // Build dynamic LIKE condition for containerTagFilter
     const tagLikeValue = args.containerTagFilter ? `%${args.containerTagFilter}%` : "";
     const hasTagLike = !!args.containerTagFilter;
+
+    if (args.apiKeyId && args.memoryBankId) {
+      if (hasTagLike) {
+        const rows = await sql`
+          SELECT * FROM memories
+          WHERE scope = ${args.scope}
+            AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
+            AND (${containerTagFilter}::text = '' OR container_tag = ${containerTagFilter})
+            AND api_key_id = ${args.apiKeyId}
+            AND memory_bank_id = ${args.memoryBankId}
+            AND container_tag LIKE ${tagLikeValue}
+          ORDER BY created_at DESC
+          LIMIT ${args.limit}
+        `;
+        return rows.map(rowToMemoryRow);
+      }
+
+      const rows = await sql`
+        SELECT * FROM memories
+        WHERE scope = ${args.scope}
+          AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
+          AND (${containerTagFilter}::text = '' OR container_tag = ${containerTagFilter})
+          AND api_key_id = ${args.apiKeyId}
+          AND memory_bank_id = ${args.memoryBankId}
+        ORDER BY created_at DESC
+        LIMIT ${args.limit}
+      `;
+      return rows.map(rowToMemoryRow);
+    }
 
     if (hasTagLike) {
       const rows = await sql`
@@ -433,7 +553,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
         WHERE scope = ${args.scope}
           AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
           AND (${containerTagFilter}::text = '' OR container_tag = ${containerTagFilter})
-          AND profile_id = ${args.profileId}
+          AND profile_id = ${profileIdFilter}
           AND (${repoIdFilter}::text = '' OR repo_id = ${repoIdFilter})
           AND container_tag LIKE ${tagLikeValue}
         ORDER BY created_at DESC
@@ -447,7 +567,7 @@ export class PostgresMemoryRepository implements MemoryRepository {
       WHERE scope = ${args.scope}
         AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
         AND (${containerTagFilter}::text = '' OR container_tag = ${containerTagFilter})
-        AND profile_id = ${args.profileId}
+        AND profile_id = ${profileIdFilter}
         AND (${repoIdFilter}::text = '' OR repo_id = ${repoIdFilter})
       ORDER BY created_at DESC
       LIMIT ${args.limit}
@@ -497,6 +617,8 @@ export class PostgresMemoryRepository implements MemoryRepository {
     scopeHash?: string;
     profileId?: string;
     repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<number> {
     const sql = getPostgresClient();
     const scope = args?.scope ?? "user";
@@ -504,6 +626,18 @@ export class PostgresMemoryRepository implements MemoryRepository {
     const containerTagFilter = args?.containerTag ?? "";
     const profileIdFilter = args?.profileId ?? "";
     const repoIdFilter = args?.repoId ?? "";
+
+    if (args?.apiKeyId && args.memoryBankId) {
+      const rows = await sql`
+        SELECT COUNT(*) as count FROM memories
+        WHERE scope = ${scope}
+          AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
+          AND (${containerTagFilter}::text = '' OR container_tag = ${containerTagFilter})
+          AND api_key_id = ${args.apiKeyId}
+          AND memory_bank_id = ${args.memoryBankId}
+      `;
+      return Number(rows[0]?.count ?? 0);
+    }
 
     const rows = await sql`
       SELECT COUNT(*) as count FROM memories
@@ -520,10 +654,27 @@ export class PostgresMemoryRepository implements MemoryRepository {
   async countByType(args?: {
     profileId?: string;
     repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<Record<string, number>> {
     const sql = getPostgresClient();
     const profileIdFilter = args?.profileId ?? "";
     const repoIdFilter = args?.repoId ?? "";
+    if (args?.apiKeyId && args.memoryBankId) {
+      const rows = await sql`
+        SELECT type, COUNT(*) as count
+        FROM memories
+        WHERE api_key_id = ${args.apiKeyId}
+          AND memory_bank_id = ${args.memoryBankId}
+        GROUP BY type
+      `;
+      const result: Record<string, number> = {};
+      for (const row of rows) {
+        const key = row.type ?? "(unclassified)";
+        result[key] = Number(row.count);
+      }
+      return result;
+    }
     const rows = await sql`
       SELECT type, COUNT(*) as count
       FROM memories
@@ -544,12 +695,37 @@ export class PostgresMemoryRepository implements MemoryRepository {
     scopeHash?: string;
     profileId?: string;
     repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<TagInfo[]> {
     const sql = getPostgresClient();
     const scope = args?.scope ?? "user";
     const scopeHashFilter = args?.scopeHash ?? "";
     const profileIdFilter = args?.profileId ?? "";
     const repoIdFilter = args?.repoId ?? "";
+
+    if (args?.apiKeyId && args.memoryBankId) {
+      const rows = await sql`
+        SELECT DISTINCT container_tag, profile_id, repo_id, api_key_id, memory_bank_id,
+                        local_project_path, git_repo_url, repo_nickname
+        FROM memories
+        WHERE scope = ${scope}
+          AND (${scopeHashFilter}::text = '' OR scope_hash = ${scopeHashFilter})
+          AND api_key_id = ${args.apiKeyId}
+          AND memory_bank_id = ${args.memoryBankId}
+      `;
+
+      return rows.map((row: any) => ({
+        tag: row.container_tag,
+        profileId: row.profile_id ?? undefined,
+        repoId: row.repo_id ?? undefined,
+        apiKeyId: row.api_key_id ?? undefined,
+        memoryBankId: row.memory_bank_id ?? undefined,
+        localProjectPath: row.local_project_path ?? undefined,
+        gitRepoUrl: row.git_repo_url ?? undefined,
+        repoNickname: row.repo_nickname ?? undefined,
+      }));
+    }
 
     const rows = await sql`
       SELECT DISTINCT container_tag, profile_id, repo_id, local_project_path,
@@ -575,11 +751,31 @@ export class PostgresMemoryRepository implements MemoryRepository {
     scope?: MemoryScopeKind;
     profileId?: string;
     repoId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<string[]> {
     const sql = getPostgresClient();
     const scope = args?.scope ?? "project";
     const profileIdFilter = args?.profileId ?? "";
     const repoIdFilter = args?.repoId ?? "";
+    if (args?.apiKeyId && args.memoryBankId) {
+      const rows = await sql<{ tags: string | null }[]>`
+        SELECT DISTINCT unnest(string_to_array(tags, ',')) AS tags
+        FROM memories
+        WHERE scope = ${scope}
+          AND tags IS NOT NULL
+          AND tags != ''
+          AND api_key_id = ${args.apiKeyId}
+          AND memory_bank_id = ${args.memoryBankId}
+      `;
+      const tagSet = new Set<string>();
+      for (const row of rows) {
+        if (row.tags) {
+          tagSet.add(row.tags.trim().toLowerCase());
+        }
+      }
+      return Array.from(tagSet).sort();
+    }
     const rows = await sql<{ tags: string | null }[]>`
       SELECT DISTINCT unnest(string_to_array(tags, ',')) AS tags
       FROM memories
@@ -598,13 +794,31 @@ export class PostgresMemoryRepository implements MemoryRepository {
     return Array.from(tagSet).sort();
   }
 
-  async pin(memoryId: string): Promise<void> {
+  async pin(memoryId: string, owner?: { apiKeyId: string; memoryBankId: string }): Promise<void> {
     const sql = getPostgresClient();
+    if (owner) {
+      await sql`
+        UPDATE memories SET is_pinned = true
+        WHERE id = ${memoryId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return;
+    }
     await sql`UPDATE memories SET is_pinned = true WHERE id = ${memoryId}`;
   }
 
-  async unpin(memoryId: string): Promise<void> {
+  async unpin(memoryId: string, owner?: { apiKeyId: string; memoryBankId: string }): Promise<void> {
     const sql = getPostgresClient();
+    if (owner) {
+      await sql`
+        UPDATE memories SET is_pinned = false
+        WHERE id = ${memoryId}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return;
+    }
     await sql`UPDATE memories SET is_pinned = false WHERE id = ${memoryId}`;
   }
 
@@ -613,9 +827,22 @@ export class PostgresMemoryRepository implements MemoryRepository {
     limit?: number;
     offset?: number;
     profileId?: string;
+    apiKeyId?: string;
+    memoryBankId?: string;
   }): Promise<MemoryRow[]> {
     const sql = getPostgresClient();
     const profileIdFilter = args.profileId ?? "";
+    if (args.apiKeyId && args.memoryBankId) {
+      const rows = await sql`
+        SELECT * FROM memories
+        WHERE updated_at < ${args.cutoffTime}
+          AND api_key_id = ${args.apiKeyId}
+          AND memory_bank_id = ${args.memoryBankId}
+        ORDER BY updated_at ASC
+        LIMIT ${args.limit ?? 1000} OFFSET ${args.offset ?? 0}
+      `;
+      return rows.map(rowToMemoryRow);
+    }
     const rows = await sql`
       SELECT * FROM memories
       WHERE updated_at < ${args.cutoffTime}
@@ -631,10 +858,22 @@ export class PostgresMemoryRepository implements MemoryRepository {
       limit?: number;
       offset?: number;
       profileId?: string;
+      apiKeyId?: string;
+      memoryBankId?: string;
     } = {}
   ): Promise<MemoryRecord[]> {
     const sql = getPostgresClient();
     const profileIdFilter = args.profileId ?? "";
+    if (args.apiKeyId && args.memoryBankId) {
+      const rows = await sql`
+        SELECT * FROM memories
+        WHERE api_key_id = ${args.apiKeyId}
+          AND memory_bank_id = ${args.memoryBankId}
+        ORDER BY created_at ASC
+        LIMIT ${args.limit ?? 1000} OFFSET ${args.offset ?? 0}
+      `;
+      return rows.map(rowToMemoryRecord);
+    }
     const rows = await sql`
       SELECT * FROM memories
       WHERE (${profileIdFilter}::text = '' OR profile_id = ${profileIdFilter})
@@ -644,8 +883,18 @@ export class PostgresMemoryRepository implements MemoryRepository {
     return rows.map(rowToMemoryRecord);
   }
 
-  async countUntagged(): Promise<number> {
+  async countUntagged(owner?: { apiKeyId: string; memoryBankId: string }): Promise<number> {
     const sql = getPostgresClient();
+    if (owner) {
+      const rows = await sql`
+        SELECT COUNT(*) as count FROM memories
+        WHERE scope = 'project'
+          AND (tags IS NULL OR tags = '')
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return Number(rows[0]?.count ?? 0);
+    }
     const rows = await sql`
       SELECT COUNT(*) as count FROM memories
       WHERE scope = 'project' AND (tags IS NULL OR tags = '')
@@ -655,9 +904,22 @@ export class PostgresMemoryRepository implements MemoryRepository {
 
   async getUntaggedProjectMemories(
     limit: number = 100,
-    offset: number = 0
+    offset: number = 0,
+    owner?: { apiKeyId: string; memoryBankId: string }
   ): Promise<MemoryRecord[]> {
     const sql = getPostgresClient();
+    if (owner) {
+      const rows = await sql`
+        SELECT * FROM memories
+        WHERE scope = 'project'
+          AND (tags IS NULL OR tags = '')
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+        ORDER BY created_at ASC
+        LIMIT ${limit} OFFSET ${offset}
+      `;
+      return rows.map((row) => rowToMemoryRecord(row));
+    }
     const rows = await sql`
       SELECT * FROM memories
       WHERE scope = 'project' AND (tags IS NULL OR tags = '')
@@ -672,7 +934,8 @@ export class PostgresMemoryRepository implements MemoryRepository {
     tags: string,
     vector: Float32Array,
     tagsVector: Float32Array | undefined,
-    updatedAt: number
+    updatedAt: number,
+    owner?: { apiKeyId: string; memoryBankId: string }
   ): Promise<void> {
     const sql = getPostgresClient();
     const dims = CONFIG.embeddingDimensions;
@@ -687,6 +950,19 @@ export class PostgresMemoryRepository implements MemoryRepository {
     const tagsVectorLit = tagsVector
       ? "'" + vectorToPgLiteral(tagsVector) + "'::" + vectorCast
       : null;
+    if (owner) {
+      await sql`
+        UPDATE memories SET
+          tags = ${tags},
+          vector = ${sql.unsafe(vectorLit)},
+          tags_vector = ${tagsVectorLit ? sql.unsafe(tagsVectorLit) : null},
+          updated_at = ${updatedAt}
+        WHERE id = ${id}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return;
+    }
     await sql`
       UPDATE memories SET
         tags = ${tags},
@@ -697,8 +973,24 @@ export class PostgresMemoryRepository implements MemoryRepository {
     `;
   }
 
-  async updateTagsOnly(id: string, tags: string, updatedAt: number): Promise<void> {
+  async updateTagsOnly(
+    id: string,
+    tags: string,
+    updatedAt: number,
+    owner?: { apiKeyId: string; memoryBankId: string }
+  ): Promise<void> {
     const sql = getPostgresClient();
+    if (owner) {
+      await sql`
+        UPDATE memories SET
+          tags = ${tags},
+          updated_at = ${updatedAt}
+        WHERE id = ${id}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return;
+    }
     await sql`
       UPDATE memories SET
         tags = ${tags},
@@ -711,7 +1003,8 @@ export class PostgresMemoryRepository implements MemoryRepository {
     id: string,
     vector: Float32Array,
     tagsVector: Float32Array | undefined,
-    updatedAt: number
+    updatedAt: number,
+    owner?: { apiKeyId: string; memoryBankId: string }
   ): Promise<void> {
     const sql = getPostgresClient();
     const dims = CONFIG.embeddingDimensions;
@@ -726,6 +1019,18 @@ export class PostgresMemoryRepository implements MemoryRepository {
     const tagsVectorLit = tagsVector
       ? "'" + vectorToPgLiteral(tagsVector) + "'::" + vectorCast
       : null;
+    if (owner) {
+      await sql`
+        UPDATE memories SET
+          vector = ${sql.unsafe(vectorLit)},
+          tags_vector = ${tagsVectorLit ? sql.unsafe(tagsVectorLit) : null},
+          updated_at = ${updatedAt}
+        WHERE id = ${id}
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+      `;
+      return;
+    }
     await sql`
       UPDATE memories SET
         vector = ${sql.unsafe(vectorLit)},
@@ -737,9 +1042,23 @@ export class PostgresMemoryRepository implements MemoryRepository {
 
   async getMemoriesWithoutVectors(
     limit: number = 100,
-    offset: number = 0
+    offset: number = 0,
+    owner?: { apiKeyId: string; memoryBankId: string }
   ): Promise<MemoryRecord[]> {
     const sql = getPostgresClient();
+    if (owner) {
+      const rows = await sql`
+        SELECT *
+        FROM memories
+        WHERE tags IS NOT NULL AND tags != ''
+          AND (vector IS NULL OR tags_vector IS NULL)
+          AND api_key_id = ${owner.apiKeyId}
+          AND memory_bank_id = ${owner.memoryBankId}
+        ORDER BY created_at ASC
+        LIMIT ${limit} OFFSET ${offset}
+      `;
+      return rows.map((row) => rowToMemoryRecord(row));
+    }
     const rows = await sql`
       SELECT *
       FROM memories

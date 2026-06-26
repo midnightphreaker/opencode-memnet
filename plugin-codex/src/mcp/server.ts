@@ -18,8 +18,8 @@ const server = new McpServer(
   },
   {
     instructions:
-      "Use opencode-memnet memory tools to recall durable project context, user preferences, prior decisions, and workflows. Never store secrets. Call memory_get_context before work where prior context may matter, and call memory_capture near the end of substantial work.",
-  },
+      "Use opencode-memnet memory tools to recall durable project context, user preferences, prior decisions, and workflows. Memory operations require an active Memory Bank. Never store secrets. Call memory_connect to inspect Memory Bank state, memory_get_context before work where prior context may matter, and memory_capture near the end of substantial work.",
+  }
 );
 
 function text(data: unknown) {
@@ -27,31 +27,31 @@ function text(data: unknown) {
 }
 
 server.tool("memory_connect", { nickname: z.string().optional() }, async (args) =>
-  text(await handlers.memory_connect(args)),
+  text(await handlers.memory_connect(args))
 );
 server.tool(
   "memory_get_context",
   { sessionID: z.string().optional(), maxMemories: z.number().optional() },
-  async (args) => text(await handlers.memory_get_context(args)),
+  async (args) => text(await handlers.memory_get_context(args))
 );
 server.tool(
   "memory_add",
   { content: z.string(), type: z.string().optional(), tags: z.array(z.string()).optional() },
-  async (args) => text(await handlers.memory_add(args)),
+  async (args) => text(await handlers.memory_add(args))
 );
 server.tool("memory_search", { query: z.string(), limit: z.number().optional() }, async (args) =>
-  text(await handlers.memory_search(args)),
+  text(await handlers.memory_search(args))
 );
 server.tool("memory_list", { limit: z.number().optional() }, async (args) =>
-  text(await handlers.memory_list(args)),
+  text(await handlers.memory_list(args))
 );
 server.tool("memory_forget", { memoryId: z.string() }, async (args) =>
-  text(await handlers.memory_forget(args)),
+  text(await handlers.memory_forget(args))
 );
 server.tool("memory_profile", {}, async () => text(await handlers.memory_profile()));
 server.tool("memory_stats", {}, async () => text(await handlers.memory_stats()));
 server.tool("memory_set_nickname", { nickname: z.string() }, async (args) =>
-  text(await handlers.memory_set_nickname(args)),
+  text(await handlers.memory_set_nickname(args))
 );
 server.tool(
   "memory_capture",
@@ -62,7 +62,7 @@ server.tool(
     userPrompt: z.string().optional(),
     promptMessageId: z.string().optional(),
   },
-  async (args) => text(await handlers.memory_capture(args)),
+  async (args) => text(await handlers.memory_capture(args))
 );
 
 await server.connect(new StdioServerTransport());

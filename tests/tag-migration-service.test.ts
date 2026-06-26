@@ -27,7 +27,7 @@ describe("DES-002: runTagMigration() uses getUntaggedProjectMemories()", () => {
     it("does NOT call getAllWithVectors() in the migration loop", () => {
       // The old broken code called getAllWithVectors() — verify it's gone
       // from the runTagMigration function body
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       expect(fnStart).toBeGreaterThan(-1);
       const fnBody = source.slice(fnStart);
 
@@ -36,7 +36,7 @@ describe("DES-002: runTagMigration() uses getUntaggedProjectMemories()", () => {
     });
 
     it("does NOT filter by containerTag.includes('_project_')", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       expect(fnBody).not.toContain("containerTag.includes");
@@ -44,7 +44,7 @@ describe("DES-002: runTagMigration() uses getUntaggedProjectMemories()", () => {
     });
 
     it("does NOT use in-memory untagged filter (!r.tags || r.tags.trim())", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       // The old in-memory filter pattern should not exist
@@ -53,7 +53,7 @@ describe("DES-002: runTagMigration() uses getUntaggedProjectMemories()", () => {
     });
 
     it("calls getUntaggedProjectMemories() instead", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       expect(fnBody).toContain("getUntaggedProjectMemories");
@@ -62,7 +62,7 @@ describe("DES-002: runTagMigration() uses getUntaggedProjectMemories()", () => {
 
   describe("paginated batch processing", () => {
     it("uses a BATCH_SIZE constant (not the old 1000 limit)", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       // Should have a BATCH_SIZE constant
@@ -76,7 +76,7 @@ describe("DES-002: runTagMigration() uses getUntaggedProjectMemories()", () => {
     });
 
     it("uses a while loop that breaks when batch is empty", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       // Should have the batch processing loop pattern
@@ -85,7 +85,7 @@ describe("DES-002: runTagMigration() uses getUntaggedProjectMemories()", () => {
     });
 
     it("always queries from offset 0 (newly tagged excluded by SQL)", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       // The call to getUntaggedProjectMemories should use offset 0
@@ -96,14 +96,14 @@ describe("DES-002: runTagMigration() uses getUntaggedProjectMemories()", () => {
 
   describe("preserves existing behavior", () => {
     it("still calls countUntagged() for status reporting", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       expect(fnBody).toContain("countUntagged");
     });
 
     it("still has the outer infinite while loop with sleep", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       // The outer loop checks signal.aborted
@@ -113,14 +113,14 @@ describe("DES-002: runTagMigration() uses getUntaggedProjectMemories()", () => {
     });
 
     it("still performs embedding warmup", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       expect(fnBody).toContain("embeddingService.warmup");
     });
 
     it("still dual-writes to tag registry with enhanced error logging", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       expect(fnBody).toContain("linkMemoryTags");
@@ -129,7 +129,7 @@ describe("DES-002: runTagMigration() uses getUntaggedProjectMemories()", () => {
     });
 
     it("uses updateTagsOnly and updateVectorsOnly for separate tag/vector updates", () => {
-      const fnStart = source.indexOf("export async function runTagMigration()");
+      const fnStart = source.search(/export\s+async\s+function\s+runTagMigration\s*\(/);
       const fnBody = source.slice(fnStart);
 
       // Source was refactored: tags and vectors are now updated separately

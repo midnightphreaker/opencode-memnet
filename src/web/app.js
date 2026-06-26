@@ -25,10 +25,11 @@ const state = {
   autoRefreshInterval: null,
   userProfile: null,
   authKey: localStorage.getItem("opencode-memnet-apikey") || "",
-  activeProfileId: localStorage.getItem("opencode-memnet-active-profile") || "",
-  panelViewProfileId: "",
+  apiKeys: [],
+  memoryBanks: [],
+  activeApiKeyId: localStorage.getItem("opencode-memnet-active-api-key") || "",
+  activeMemoryBankId: localStorage.getItem("opencode-memnet-active-memory-bank") || "",
   principal: null,
-  profileLocked: false,
   lastJobStatus: {
     activity: { active: false, text: "Idle", queuedCount: 0 },
     current: null,
@@ -59,6 +60,9 @@ async function fetchAPI(endpoint, options = {}) {
     if (state.authKey) {
       headers["Authorization"] = `Bearer ${state.authKey}`;
     }
+    if (state.activeMemoryBankId) {
+      headers["X-Memory-Bank-ID"] = state.activeMemoryBankId;
+    }
     headers["X-Client-ID"] = getWebClientId();
     const response = await fetch(API_BASE + endpoint, {
       ...options,
@@ -75,17 +79,150 @@ async function fetchAPI(endpoint, options = {}) {
   }
 }
 
-function applyProfilePrincipal(principal) {
+function applyPrincipal(principal) {
   state.principal = principal || null;
-  state.profileLocked = state.principal?.kind === "profile";
-  if (state.profileLocked) {
-    state.activeProfileId = state.principal.profileId;
-    state.panelViewProfileId = state.principal.profileId;
-    localStorage.setItem("opencode-memnet-active-profile", state.activeProfileId);
+}
+
+async function loadApiKeys() {
+  const result = await fetchAPI("/api/admin/api-keys");
+  if (!result.success) {
+    showToast(result.error || t("toast-api-keys-failed"), "error");
+    return;
+  }
+  state.apiKeys = result.data.apiKeys || [];
+  renderApiKeys();
+}
+
+async function createApiKey(e) {
+  e.preventDefault();
+  const name = document.getElementById("api-key-name").value.trim();
+  const description = document.getElementById("api-key-description").value.trim();
+  const result = await fetchAPI("/api/admin/api-keys", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, description }),
+  });
+  if (!result.success) {
+    showToast(result.error || t("toast-api-key-create-failed"), "error");
+    return;
+  }
+  showGeneratedKey(result.data.value);
+  document.getElementById("api-key-form").reset();
+  await loadApiKeys();
+}
+
+function showGeneratedKey(value) {
+  const modal = document.getElementById("generated-key-modal");
+  document.getElementById("generated-key-value").textContent = value;
+  modal.classList.remove("hidden");
+}
+
+function renderApiKeys() {
+  const container = document.getElementById("api-key-list");
+  container.innerHTML = state.apiKeys
+    .map(
+      (key) => `
+        <button class="api-key-row ${state.activeApiKeyId === key.id ? "active" : ""}" data-api-key-id="${escapeAttr(key.id)}">
+          <span>${escapeHtml(key.name)}</span>
+          <small>${escapeHtml(key.description || "")}</small>
+        </button>`
+    )
+    .join("");
+  container.querySelectorAll("[data-api-key-id]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      state.activeApiKeyId = button.dataset.apiKeyId;
+      localStorage.setItem("opencode-memnet-active-api-key", state.activeApiKeyId);
+      await loadMemoryBanksForActiveKey();
+      renderApiKeys();
+    });
+  });
+}
+
+async function loadMemoryBanksForActiveKey() {
+  if (!state.activeApiKeyId) {
+    state.memoryBanks = [];
+    state.activeMemoryBankId = "";
+    localStorage.removeItem("opencode-memnet-active-memory-bank");
+    renderMemoryBanks();
+    return;
+  }
+  const result = await fetchAPI(
+    `/api/admin/api-keys/${encodeURIComponent(state.activeApiKeyId)}/memory-banks`
+  );
+  if (!result.success) {
+    showToast(result.error || t("toast-memory-banks-failed"), "error");
+    return;
+  }
+  state.memoryBanks = result.data.memoryBanks || [];
+  if (!state.memoryBanks.some((bank) => bank.id === state.activeMemoryBankId)) {
+    state.activeMemoryBankId = state.memoryBanks[0]?.id || "";
+    if (state.activeMemoryBankId) {
+      localStorage.setItem("opencode-memnet-active-memory-bank", state.activeMemoryBankId);
+    } else {
+      localStorage.removeItem("opencode-memnet-active-memory-bank");
+    }
+  }
+  renderMemoryBanks();
+  if (state.activeMemoryBankId) {
+    await loadTags();
+    await loadMemories();
+    await loadStats();
+  } else {
+    state.tags = { project: [] };
+    state.memories = [];
+    renderMemories();
+    showToast(t("toast-no-active-memory-bank"), "error");
   }
 }
 
+async function createMemoryBank(e) {
+  e.preventDefault();
+  if (!state.activeApiKeyId) {
+    showToast(t("toast-select-api-key"), "error");
+    return;
+  }
+  const name = document.getElementById("memory-bank-name").value.trim();
+  const description = document.getElementById("memory-bank-description").value.trim();
+  const result = await fetchAPI(
+    `/api/admin/api-keys/${encodeURIComponent(state.activeApiKeyId)}/memory-banks`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description }),
+    }
+  );
+  if (!result.success) {
+    showToast(result.error || t("toast-memory-bank-create-failed"), "error");
+    return;
+  }
+  state.activeMemoryBankId = result.data.memoryBank.id;
+  localStorage.setItem("opencode-memnet-active-memory-bank", state.activeMemoryBankId);
+  document.getElementById("memory-bank-form").reset();
+  await loadMemoryBanksForActiveKey();
+}
+
+function renderMemoryBanks() {
+  const select = document.getElementById("memory-bank-select");
+  select.innerHTML = state.memoryBanks
+    .map(
+      (bank) =>
+        `<option value="${escapeAttr(bank.id)}" ${bank.id === state.activeMemoryBankId ? "selected" : ""}>${escapeHtml(bank.shortcut || bank.name || bank.id)}</option>`
+    )
+    .join("");
+}
+
+function requireActiveMemoryBank({ silent = false } = {}) {
+  if (state.activeMemoryBankId) return true;
+  if (!silent) {
+    const fallback = "No active Memory Bank";
+    const message = t("toast-no-active-memory-bank");
+    showToast(message === "toast-no-active-memory-bank" ? fallback : message, "error");
+  }
+  return false;
+}
+
 async function loadTags() {
+  if (!requireActiveMemoryBank()) return;
   const result = await fetchAPI("/api/tags");
   if (result.success) {
     state.tags = result.data;
@@ -408,6 +545,7 @@ function updateSectionTitle() {
 }
 
 async function loadStats() {
+  if (!requireActiveMemoryBank()) return;
   const result = await fetchAPI("/api/stats");
   if (result.success) {
     document.getElementById("stats-total").textContent = t("text-total", {
@@ -418,6 +556,7 @@ async function loadStats() {
 
 async function addMemory(e) {
   e.preventDefault();
+  if (!requireActiveMemoryBank()) return;
 
   const content = document.getElementById("add-content").value.trim();
   const containerTag = document.getElementById("add-tag").value;
@@ -443,7 +582,6 @@ async function addMemory(e) {
       containerTag,
       type: type || undefined,
       tags,
-      profileId: state.activeProfileId || undefined,
     }),
   });
 
@@ -460,6 +598,7 @@ async function addMemory(e) {
 let loadRequestId = 0;
 
 async function loadMemories() {
+  if (!requireActiveMemoryBank()) return;
   const requestId = ++loadRequestId;
   showRefreshIndicator(true);
 
@@ -474,10 +613,6 @@ async function loadMemories() {
     if (state.selectedTag) {
       endpoint += `&tag=${encodeURIComponent(state.selectedTag)}`;
     }
-  }
-
-  if (state.activeProfileId) {
-    endpoint += `&profileId=${encodeURIComponent(state.activeProfileId)}`;
   }
 
   const result = await fetchAPI(endpoint);
@@ -502,6 +637,7 @@ async function loadMemories() {
 }
 
 async function deleteMemoryWithLink(id, isLinked) {
+  if (!requireActiveMemoryBank()) return;
   const message = isLinked ? t("confirm-delete-pair") : t("confirm-delete");
   if (!confirm(message)) return;
 
@@ -521,6 +657,7 @@ async function deleteMemoryWithLink(id, isLinked) {
 }
 
 async function deletePromptWithLink(id, isLinked) {
+  if (!requireActiveMemoryBank()) return;
   const message = isLinked ? t("confirm-delete-prompt") : t("confirm-delete");
   if (!confirm(message)) return;
 
@@ -540,6 +677,7 @@ async function deletePromptWithLink(id, isLinked) {
 }
 
 async function bulkDelete() {
+  if (!requireActiveMemoryBank()) return;
   if (state.selectedMemories.size === 0) return;
 
   const message = t("confirm-bulk-delete", { count: state.selectedMemories.size });
@@ -641,6 +779,7 @@ function editMemory(id) {
 
 async function saveEdit(e) {
   e.preventDefault();
+  if (!requireActiveMemoryBank()) return;
 
   const id = document.getElementById("edit-id").value;
   const content = document.getElementById("edit-content").value.trim();
@@ -793,6 +932,7 @@ function formatDate(isoString) {
 }
 
 async function pinMemory(id) {
+  if (!requireActiveMemoryBank()) return;
   const result = await fetchAPI(`/api/memories/${id}/pin`, { method: "POST" });
 
   if (result.success) {
@@ -804,6 +944,7 @@ async function pinMemory(id) {
 }
 
 async function unpinMemory(id) {
+  if (!requireActiveMemoryBank()) return;
   const result = await fetchAPI(`/api/memories/${id}/unpin`, { method: "POST" });
 
   if (result.success) {
@@ -837,6 +978,7 @@ function jobTypeLabel(type) {
 }
 
 async function runCleanup() {
+  if (!requireActiveMemoryBank()) return;
   if (isJobTypeActive("cleanup_memories")) return;
 
   const confirmed = await openConfirmModal(
@@ -858,6 +1000,7 @@ async function runCleanup() {
 }
 
 async function runDeduplication() {
+  if (!requireActiveMemoryBank()) return;
   if (isJobTypeActive("deduplicate_memories")) return;
 
   const confirmed = await openConfirmModal("modal-confirm-dedup-title", "modal-confirm-dedup-desc");
@@ -933,6 +1076,7 @@ function handleJobTransitions(prev, curr) {
 }
 
 async function pollJobStatus() {
+  if (!requireActiveMemoryBank({ silent: true })) return;
   try {
     const result = await fetchAPI("/api/jobs/memory");
     if (!result.success) {
@@ -1073,6 +1217,7 @@ function startAutoRefresh() {
   }
 
   state.autoRefreshInterval = setInterval(() => {
+    if (!requireActiveMemoryBank({ silent: true })) return;
     loadStats();
     if (!state.isSearching) {
       loadMemories();
@@ -1110,6 +1255,7 @@ function toggleMigrationButtons() {
 }
 
 async function runMigration(strategy) {
+  if (!requireActiveMemoryBank()) return;
   const checkbox = document.getElementById("migration-confirm-checkbox");
 
   if (!checkbox.checked) {
@@ -1157,11 +1303,8 @@ async function runMigration(strategy) {
 }
 
 async function loadUserProfile() {
-  const viewProfileId = state.panelViewProfileId || state.activeProfileId;
-  const endpoint = viewProfileId
-    ? `/api/user-profile?profileId=${encodeURIComponent(viewProfileId)}`
-    : "/api/user-profile";
-  const result = await fetchAPI(endpoint);
+  if (!requireActiveMemoryBank()) return;
+  const result = await fetchAPI("/api/user-profile");
   if (result.success) {
     state.userProfile = result.data;
     renderUserProfile();
@@ -1352,14 +1495,13 @@ function renderUserProfile() {
 }
 
 async function showChangelog() {
+  if (!requireActiveMemoryBank()) return;
   const modal = document.getElementById("changelog-modal");
   const list = document.getElementById("changelog-list");
 
   modal.classList.remove("hidden");
   list.innerHTML = `<div class="loading">${t("loading-changelog")}</div>`;
-  const result = await fetchAPI(
-    `/api/user-profile/changelog?profileId=${state.userProfile.id}&limit=10`
-  );
+  const result = await fetchAPI("/api/user-profile/changelog?limit=10");
 
   if (result.success && result.data.length > 0) {
     list.innerHTML = result.data
@@ -1382,6 +1524,7 @@ async function showChangelog() {
 }
 
 async function refreshProfile() {
+  if (!requireActiveMemoryBank()) return;
   showToast(t("loading-profile"), "info");
   const result = await fetchAPI("/api/user-profile/refresh", {
     method: "POST",
@@ -1400,71 +1543,8 @@ async function refreshProfile() {
 // ── Profile sheet ──
 function openProfileSheet() {
   document.getElementById("profile-sheet").classList.add("sheet-open");
-  if (state.principal?.kind === "admin") {
-    loadProfilePanelSelector();
-  } else {
-    document.getElementById("profile-selector-row").style.display = "none";
-    state.panelViewProfileId = state.activeProfileId;
-    loadUserProfile();
-  }
-}
-
-async function loadProfilePanelSelector() {
-  const selectorRow = document.getElementById("profile-selector-row");
-  const select = document.getElementById("profile-panel-select");
-  selectorRow.style.display = "flex";
-
-  try {
-    const data = await fetchAPI("/api/user-profiles");
-    if (data.success) {
-      applyProfilePrincipal(data.data.principal);
-    }
-
-    if (data.success && data.data.profiles && data.data.profiles.length > 0) {
-      select.innerHTML = "";
-      data.data.profiles.forEach((p) => {
-        const opt = document.createElement("option");
-        opt.value = p.profileId;
-        opt.textContent = p.profileId;
-        select.appendChild(opt);
-      });
-
-      // Select the default or currently active profile
-      const targetId = state.activeProfileId || data.data.profiles[0].profileId;
-      if (data.data.profiles.some((p) => p.profileId === targetId)) {
-        select.value = targetId;
-      }
-      if (state.profileLocked) {
-        select.value = state.activeProfileId;
-      }
-      select.disabled = state.profileLocked;
-
-      state.panelViewProfileId = select.value;
-      loadUserProfile();
-    } else {
-      // No profiles available — show empty state
-      select.innerHTML = "";
-      select.disabled = true;
-      const container = document.getElementById("profile-content");
-      container.innerHTML = `
-        <div class="empty-state">
-          <i data-lucide="user-x" class="icon-large"></i>
-          <p>${t("profile-no-profiles")}</p>
-        </div>
-      `;
-      lucide.createIcons();
-    }
-  } catch (e) {
-    console.warn("Failed to load profile selector:", e);
-    const container = document.getElementById("profile-content");
-    container.innerHTML = `
-      <div class="empty-state">
-        <i data-lucide="alert-circle" class="icon-large"></i>
-        <p>${t("profile-load-error")}</p>
-      </div>
-    `;
-    lucide.createIcons();
-  }
+  document.getElementById("profile-selector-row").style.display = "none";
+  loadUserProfile();
 }
 
 function closeProfileSheet() {
@@ -1494,14 +1574,17 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (e.target.id === "profile-sheet") closeProfileSheet();
   });
   document.getElementById("refresh-profile-btn")?.addEventListener("click", refreshProfile);
-  document.getElementById("profile-panel-select").addEventListener("change", (e) => {
-    if (state.profileLocked) return;
-    state.panelViewProfileId = e.target.value;
-    loadUserProfile();
-  });
 
   document.getElementById("changelog-close")?.addEventListener("click", () => {
     document.getElementById("changelog-modal").classList.add("hidden");
+  });
+  document.getElementById("generated-key-close")?.addEventListener("click", () => {
+    document.getElementById("generated-key-modal").classList.add("hidden");
+  });
+  document.getElementById("generated-key-modal").addEventListener("click", (e) => {
+    if (e.target.id === "generated-key-modal") {
+      document.getElementById("generated-key-modal").classList.add("hidden");
+    }
   });
 
   // Language is auto-detected from localStorage or browser; no manual toggle button.
@@ -1523,6 +1606,15 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   document.getElementById("add-form").addEventListener("submit", addMemory);
+  document.getElementById("api-key-form").addEventListener("submit", createApiKey);
+  document.getElementById("memory-bank-form").addEventListener("submit", createMemoryBank);
+  document.getElementById("memory-bank-select").addEventListener("change", async (event) => {
+    state.activeMemoryBankId = event.target.value;
+    localStorage.setItem("opencode-memnet-active-memory-bank", state.activeMemoryBankId);
+    await loadTags();
+    await loadMemories();
+    await loadStats();
+  });
   document.getElementById("edit-form").addEventListener("submit", saveEdit);
   document.getElementById("modal-close").addEventListener("click", closeModal);
   document.getElementById("cancel-edit").addEventListener("click", closeModal);
@@ -1571,43 +1663,17 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   // ── Settings panel ──
 
-  async function populateProfileDropdown() {
+  async function loadAdminState() {
     if (!state.authKey) return;
     try {
-      const data = await fetchAPI("/api/user-profiles");
-      if (data.success) {
-        applyProfilePrincipal(data.data.principal);
+      await loadApiKeys();
+      if (!state.activeApiKeyId && state.apiKeys.length > 0) {
+        state.activeApiKeyId = state.apiKeys[0].id;
+        localStorage.setItem("opencode-memnet-active-api-key", state.activeApiKeyId);
       }
-
-      if (data.success && data.data.profiles.length > 0) {
-        const select = document.getElementById("settings-profile");
-        select.innerHTML = "";
-        data.data.profiles.forEach((p) => {
-          const opt = document.createElement("option");
-          opt.value = p.profileId;
-          opt.textContent = p.profileId;
-          select.appendChild(opt);
-        });
-        select.disabled = false;
-
-        select._populating = true;
-        const targetId = state.activeProfileId || data.data.profiles[0].profileId;
-        if (data.data.profiles.some((p) => p.profileId === targetId)) {
-          select.value = targetId;
-        } else if (data.data.profiles.length > 0) {
-          select.value = data.data.profiles[0].profileId;
-        }
-        if (!state.activeProfileId && data.data.profiles.length > 0) {
-          state.activeProfileId = data.data.profiles[0].profileId;
-        }
-        if (state.profileLocked) {
-          select.value = state.activeProfileId;
-        }
-        select.disabled = state.profileLocked;
-        select._populating = false;
-      }
+      await loadMemoryBanksForActiveKey();
     } catch (e) {
-      console.warn("Failed to load profiles:", e);
+      console.warn("Failed to load API key and Memory Bank state:", e);
     }
   }
 
@@ -1617,8 +1683,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (!panel.classList.contains("hidden")) {
       document.getElementById("settings-apikey").value = state.authKey;
       document.getElementById("settings-apikey").focus();
-      if (state.authKey) await populateProfileDropdown();
-      if (state.activeProfileId && state.memories.length === 0) {
+      if (state.authKey) await loadAdminState();
+      if (state.activeMemoryBankId && state.memories.length === 0) {
         loadMemories();
         loadStats();
       }
@@ -1627,38 +1693,19 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.getElementById("settings-close").addEventListener("click", () => {
     document.getElementById("settings-panel").classList.add("hidden");
   });
-  document.getElementById("settings-profile").addEventListener("change", () => {
-    if (document.getElementById("settings-profile")._populating) return;
-    if (state.profileLocked) return;
-    const newProfileId = document.getElementById("settings-profile").value;
-    if (state.activeProfileId === newProfileId) return;
-    state.activeProfileId = newProfileId;
-    localStorage.setItem("opencode-memnet-active-profile", newProfileId);
-    state.currentPage = 1;
-
-    // Clear current data and reload for the new profile
-    state.memories = [];
-    state.tags = { project: [] };
-    document.getElementById("memories-list").innerHTML =
-      '<div class="loading">Switching profile...</div>';
-    document.getElementById("stats-total").textContent = "Total: 0";
-    document.getElementById("section-title").textContent = "PROJECT MEMORIES (0)";
-
-    loadMemories();
-    loadStats();
-  });
   document.getElementById("settings-save").addEventListener("click", async () => {
     const key = document.getElementById("settings-apikey").value.trim();
     state.authKey = key;
     localStorage.setItem("opencode-memnet-apikey", key);
 
-    // Try to load profiles and set the default
-    await populateProfileDropdown();
+    await loadAdminState();
 
     document.getElementById("settings-panel").classList.add("hidden");
-    loadTags();
-    loadMemories();
-    loadStats();
+    if (state.activeMemoryBankId) {
+      loadTags();
+      loadMemories();
+      loadStats();
+    }
   });
   document.getElementById("settings-apikey").addEventListener("keypress", (e) => {
     if (e.key === "Enter") document.getElementById("settings-save").click();
@@ -1666,17 +1713,24 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       document.getElementById("settings-panel").classList.add("hidden");
+      document.getElementById("generated-key-modal").classList.add("hidden");
       closeProfileSheet();
       closeJobDrawer();
       closeConfirmModal(false);
     }
   });
 
-  if (state.authKey) await populateProfileDropdown();
+  if (state.authKey) await loadAdminState();
 
-  await loadTags();
-  await loadMemories();
-  await loadStats();
+  if (state.activeMemoryBankId) {
+    await loadTags();
+    await loadMemories();
+    await loadStats();
+  } else {
+    renderMemoryBanks();
+    showToast(t("toast-no-active-memory-bank"), "error");
+    showRefreshIndicator(false);
+  }
 
   // Fallback: if memories still show the loading indicator after init,
   // retry after a short delay (headless Chromium event loop edge case)

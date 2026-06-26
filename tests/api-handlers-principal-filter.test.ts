@@ -1,76 +1,91 @@
-import { describe, expect, it, mock } from "bun:test";
+import { beforeEach, describe, expect, it, mock } from "bun:test";
+import type { Principal } from "../src/services/auth-service.js";
 
 const distinctTagCalls: unknown[] = [];
+const countCalls: unknown[] = [];
+const countByTypeCalls: unknown[] = [];
 
 const memoryRepo = {
   initialize: async () => {},
   getDistinctTags: async (args?: unknown) => {
     distinctTagCalls.push(args);
     return [
-      { tag: "repo_project_alpha", profileId: "phrkr", repoId: "repo-a" },
-      { tag: "repo_project_beta", profileId: "other", repoId: "repo-b" },
-      { tag: "global_project_missing_profile", repoId: "repo-c" },
-      { tag: "not_a_scope_tag", profileId: "phrkr", repoId: "repo-a" },
+      { tag: "repo_project_alpha", apiKeyId: "key-1", memoryBankId: "bank-1" },
+      { tag: "repo_project_beta", apiKeyId: "key-2", memoryBankId: "bank-2" },
     ];
   },
-};
-
-const promptRepo = {
-  initialize: async () => {},
-};
-
-const profileRepo = {
-  initialize: async () => {},
-  getAllActiveProfiles: async () => [{ profileId: "phrkr" }, { profileId: "other" }],
-};
-
-const clientRepo = {
-  initialize: async () => {},
-};
-
-const profileApiKeyRepo = {
-  initialize: async () => {},
-  findProfileByApiKey: async () => null,
-  hasKeyForProfile: async () => false,
-  createKeyForProfile: async () => true,
-  touchLastUsed: async () => {},
+  count: async (args?: unknown) => {
+    countCalls.push(args);
+    return 3;
+  },
+  countByType: async (args?: unknown) => {
+    countByTypeCalls.push(args);
+    return { fact: 6 };
+  },
 };
 
 mock.module("../src/services/storage/factory.js", () => ({
   createMemoryRepository: () => memoryRepo,
-  createUserPromptRepository: () => promptRepo,
-  createUserProfileRepository: () => profileRepo,
-  createClientRepository: () => clientRepo,
-  createProfileApiKeyRepository: () => profileApiKeyRepo,
+  createUserPromptRepository: () => ({ initialize: async () => {} }),
+  createUserProfileRepository: () => ({ initialize: async () => {} }),
+  createClientRepository: () => ({ initialize: async () => {} }),
+  createUserApiKeyRepository: () => ({ initialize: async () => {} }),
+  createMemoryBankRepository: () => ({ initialize: async () => {} }),
   createTagRegistry: () => ({}),
 }));
 
-const { handleListTags, handleListUserProfiles } = await import("../src/services/api-handlers.js");
+const { handleListTags, handleStats } =
+  await import("../src/services/api-handlers.js?principal-filter-bank-scope");
 
-describe("api handler principal filters", () => {
-  it("passes profileId to tag storage and filters returned tags defensively", async () => {
-    const result = await handleListTags("phrkr");
+const principal: Principal = {
+  kind: "user-api-key",
+  apiKeyId: "key-1",
+  apiKeyName: "opencode",
+  apiKeyDescription: "OpenCode agent memory access",
+};
+const scope = {
+  principal,
+  memoryBank: {
+    id: "bank-1",
+    apiKeyId: "key-1",
+    apiKeyName: "opencode",
+    name: "repo",
+    description: "repo memory",
+    shortcut: "opencode>repo",
+    createdAt: 1,
+    updatedAt: 1,
+  },
+};
+
+beforeEach(() => {
+  distinctTagCalls.length = 0;
+  countCalls.length = 0;
+  countByTypeCalls.length = 0;
+});
+
+describe("api handler Memory Bank filters", () => {
+  it("passes bank ownership to tag storage and filters returned tags defensively", async () => {
+    const result = await handleListTags(scope);
 
     expect(result.success).toBe(true);
-    expect(distinctTagCalls.at(-1)).toEqual({ scope: "project", profileId: "phrkr" });
+    expect(distinctTagCalls.at(-1)).toEqual({
+      scope: "project",
+      apiKeyId: "key-1",
+      memoryBankId: "bank-1",
+    });
     expect(result.data?.project.map((tag) => tag.tag)).toEqual(["repo_project_alpha"]);
   });
 
-  it("limits user profile listing to the profile principal", async () => {
-    const result = await handleListUserProfiles({ kind: "profile", profileId: "phrkr" });
+  it("passes bank ownership into stats counters", async () => {
+    const result = await handleStats(scope);
 
-    expect(result).toEqual({
-      success: true,
-      data: { profiles: [{ profileId: "phrkr" }] },
-    });
-  });
-
-  it("keeps admin user profile listing unrestricted", async () => {
-    const result = await handleListUserProfiles({ kind: "admin" });
-
-    expect(result).toEqual({
-      success: true,
-      data: { profiles: [{ profileId: "phrkr" }, { profileId: "other" }] },
-    });
+    expect(result.success).toBe(true);
+    expect(countCalls).toEqual([
+      { scope: "user", profileId: undefined, apiKeyId: "key-1", memoryBankId: "bank-1" },
+      { scope: "project", profileId: undefined, apiKeyId: "key-1", memoryBankId: "bank-1" },
+    ]);
+    expect(countByTypeCalls).toEqual([
+      { profileId: undefined, apiKeyId: "key-1", memoryBankId: "bank-1" },
+    ]);
   });
 });

@@ -6,7 +6,6 @@ import { parseJsonc as parseJsoncFile } from "./jsonc";
 export interface CodexMemnetConfig {
   serverUrl: string;
   apiKey: string;
-  profileId?: string;
   nickname?: string;
   timeoutMs: number;
   memory: {
@@ -84,6 +83,7 @@ export function mergeConfig(
   env: ConfigEnv = process.env
 ): CodexMemnetConfig {
   const merged = deepMerge(deepMerge(DEFAULT_CONFIG, user), project);
+  delete (merged as CodexMemnetConfig & { profileId?: string }).profileId;
 
   if (!merged.serverUrl && env.OPENCODE_MEMNET_SERVER_URL) {
     merged.serverUrl = env.OPENCODE_MEMNET_SERVER_URL;
@@ -93,9 +93,6 @@ export function mergeConfig(
   }
   if (!merged.nickname && env.OPENCODE_MEMNET_NICKNAME) {
     merged.nickname = env.OPENCODE_MEMNET_NICKNAME;
-  }
-  if (!merged.profileId && env.OPENCODE_MEMNET_PROFILE_ID) {
-    merged.profileId = env.OPENCODE_MEMNET_PROFILE_ID;
   }
 
   return merged;

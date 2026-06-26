@@ -10,6 +10,8 @@ import {
   type CodexMemnetConfigInput,
 } from "../src/config";
 
+const legacyProfileEnv = ["OPENCODE", "MEMNET", "PROFILE", "ID"].join("_");
+
 describe("mergeConfig", () => {
   test("uses Codex home for the default user config path", () => {
     expect(getUserConfigPath("/home/example")).toBe("/home/example/.codex/opencode-memnet.jsonc");
@@ -111,7 +113,7 @@ describe("mergeConfig", () => {
     }
   });
 
-  test("loads optional profileId from project config", () => {
+  test("ignores legacy profileId config and environment fields", () => {
     const dir = mkdtempSync(join(tmpdir(), "codex-config-profile-"));
     const userPath = join(dir, "user.jsonc");
     const projectPath = join(dir, "project.jsonc");
@@ -125,9 +127,13 @@ describe("mergeConfig", () => {
         }`
       );
 
-      const result = loadConfigFromPaths({ userPath, projectPath, env: {} });
+      const result = loadConfigFromPaths({
+        userPath,
+        projectPath,
+        env: { [legacyProfileEnv]: "profile-env-1" },
+      });
 
-      expect(result.profileId).toBe("profile-project-1");
+      expect("profileId" in result).toBe(false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

@@ -3,10 +3,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { log, logDebug, logError } from "./logger.js";
 import { AuthMiddleware } from "./auth.js";
-import type { AuthResult, RouteKind } from "./auth.js";
-import type { ConfiguredProfile, Principal } from "./profile-auth.js";
-import { principalResponse, requireProfileIdForPrincipal } from "./profile-auth.js";
-import { createProfileApiKeyRepository } from "./storage/factory.js";
+import type { AuthResult } from "./auth.js";
+import type { AuthService, Principal } from "./auth-service.js";
+import { principalResponse } from "./auth-service.js";
 import {
   handleListTags,
   handleListMemories,
@@ -35,11 +34,17 @@ import {
   handleListUserProfiles,
   handleClientConnect,
   handleGetClientStats,
+  handleAdminCreateUserApiKey,
+  handleAdminListUserApiKeys,
+  handleCreateMemoryBankForApiKey,
+  handleListMemoryBanksForApiKey,
+  type MemoryBankRequestScope,
 } from "./api-handlers.js";
 import {
   enqueueJob,
   getJobStatus,
   getTagMigrationVirtualJob,
+  type JobScope,
 } from "./memory-maintenance-job-service.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -60,32 +65,19 @@ export function getActiveRequestCount(): number {
 }
 
 export class WebServer {
-  private static readonly CLIENT_AUTH_ROUTES = new Set([
-    "POST /api/auto-capture",
-    "POST /api/client/connect",
-    "GET /api/client/stats",
-    "POST /api/context/inject",
-    "POST /api/user-profile/learn",
-  ]);
-
   private server: ReturnType<typeof Bun.serve> | null = null;
   private config: WebServerConfig;
   private isOwner: boolean = false;
   private startPromise: Promise<void> | null = null;
   private readonly allowedOrigin: string;
-  private readonly auth: AuthMiddleware | null;
+  private readonly auth: AuthMiddleware;
+  private readonly authService: AuthService;
 
-  constructor(
-    config: WebServerConfig,
-    apiKey: string,
-    options?: {
-      configuredProfiles?: ConfiguredProfile[];
-      newUserApiKey?: string;
-    }
-  ) {
+  constructor(config: WebServerConfig, authService: AuthService) {
     this.config = config;
     this.allowedOrigin = config.allowedOrigin ?? "*";
-    this.auth = new AuthMiddleware(apiKey, options);
+    this.authService = authService;
+    this.auth = new AuthMiddleware(authService);
   }
 
   async start(): Promise<void> {
@@ -163,19 +155,26 @@ export class WebServer {
     }
   }
 
-  private getRouteKind(req: Request, path: string): RouteKind {
-    const routeKey = `${req.method.toUpperCase()} ${path}`;
-    const isPluginOnlyRoute = WebServer.CLIENT_AUTH_ROUTES.has(routeKey);
-    return req.headers.get("X-Opencode-Memnet-Client") === "plugin" && isPluginOnlyRoute
-      ? "client"
-      : "webui";
-  }
-
-  private bearerKey(req: Request): string | null {
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) return null;
-    const parts = authHeader.split(" ");
-    return parts.length === 2 && parts[0] === "Bearer" && parts[1] ? parts[1] : null;
+  private async parseOptionalBody<T extends Record<string, any> = Record<string, any>>(
+    req: Request
+  ): Promise<T> {
+    const sizeError = this.checkBodySize(req);
+    if (sizeError) {
+      throw Object.assign(new Error("Request body too large"), { status: 413 });
+    }
+    const text = await req.text();
+    if (text.length > WebServer.MAX_BODY_SIZE) {
+      throw Object.assign(new Error("Request body too large"), { status: 413 });
+    }
+    if (!text.trim()) return {} as T;
+    try {
+      return JSON.parse(text) as T;
+    } catch (e) {
+      if (e instanceof SyntaxError) {
+        throw Object.assign(new Error("Invalid JSON in request body"), { status: 400 });
+      }
+      throw e;
+    }
   }
 
   private async authenticateApiRequest(req: Request, path: string): Promise<AuthResult | Response> {
@@ -185,25 +184,7 @@ export class WebServer {
     if (!path.startsWith("/api/")) {
       return { principal: { kind: "admin" } };
     }
-    if (!this.auth) {
-      return this.jsonResponse({ success: false, error: "Authentication is not configured" }, 401);
-    }
-    const result = this.auth.authenticate(req, this.getRouteKind(req, path));
-    if (!(result instanceof Response)) return result;
-    if (result.status !== 401) return result;
-
-    const key = this.bearerKey(req);
-    if (!key) return result;
-    try {
-      const profileApiKeyRepo = createProfileApiKeyRepository();
-      const generatedProfile = await profileApiKeyRepo.findProfileByApiKey(key);
-      if (!generatedProfile) return result;
-      await profileApiKeyRepo.touchLastUsed(generatedProfile.profileId);
-      return { principal: { kind: "profile", profileId: generatedProfile.profileId } };
-    } catch (error) {
-      logError("Generated profile key lookup failed", { error: String(error) });
-      return result;
-    }
+    return this.auth.authenticate(req);
   }
 
   private profileIdForRequest(
@@ -211,7 +192,18 @@ export class WebServer {
     requestedProfileId: string | undefined,
     options: { defaultProfileId?: string; requireAdminProfileId?: boolean } = {}
   ): string {
-    return requireProfileIdForPrincipal(principal, requestedProfileId, options);
+    if (principal.kind === "user-api-key") {
+      throw Object.assign(new Error("User API keys require Memory Bank scoped routes"), {
+        status: 403,
+      });
+    }
+    const profileId = requestedProfileId ?? options.defaultProfileId;
+    if (!profileId && options.requireAdminProfileId) {
+      throw Object.assign(new Error("Admin requests require an explicit profileId"), {
+        status: 403,
+      });
+    }
+    return profileId ?? "";
   }
 
   private applyPrincipalProfileToBody<T extends Record<string, any>>(
@@ -225,12 +217,60 @@ export class WebServer {
     };
   }
 
-  private deriveJobScope(
+  private async deriveJobScope(
+    req: Request,
+    principal: Principal,
+    body: Record<string, any> = {}
+  ): Promise<JobScope> {
+    if (principal.kind === "user-api-key") {
+      const scope = await this.memoryBankScope(req, principal);
+      return {
+        kind: "memory-bank",
+        apiKeyId: scope.memoryBank.apiKeyId,
+        memoryBankId: scope.memoryBank.id,
+      };
+    }
+    if (body.scope === "all" || body.global === true) {
+      return { kind: "all" };
+    }
+    if (body.profileId) {
+      return { kind: "profile", profileId: String(body.profileId) };
+    }
+    throw Object.assign(new Error("Admin maintenance routes require explicit scope"), {
+      status: 400,
+    });
+  }
+
+  private async migrationScopeForRequest(
+    req: Request,
+    principal: Principal,
+    body: Record<string, any> = {}
+  ): Promise<MemoryBankRequestScope | undefined> {
+    if (principal.kind === "user-api-key") {
+      return this.memoryBankScope(req, principal);
+    }
+    if (body.scope === "all" || body.global === true) {
+      return undefined;
+    }
+    throw Object.assign(new Error("Admin tag migration routes require explicit global scope"), {
+      status: 400,
+    });
+  }
+
+  private async memoryBankScope(
+    req: Request,
     principal: Principal
-  ): { kind: "all" } | { kind: "profile"; profileId: string } {
-    return principal.kind === "profile"
-      ? { kind: "profile", profileId: principal.profileId }
-      : { kind: "all" };
+  ): Promise<MemoryBankRequestScope> {
+    const url = new URL(req.url);
+    const bankId =
+      req.headers.get("X-Memory-Bank-ID") || url.searchParams.get("memoryBankId") || undefined;
+    const memoryBank = await this.authService.requireBankForPrincipal(principal, bankId);
+    return { principal, memoryBank };
+  }
+
+  private requireAdmin(principal: Principal): Response | null {
+    if (principal.kind === "admin") return null;
+    return this.jsonResponse({ success: false, error: "Admin key required" }, 403);
   }
 
   // --- HTTP request handling ---
@@ -265,10 +305,10 @@ export class WebServer {
     if (method === "OPTIONS") {
       const headers = new Headers();
       headers.set("Access-Control-Allow-Origin", this.allowedOrigin);
-      headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+      headers.set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
       headers.set(
         "Access-Control-Allow-Headers",
-        "Content-Type, Authorization, X-Client-ID, X-Opencode-Memnet-Client"
+        "Content-Type, Authorization, X-Client-ID, X-Opencode-Memnet-Client, X-Memory-Bank-ID"
       );
       headers.set("Access-Control-Max-Age", "86400");
       if (this.allowedOrigin !== "*") headers.set("Vary", "Origin");
@@ -318,9 +358,119 @@ export class WebServer {
         return this.jsonResponse(handleHealthDetailed());
       }
 
+      if (path === "/api/admin/api-keys" && method === "GET") {
+        const forbidden = this.requireAdmin(principal);
+        if (forbidden) return forbidden;
+        const result = await handleAdminListUserApiKeys(this.authService);
+        return this.jsonResponse(result);
+      }
+
+      if (path === "/api/admin/api-keys" && method === "POST") {
+        const forbidden = this.requireAdmin(principal);
+        if (forbidden) return forbidden;
+        const body = await this.parseBody(req);
+        const result = await handleAdminCreateUserApiKey(this.authService, body);
+        return this.jsonResponse(result);
+      }
+
+      const adminBankMatch = path.match(/^\/api\/admin\/api-keys\/([^/]+)\/memory-banks$/);
+      if (adminBankMatch && (method === "GET" || method === "POST")) {
+        const forbidden = this.requireAdmin(principal);
+        if (forbidden) return forbidden;
+        const apiKeyId = decodeURIComponent(adminBankMatch[1]!);
+        const result =
+          method === "GET"
+            ? await handleListMemoryBanksForApiKey(this.authService, apiKeyId)
+            : await handleCreateMemoryBankForApiKey(
+                this.authService,
+                apiKeyId,
+                await this.parseBody(req)
+              );
+        return this.jsonResponse(result);
+      }
+
+      const adminApiKeyMatch = path.match(/^\/api\/admin\/api-keys\/([^/]+)$/);
+      if (adminApiKeyMatch && method === "PATCH") {
+        const forbidden = this.requireAdmin(principal);
+        if (forbidden) return forbidden;
+        const apiKeyId = decodeURIComponent(adminApiKeyMatch[1]!);
+        const body = await this.parseBody(req);
+        const apiKey = await this.authService.updateUserApiKey({
+          ...body,
+          id: apiKeyId,
+        });
+        if (!apiKey) return this.jsonResponse({ success: false, error: "API key not found" }, 404);
+        return this.jsonResponse({ success: true, data: { apiKey } });
+      }
+
+      const adminApiKeyRevokeMatch = path.match(/^\/api\/admin\/api-keys\/([^/]+)\/revoke$/);
+      if (adminApiKeyRevokeMatch && method === "POST") {
+        const forbidden = this.requireAdmin(principal);
+        if (forbidden) return forbidden;
+        const apiKeyId = decodeURIComponent(adminApiKeyRevokeMatch[1]!);
+        const revoked = await this.authService.revokeUserApiKey(apiKeyId);
+        return this.jsonResponse({ success: true, data: { revoked } });
+      }
+
+      const adminMemoryBankMatch = path.match(/^\/api\/admin\/memory-banks\/([^/]+)$/);
+      if (adminMemoryBankMatch && method === "PATCH") {
+        const forbidden = this.requireAdmin(principal);
+        if (forbidden) return forbidden;
+        const memoryBankId = decodeURIComponent(adminMemoryBankMatch[1]!);
+        const body = await this.parseBody(req);
+        const memoryBank = await this.authService.updateMemoryBank({
+          ...body,
+          id: memoryBankId,
+        });
+        if (!memoryBank) {
+          return this.jsonResponse({ success: false, error: "Memory Bank not found" }, 404);
+        }
+        return this.jsonResponse({ success: true, data: { memoryBank } });
+      }
+
+      if (adminMemoryBankMatch && method === "DELETE") {
+        const forbidden = this.requireAdmin(principal);
+        if (forbidden) return forbidden;
+        const memoryBankId = decodeURIComponent(adminMemoryBankMatch[1]!);
+        try {
+          const deleted = await this.authService.deleteMemoryBank(memoryBankId);
+          if (!deleted) {
+            return this.jsonResponse({ success: false, error: "Memory Bank is not empty" }, 409);
+          }
+          return this.jsonResponse({ success: true, data: { deleted } });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.toLowerCase().includes("not empty")) {
+            return this.jsonResponse({ success: false, error: message }, 409);
+          }
+          throw error;
+        }
+      }
+
+      if (path === "/api/memory-banks" && method === "GET") {
+        if (principal.kind !== "user-api-key") {
+          return this.jsonResponse({ success: false, error: "User API key required" }, 403);
+        }
+        const result = await handleListMemoryBanksForApiKey(this.authService, principal.apiKeyId);
+        return this.jsonResponse(result);
+      }
+
+      if (path === "/api/memory-banks" && method === "POST") {
+        if (principal.kind !== "user-api-key") {
+          return this.jsonResponse({ success: false, error: "User API key required" }, 403);
+        }
+        const body = await this.parseBody(req);
+        const result = await handleCreateMemoryBankForApiKey(
+          this.authService,
+          principal.apiKeyId,
+          body
+        );
+        return this.jsonResponse(result);
+      }
+
       if (path === "/api/tags" && method === "GET") {
-        const profileId = principal.kind === "profile" ? principal.profileId : undefined;
-        const result = await handleListTags(profileId);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleListTags(scope);
         return this.jsonResponse(result);
       }
 
@@ -332,28 +482,16 @@ export class WebServer {
         const page = parseInt(url.searchParams.get("page") || "1") || 1;
         const pageSize = parseInt(url.searchParams.get("pageSize") || "20") || 20;
         const includePrompts = url.searchParams.get("includePrompts") !== "false";
-        const requestedProfileId = url.searchParams.get("profileId") || undefined;
-        const profileId = this.profileIdForRequest(principal, requestedProfileId, {
-          defaultProfileId: "default",
-        });
         const repoId = url.searchParams.get("repoId") || undefined;
-        const result = await handleListMemories(
-          tag,
-          page,
-          pageSize,
-          includePrompts,
-          profileId,
-          repoId
-        );
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleListMemories(tag, page, pageSize, includePrompts, scope, repoId);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/memories" && method === "POST") {
         const body = await this.parseBody(req);
-        const scopedBody = this.applyPrincipalProfileToBody(principal, body, {
-          requireAdminProfileId: true,
-        });
-        const result = await handleAddMemory(scopedBody);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleAddMemory(body, scope);
         return this.jsonResponse(result);
       }
 
@@ -364,7 +502,8 @@ export class WebServer {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
         const cascade = url.searchParams.get("cascade") === "true";
-        const result = await handleDeleteMemory(id, cascade, principal);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleDeleteMemory(id, cascade, scope);
         return this.jsonResponse(result);
       }
 
@@ -375,14 +514,16 @@ export class WebServer {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
         const body = await this.parseBody(req);
-        const result = await handleUpdateMemory(id, body, principal);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleUpdateMemory(id, body, scope);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/memories/bulk-delete" && method === "POST") {
         const body = await this.parseBody(req);
         const cascade = body.cascade !== false;
-        const result = await handleBulkDelete(body.ids || [], cascade, principal);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleBulkDelete(body.ids || [], cascade, scope);
         return this.jsonResponse(result);
       }
 
@@ -394,11 +535,8 @@ export class WebServer {
         const tag = url.searchParams.get("tag") || undefined;
         const page = parseInt(url.searchParams.get("page") || "1") || 1;
         const pageSize = parseInt(url.searchParams.get("pageSize") || "20") || 20;
-        const requestedProfileId = url.searchParams.get("profileId") || undefined;
-        const profileId = this.profileIdForRequest(principal, requestedProfileId, {
-          defaultProfileId: "default",
-        });
         const repoId = url.searchParams.get("repoId") || undefined;
+        const scope = await this.memoryBankScope(req, principal);
 
         if (query && query.length > 1000) {
           return new Response(
@@ -414,13 +552,13 @@ export class WebServer {
           return this.jsonResponse({ success: false, error: "query parameter required" });
         }
 
-        const result = await handleSearch(query, tag, page, pageSize, profileId, repoId);
+        const result = await handleSearch(query, tag, page, pageSize, scope, repoId);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/stats" && method === "GET") {
-        const profileFilter = principal.kind === "profile" ? principal.profileId : undefined;
-        const result = await handleStats(profileFilter);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleStats(scope);
         return this.jsonResponse(result);
       }
 
@@ -429,7 +567,8 @@ export class WebServer {
         if (!id) {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
-        const result = await handlePinMemory(id, principal);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handlePinMemory(id, scope);
         return this.jsonResponse(result);
       }
 
@@ -438,24 +577,34 @@ export class WebServer {
         if (!id) {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
-        const result = await handleUnpinMemory(id, principal);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleUnpinMemory(id, scope);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/migration/tags/detect" && method === "GET") {
-        const result = await handleDetectTagMigration();
+        const scope = await this.migrationScopeForRequest(req, principal, {
+          scope: url.searchParams.get("scope"),
+          global: url.searchParams.get("global") === "true",
+        });
+        const result = await handleDetectTagMigration(scope);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/migration/tags/reset" && method === "POST") {
+        const body = await this.parseOptionalBody(req);
+        await this.migrationScopeForRequest(req, principal, body);
+        const adminError = this.requireAdmin(principal);
+        if (adminError) return adminError;
         const result = await handleResetTagMigration();
         return this.jsonResponse(result);
       }
 
       if (path === "/api/migration/tags/run-batch" && method === "POST") {
-        const body = await this.parseBody(req);
+        const body = await this.parseOptionalBody(req);
         const batchSize = body?.batchSize || 5;
-        const result = await handleRunTagMigrationBatch(batchSize);
+        const scope = await this.migrationScopeForRequest(req, principal, body);
+        const result = await handleRunTagMigrationBatch(batchSize, scope);
         return this.jsonResponse(result);
       }
 
@@ -471,14 +620,16 @@ export class WebServer {
           return this.jsonResponse({ success: false, error: "Invalid ID" });
         }
         const cascade = url.searchParams.get("cascade") === "true";
-        const result = await handleDeletePrompt(id, cascade, principal);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleDeletePrompt(id, cascade, scope);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/prompts/bulk-delete" && method === "POST") {
         const body = await this.parseBody(req);
         const cascade = body.cascade !== false;
-        const result = await handleBulkDeletePrompts(body.ids || [], cascade, principal);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleBulkDeletePrompts(body.ids || [], cascade, scope);
         return this.jsonResponse(result);
       }
 
@@ -487,24 +638,32 @@ export class WebServer {
           return this.jsonResponse({ success: false, error: "Use profileId, not userId" }, 400);
         }
         const requestedProfileId = url.searchParams.get("profileId") || undefined;
-        const profileId =
-          principal.kind === "admin"
-            ? requestedProfileId
-            : this.profileIdForRequest(principal, requestedProfileId);
-        const result = await handleGetUserProfile(profileId);
+        const result =
+          principal.kind === "user-api-key"
+            ? await handleGetUserProfile(await this.memoryBankScope(req, principal))
+            : await handleGetUserProfile(requestedProfileId);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/user-profile/changelog" && method === "GET") {
-        const profileId = this.profileIdForRequest(
-          principal,
-          url.searchParams.get("profileId") || undefined,
-          {
-            requireAdminProfileId: true,
-          }
-        );
         const limit = parseInt(url.searchParams.get("limit") || "5");
-        const result = await handleGetProfileChangelog(profileId, limit);
+        const result =
+          principal.kind === "user-api-key"
+            ? await handleGetProfileChangelog(
+                undefined,
+                limit,
+                await this.memoryBankScope(req, principal)
+              )
+            : await handleGetProfileChangelog(
+                this.profileIdForRequest(
+                  principal,
+                  url.searchParams.get("profileId") || undefined,
+                  {
+                    requireAdminProfileId: true,
+                  }
+                ),
+                limit
+              );
         return this.jsonResponse(result);
       }
 
@@ -513,7 +672,13 @@ export class WebServer {
         if (!changelogId) {
           return this.jsonResponse({ success: false, error: "changelogId parameter required" });
         }
-        const result = await handleGetProfileSnapshot(changelogId, principal);
+        const result =
+          principal.kind === "user-api-key"
+            ? await handleGetProfileSnapshot(
+                changelogId,
+                await this.memoryBankScope(req, principal)
+              )
+            : await handleGetProfileSnapshot(changelogId, principal);
         return this.jsonResponse(result);
       }
 
@@ -522,37 +687,37 @@ export class WebServer {
         if (body.userId) {
           return this.jsonResponse({ success: false, error: "Use profileId, not userId" }, 400);
         }
-        const profileId = this.profileIdForRequest(principal, body.profileId, {
-          requireAdminProfileId: true,
-        });
-        const result = await handleRefreshProfile(profileId);
+        const result =
+          principal.kind === "user-api-key"
+            ? await handleRefreshProfile(await this.memoryBankScope(req, principal))
+            : await handleRefreshProfile(
+                this.profileIdForRequest(principal, body.profileId, {
+                  requireAdminProfileId: true,
+                })
+              );
         return this.jsonResponse(result);
       }
 
       if (path === "/api/context/inject" && method === "POST") {
         const body = await this.parseBody(req);
-        const scopedBody = this.applyPrincipalProfileToBody(principal, body, {
-          requireAdminProfileId: true,
-        });
-        const result = await (await import("./api-handlers.js")).handleContextInject(scopedBody);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await (await import("./api-handlers.js")).handleContextInject(body, scope);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/auto-capture" && method === "POST") {
         const body = await this.parseBody(req);
-        const scopedBody = this.applyPrincipalProfileToBody(principal, body, {
-          requireAdminProfileId: true,
-        });
-        const result = await (await import("./api-handlers.js")).handleAutoCapture(scopedBody);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await (await import("./api-handlers.js")).handleAutoCapture(body, scope);
         return this.jsonResponse(result);
       }
 
       if (path === "/api/user-profile/learn" && method === "POST") {
         const body = await this.parseBody(req);
-        const scopedBody = this.applyPrincipalProfileToBody(principal, body, {
-          requireAdminProfileId: true,
-        });
-        const result = await (await import("./api-handlers.js")).handleUserProfileLearn(scopedBody);
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await (
+          await import("./api-handlers.js")
+        ).handleUserProfileLearn(body, scope);
         return this.jsonResponse(result);
       }
 
@@ -562,7 +727,8 @@ export class WebServer {
       }
 
       if (path === "/api/cleanup" && method === "POST") {
-        const scope = this.deriveJobScope(principal);
+        const body = await this.parseOptionalBody(req);
+        const scope = await this.deriveJobScope(req, principal, body);
         const result = enqueueJob("cleanup_memories", scope);
         if (!result.success) {
           return this.jsonResponse({ success: false, error: result.error, code: result.code }, 409);
@@ -579,7 +745,8 @@ export class WebServer {
       }
 
       if (path === "/api/deduplicate" && method === "POST") {
-        const scope = this.deriveJobScope(principal);
+        const body = await this.parseOptionalBody(req);
+        const scope = await this.deriveJobScope(req, principal, body);
         const result = enqueueJob("deduplicate_memories", scope);
         if (!result.success) {
           return this.jsonResponse({ success: false, error: result.error, code: result.code }, 409);
@@ -597,7 +764,8 @@ export class WebServer {
 
       // Tag normalization job
       if (path === "/api/tags/normalize" && method === "POST") {
-        const scope = this.deriveJobScope(principal);
+        const body = await this.parseOptionalBody(req);
+        const scope = await this.deriveJobScope(req, principal, body);
         const result = enqueueJob("normalize_memory_tags", scope);
         if (!result.success) {
           return this.jsonResponse({ success: false, error: result.error, code: result.code }, 409);
@@ -618,7 +786,16 @@ export class WebServer {
         try {
           const { createTagRegistry } = await import("./storage/factory.js");
           const registry = createTagRegistry();
-          const tags = await registry.getAllCanonicalTags();
+          const scope =
+            principal.kind === "user-api-key"
+              ? await this.memoryBankScope(req, principal)
+              : undefined;
+          const tags = await registry.getAllCanonicalTags(
+            500,
+            scope
+              ? { apiKeyId: scope.memoryBank.apiKeyId, memoryBankId: scope.memoryBank.id }
+              : undefined
+          );
           return this.jsonResponse({ success: true, data: { tags } });
         } catch (err) {
           return this.jsonResponse({ success: false, error: String(err) }, 500);
@@ -657,7 +834,7 @@ export class WebServer {
       // ── Client Identity ──
       if (path === "/api/client/connect" && method === "POST") {
         const body = await this.parseBody(req);
-        const result = await handleClientConnect(body, principal);
+        const result = await handleClientConnect(body, principal, this.authService);
         return this.jsonResponse(result);
       }
 
@@ -739,9 +916,9 @@ export class WebServer {
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": this.allowedOrigin,
-      "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+      "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
       "Access-Control-Allow-Headers":
-        "Content-Type, Authorization, X-Client-ID, X-Opencode-Memnet-Client",
+        "Content-Type, Authorization, X-Client-ID, X-Opencode-Memnet-Client, X-Memory-Bank-ID",
     };
 
     if (this.allowedOrigin !== "*") {
@@ -758,13 +935,9 @@ export class WebServer {
 
 export async function startWebServer(
   config: WebServerConfig,
-  apiKey: string,
-  options?: {
-    configuredProfiles?: ConfiguredProfile[];
-    newUserApiKey?: string;
-  }
+  authService: AuthService
 ): Promise<WebServer> {
-  const server = new WebServer(config, apiKey, options);
+  const server = new WebServer(config, authService);
   await server.start();
   return server;
 }

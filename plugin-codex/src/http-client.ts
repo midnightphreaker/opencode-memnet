@@ -15,17 +15,44 @@ export interface RemoteMemoryClientOptions {
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 type QueryValue = string | number | boolean | null | undefined;
 type QueryParams = Record<string, QueryValue>;
+export type RequestOptions = { timeoutMs?: number; memoryBankId?: string };
 
 export interface MemoryQueryParams {
   tag?: string;
   pageSize?: number;
-  profileId?: string;
   repoId?: string;
   scope?: "project" | "all-projects";
 }
 
 export interface SearchMemoryParams extends MemoryQueryParams {
   q: string;
+}
+
+export interface MemoryBankSummary {
+  id: string;
+  apiKeyId: string;
+  name: string;
+  description: string;
+  shortcut: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClientConnectResponse {
+  principal: {
+    kind: "user-api-key";
+    apiKeyId: string;
+    apiKeyName: string;
+    apiKeyDescription: string;
+  };
+  memoryBanks: MemoryBankSummary[];
+  requiresMemoryBank: boolean;
+  stats?: {
+    memoryBankId: string;
+    totalMemories: number;
+    memoriesToday: number;
+    totalPrompts: number;
+  };
 }
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -51,7 +78,7 @@ export class RemoteMemoryClient {
     path: string,
     body?: unknown,
     query?: QueryParams,
-    options: { timeoutMs?: number } = {},
+    options: RequestOptions = {}
   ): Promise<ApiResponse<T>> {
     const url = new URL(`${this.baseUrl}${path}`);
     for (const [key, value] of Object.entries(query ?? {})) {
@@ -71,6 +98,7 @@ export class RemoteMemoryClient {
           "Content-Type": "application/json",
           Authorization: `Bearer ${this.apiKey}`,
           "X-Client-ID": this.clientId,
+          ...(options.memoryBankId ? { "X-Memory-Bank-ID": options.memoryBankId } : {}),
         },
         body: body === undefined ? undefined : JSON.stringify(body),
         signal: controller.signal,
@@ -108,18 +136,17 @@ export class RemoteMemoryClient {
     return message.split(this.apiKey).join("[redacted]");
   }
 
-  clientConnect(metadata: Record<string, unknown>, params: { profileId?: string } = {}) {
-    return this.request<{
-      firstTime: boolean;
-      daysSinceLastSeen: number | null;
-      welcomeBack: boolean;
-      stats: { totalMemories: number; memoriesToday: number; totalPrompts: number } | null;
-      principal?: { kind: "admin" } | { kind: "profile"; profileId: string; displayName?: string };
-      enrollment?: { profileId: string; apiKey: string };
-    }>("POST", "/api/client/connect", {
+  clientConnect(
+    body: {
+      metadata?: Record<string, unknown>;
+      includeStats?: boolean;
+      memoryBankId?: string;
+      [key: string]: unknown;
+    } = {}
+  ) {
+    return this.request<ClientConnectResponse>("POST", "/api/client/connect", {
       clientId: this.clientId,
-      profileId: params.profileId,
-      metadata,
+      ...body,
     });
   }
 
@@ -133,103 +160,140 @@ export class RemoteMemoryClient {
     }>("GET", "/api/client/stats", undefined, { clientId: this.clientId });
   }
 
-  getContext(params: {
-    sessionID?: string;
-    projectTag: string;
-    profileId?: string;
-    repoId?: string;
-    maxMemories?: number;
-    excludeCurrentSession?: boolean;
-    maxAgeDays?: number | null;
-  }) {
+  getContext(
+    params: {
+      sessionID?: string;
+      projectTag: string;
+      repoId?: string;
+      maxMemories?: number;
+      excludeCurrentSession?: boolean;
+      maxAgeDays?: number | null;
+    },
+    options: RequestOptions = {}
+  ) {
     return this.request<{ context: string; memories: unknown[]; profileInjected: boolean }>(
       "POST",
       "/api/context/inject",
       params,
+      undefined,
+      options
     );
   }
 
-  addMemory(body: {
-    content: string;
-    containerTag: string;
-    type?: string;
-    tags?: string[];
-    profileId?: string;
-    repoId?: string;
-    [key: string]: unknown;
-  }) {
-    return this.request<{ id: string }>("POST", "/api/memories", body);
+  addMemory(
+    body: {
+      content: string;
+      containerTag: string;
+      type?: string;
+      tags?: string[];
+      repoId?: string;
+      [key: string]: unknown;
+    },
+    options: RequestOptions = {}
+  ) {
+    return this.request<{ id: string }>("POST", "/api/memories", body, undefined, options);
   }
 
-  deleteMemory(memoryId: string) {
-    return this.request<void>("DELETE", `/api/memories/${encodeURIComponent(memoryId)}`);
+  deleteMemory(memoryId: string, options: RequestOptions = {}) {
+    return this.request<void>(
+      "DELETE",
+      `/api/memories/${encodeURIComponent(memoryId)}`,
+      undefined,
+      undefined,
+      options
+    );
   }
 
-  listMemories(params: MemoryQueryParams): Promise<ApiResponse<unknown>>;
+  listMemories(params: MemoryQueryParams, options?: RequestOptions): Promise<ApiResponse<unknown>>;
   listMemories(
     tag: string,
     pageSize?: number,
     scope?: "project" | "all-projects",
-    params?: { profileId?: string; repoId?: string },
+    params?: { repoId?: string },
+    options?: RequestOptions
   ): Promise<ApiResponse<unknown>>;
   listMemories(
     tagOrParams: string | MemoryQueryParams,
-    pageSize = 20,
+    pageSizeOrOptions: number | RequestOptions = 20,
     scope: "project" | "all-projects" = "project",
-    params: { profileId?: string; repoId?: string } = {},
+    params: { repoId?: string } = {},
+    options: RequestOptions = {}
   ) {
+    const requestOptions =
+      typeof tagOrParams === "string"
+        ? options
+        : isRequestOptions(pageSizeOrOptions)
+          ? pageSizeOrOptions
+          : {};
+    const pageSize = typeof pageSizeOrOptions === "number" ? pageSizeOrOptions : 20;
     const query =
       typeof tagOrParams === "string"
         ? buildMemoryQuery({ tag: tagOrParams, pageSize, scope, ...params })
         : buildMemoryQuery(tagOrParams);
-    return this.request("GET", "/api/memories", undefined, query);
+    return this.request("GET", "/api/memories", undefined, query, requestOptions);
   }
 
-  searchMemories(params: SearchMemoryParams): Promise<ApiResponse<unknown>>;
+  searchMemories(
+    params: SearchMemoryParams,
+    options?: RequestOptions
+  ): Promise<ApiResponse<unknown>>;
   searchMemories(
     q: string,
     tag: string,
     pageSize?: number,
     scope?: "project" | "all-projects",
-    params?: { profileId?: string; repoId?: string },
+    params?: { repoId?: string },
+    options?: RequestOptions
   ): Promise<ApiResponse<unknown>>;
   searchMemories(
     qOrParams: string | SearchMemoryParams,
-    tag?: string,
+    tagOrOptions?: string | RequestOptions,
     pageSize = 20,
     scope: "project" | "all-projects" = "project",
-    params: { profileId?: string; repoId?: string } = {},
+    params: { repoId?: string } = {},
+    options: RequestOptions = {}
   ) {
+    const requestOptions =
+      typeof qOrParams === "string" ? options : isRequestOptions(tagOrOptions) ? tagOrOptions : {};
+    const tag = typeof tagOrOptions === "string" ? tagOrOptions : undefined;
     const query =
       typeof qOrParams === "string"
         ? buildMemoryQuery({ q: qOrParams, tag, pageSize, scope, ...params })
         : buildMemoryQuery(qOrParams);
-    return this.request("GET", "/api/search", undefined, query);
+    return this.request("GET", "/api/search", undefined, query, requestOptions);
   }
 
-  getUserProfile(profileId?: string) {
-    return this.request("GET", "/api/user-profile", undefined, profileId ? { profileId } : undefined);
+  getUserProfile(options: RequestOptions = {}) {
+    return this.request("GET", "/api/user-profile", undefined, undefined, options);
   }
 
-  autoCapture(body: {
-    sessionID: string;
-    projectTag: string;
-    profileId?: string;
-    repoId?: string;
-    projectMetadata?: Record<string, unknown>;
-    conversationMessages?: unknown[];
-    userPrompt?: string;
-    promptMessageId?: string;
-    [key: string]: unknown;
-  }) {
+  autoCapture(
+    body: {
+      sessionID: string;
+      projectTag: string;
+      repoId?: string;
+      projectMetadata?: Record<string, unknown>;
+      conversationMessages?: unknown[];
+      userPrompt?: string;
+      promptMessageId?: string;
+      [key: string]: unknown;
+    },
+    options: RequestOptions = {}
+  ) {
     return this.request<{ captured: boolean; memoryId?: string }>(
       "POST",
       "/api/auto-capture",
       body,
       undefined,
-      { timeoutMs: AUTO_CAPTURE_TIMEOUT_MS },
+      { timeoutMs: AUTO_CAPTURE_TIMEOUT_MS, memoryBankId: options.memoryBankId }
     );
   }
+}
+
+function isRequestOptions(value: unknown): value is RequestOptions {
+  return (
+    value !== null && typeof value === "object" && ("memoryBankId" in value || "timeoutMs" in value)
+  );
 }
 
 function buildMemoryQuery(params: MemoryQueryParams & { q?: string }): QueryParams {
@@ -238,7 +302,6 @@ function buildMemoryQuery(params: MemoryQueryParams & { q?: string }): QueryPara
     q: params.q,
     tag: allProjects ? undefined : params.tag,
     pageSize: params.pageSize,
-    profileId: params.profileId,
     repoId: allProjects ? undefined : params.repoId,
   };
 }

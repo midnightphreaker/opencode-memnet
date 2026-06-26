@@ -4,7 +4,7 @@ import { assertConfigured } from "../config";
 import { buildClientMetadata } from "../identity";
 import { isFullyPrivate, stripPrivateContent } from "../privacy";
 import { getTags, type TagInfo } from "../tags";
-import { suggestMemoryBank } from "../../../shared/memory-bank";
+import { selectMemoryBank, suggestMemoryBank } from "../../../shared/memory-bank";
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -32,6 +32,9 @@ type ActiveMemoryBankContext = {
 };
 
 const NO_ACTIVE_MEMORY_BANK = "No active Memory Bank. Create one before using memory operations.";
+const CONFIGURED_MEMORY_BANK_UNAVAILABLE =
+  "Configured Memory Bank is not available for this API key.";
+const ACTIVE_MEMORY_BANK_CACHE_TTL_MS = 30_000;
 
 function fail(error: string): ToolFailure {
   return { success: false, error };
@@ -113,8 +116,12 @@ async function connectAndSelectMemoryBank(
     return fail(connect.error ?? "connect failed");
   }
 
-  const memoryBank = connect.data?.memoryBanks?.[0];
+  const memoryBanks = connect.data?.memoryBanks ?? [];
+  const memoryBank = selectMemoryBank(memoryBanks, ctx.config.memoryBankId);
   if (!memoryBank) {
+    if (ctx.config.memoryBankId && memoryBanks.length > 0) {
+      return fail(CONFIGURED_MEMORY_BANK_UNAVAILABLE);
+    }
     return fail(NO_ACTIVE_MEMORY_BANK);
   }
 
@@ -126,6 +133,22 @@ function isMemoryBankFailure(value: ActiveMemoryBankContext | ToolFailure): valu
 }
 
 export function createToolHandlers(ctx: HandlerContext) {
+  let cachedActive: ActiveMemoryBankContext | null = null;
+  let cachedActiveExpiresAt = 0;
+
+  async function activeMemoryBank(): Promise<ActiveMemoryBankContext | ToolFailure> {
+    const now = Date.now();
+    if (cachedActive && cachedActiveExpiresAt > now) {
+      return cachedActive;
+    }
+    const active = await connectAndSelectMemoryBank(ctx);
+    if (!isMemoryBankFailure(active)) {
+      cachedActive = active;
+      cachedActiveExpiresAt = now + ACTIVE_MEMORY_BANK_CACHE_TTL_MS;
+    }
+    return active;
+  }
+
   return {
     async memory_connect(args: { nickname?: string } = {}): Promise<ToolResult> {
       const http = client(ctx);
@@ -138,6 +161,11 @@ export function createToolHandlers(ctx: HandlerContext) {
       const response = await http.clientConnect(buildConnectBody(ctx, tags, nickname));
       if (!response.success) {
         return response;
+      }
+      const selected = selectMemoryBank(response.data?.memoryBanks ?? [], ctx.config.memoryBankId);
+      if (selected) {
+        cachedActive = { http, tags, memoryBank: selected };
+        cachedActiveExpiresAt = Date.now() + ACTIVE_MEMORY_BANK_CACHE_TTL_MS;
       }
       if (!response.data?.memoryBanks?.length) {
         return {
@@ -154,7 +182,7 @@ export function createToolHandlers(ctx: HandlerContext) {
     async memory_get_context(
       args: { sessionID?: string; maxMemories?: number } = {}
     ): Promise<ToolResult> {
-      const active = await connectAndSelectMemoryBank(ctx);
+      const active = await activeMemoryBank();
       if (isMemoryBankFailure(active)) {
         return active;
       }
@@ -186,7 +214,7 @@ export function createToolHandlers(ctx: HandlerContext) {
         return fail("Private content blocked");
       }
 
-      const active = await connectAndSelectMemoryBank(ctx);
+      const active = await activeMemoryBank();
       if (isMemoryBankFailure(active)) {
         return active;
       }
@@ -210,7 +238,7 @@ export function createToolHandlers(ctx: HandlerContext) {
         return fail("query required");
       }
 
-      const active = await connectAndSelectMemoryBank(ctx);
+      const active = await activeMemoryBank();
       if (isMemoryBankFailure(active)) {
         return active;
       }
@@ -230,7 +258,7 @@ export function createToolHandlers(ctx: HandlerContext) {
     },
 
     async memory_list(args: { limit?: number } = {}): Promise<ToolResult> {
-      const active = await connectAndSelectMemoryBank(ctx);
+      const active = await activeMemoryBank();
       if (isMemoryBankFailure(active)) {
         return active;
       }
@@ -253,7 +281,7 @@ export function createToolHandlers(ctx: HandlerContext) {
         return fail("memoryId required");
       }
 
-      const active = await connectAndSelectMemoryBank(ctx);
+      const active = await activeMemoryBank();
       if (isMemoryBankFailure(active)) {
         return active;
       }
@@ -277,7 +305,10 @@ export function createToolHandlers(ctx: HandlerContext) {
         data: {
           principal: response.data?.principal,
           memoryBanks: response.data?.memoryBanks ?? [],
-          activeMemoryBank: response.data?.memoryBanks?.[0] ?? null,
+          activeMemoryBank: selectMemoryBank(
+            response.data?.memoryBanks ?? [],
+            ctx.config.memoryBankId
+          ),
           requiresMemoryBank: response.data?.requiresMemoryBank ?? true,
           ...(response.data?.memoryBanks?.length
             ? {}
@@ -287,7 +318,7 @@ export function createToolHandlers(ctx: HandlerContext) {
     },
 
     async memory_stats(): Promise<ToolResult> {
-      const active = await connectAndSelectMemoryBank(ctx);
+      const active = await activeMemoryBank();
       if (isMemoryBankFailure(active)) {
         return active;
       }
@@ -322,7 +353,7 @@ export function createToolHandlers(ctx: HandlerContext) {
         return fail("capture disabled");
       }
 
-      const active = await connectAndSelectMemoryBank(ctx);
+      const active = await activeMemoryBank();
       if (isMemoryBankFailure(active)) {
         return active;
       }

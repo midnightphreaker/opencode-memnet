@@ -20,6 +20,7 @@ if (!existsSync(CONFIG_DIR)) {
 export interface ClientConfig {
   serverUrl: string;
   apiKey: string;
+  memoryBankId?: string;
   autoCaptureEnabled: boolean;
   showAutoCaptureToasts: boolean;
   showErrorToasts: boolean;
@@ -46,6 +47,7 @@ export type ClientConfigSources = Partial<Record<keyof ClientConfig, string>>;
 const CLIENT_DEFAULTS: ClientConfig = {
   serverUrl: "http://localhost:4747",
   apiKey: "",
+  memoryBankId: undefined,
   autoCaptureEnabled: true,
   showAutoCaptureToasts: true,
   showErrorToasts: true,
@@ -71,6 +73,7 @@ function buildClientConfig(fileConfig: Partial<ClientConfig>): ClientConfig {
   return {
     serverUrl: fileConfig.serverUrl ?? CLIENT_DEFAULTS.serverUrl,
     apiKey: fileConfig.apiKey ?? CLIENT_DEFAULTS.apiKey,
+    memoryBankId: fileConfig.memoryBankId ?? CLIENT_DEFAULTS.memoryBankId,
     autoCaptureEnabled: fileConfig.autoCaptureEnabled ?? CLIENT_DEFAULTS.autoCaptureEnabled,
     showAutoCaptureToasts:
       fileConfig.showAutoCaptureToasts ?? CLIENT_DEFAULTS.showAutoCaptureToasts,

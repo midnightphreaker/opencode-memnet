@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const app = readFileSync(join(import.meta.dir, "../src/web/app.js"), "utf-8");
@@ -36,5 +36,11 @@ describe("WebUI v2 auth and Memory Bank controls", () => {
     expect(i18n).toContain("Memory Bank");
     expect(i18n).toContain("API Key Description");
     expect(i18n).not.toContain("Profile key");
+  });
+
+  it("serves icon rendering code locally instead of relying on a CDN", () => {
+    expect(html).toContain('src="/vendor/lucide.min.js"');
+    expect(html).not.toContain("unpkg.com/lucide");
+    expect(existsSync(join(import.meta.dir, "../src/web/vendor/lucide.min.js"))).toBe(true);
   });
 });

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { join, dirname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { log, logDebug, logError } from "./logger.js";
 import { AuthMiddleware } from "./auth.js";
@@ -820,6 +820,9 @@ export class WebServer {
       }
 
       if (path === "/api/user-profiles" && method === "GET") {
+        if (principal.kind !== "admin") {
+          return this.jsonResponse({ success: false, error: "Admin API key required" }, 403);
+        }
         const result = await handleListUserProfiles(principal);
         if (!result.success) return this.jsonResponse(result);
         return this.jsonResponse({
@@ -839,16 +842,29 @@ export class WebServer {
       }
 
       if (path === "/api/client/stats" && method === "GET") {
+        if (principal.kind !== "user-api-key") {
+          return this.jsonResponse({ success: false, error: "User API key required" }, 403);
+        }
         const clientIdParam = url.searchParams.get("clientId");
         if (!clientIdParam) {
           return this.jsonResponse({ success: false, error: "clientId query parameter required" });
         }
-        const result = await handleGetClientStats({ clientId: clientIdParam });
+        if (!req.headers.get("X-Memory-Bank-ID") && !url.searchParams.get("memoryBankId")) {
+          return this.jsonResponse({ success: false, error: "X-Memory-Bank-ID is required" }, 403);
+        }
+        const scope = await this.memoryBankScope(req, principal);
+        const result = await handleGetClientStats({
+          clientId: clientIdParam,
+          principal,
+          memoryBank: scope.memoryBank,
+        });
         return this.jsonResponse(result);
       }
 
       // Generic static file serving (svg, html, png, etc.)
       const staticExts: Record<string, string> = {
+        ".js": "application/javascript",
+        ".css": "text/css",
         ".svg": "image/svg+xml",
         ".html": "text/html",
         ".png": "image/png",
@@ -860,9 +876,8 @@ export class WebServer {
       const ext = path.substring(path.lastIndexOf("."));
       const contentType = staticExts[ext];
       if (contentType) {
-        // Prevent directory traversal
-        const filename = path.split("/").pop() || "";
-        if (filename && !filename.includes("..")) {
+        const filename = decodeURIComponent(path.slice(1));
+        if (filename) {
           return this.serveStaticFile(filename, contentType);
         }
       }
@@ -887,7 +902,15 @@ export class WebServer {
   private serveStaticFile(filename: string, contentType: string): Response {
     try {
       const webDir = join(__dirname, "..", "web");
-      const filePath = join(webDir, filename);
+      const safeRelativePath = normalize(filename).replace(/^[/\\]+/, "");
+      if (
+        safeRelativePath === ".." ||
+        safeRelativePath.startsWith("../") ||
+        safeRelativePath.startsWith("..\\")
+      ) {
+        return new Response("File not found", { status: 404 });
+      }
+      const filePath = join(webDir, safeRelativePath);
 
       if (contentType.startsWith("image/")) {
         const content = readFileSync(filePath);

@@ -9,6 +9,7 @@ import { getTags, type TagsConfig } from "../../shared/tags.js";
 import { stripPrivateContent, isFullyPrivate } from "../../shared/privacy.js";
 import {
   parseMagicMemoryBankPrompt,
+  selectMemoryBank,
   stateKeyForMemoryBank,
   suggestMemoryBank,
 } from "../../shared/memory-bank.js";
@@ -28,9 +29,10 @@ const TAGS_CONFIG: TagsConfig = {
 
 function chooseActiveMemoryBank(
   _stateKey: string,
-  banks: MemoryBankSummary[]
+  banks: MemoryBankSummary[],
+  configuredMemoryBankId?: string
 ): MemoryBankSummary | null {
-  return banks[0] ?? null;
+  return selectMemoryBank(banks, configuredMemoryBankId);
 }
 
 function missingMemoryBankError(): string {
@@ -65,7 +67,7 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
         apiKeyName: connectionInfo.principal.apiKeyName,
         cwd: directory,
       });
-      activeMemoryBank = chooseActiveMemoryBank(stateKey, banks);
+      activeMemoryBank = chooseActiveMemoryBank(stateKey, banks, CLIENT_CONFIG.memoryBankId);
 
       logInfo("Plugin initialized", {
         project: tags.project.projectName || tags.project.tag,
@@ -93,6 +95,11 @@ export const OpenCodeMemPlugin: Plugin = async (ctx: PluginInput) => {
           .catch((e) => {
             logDebug("Memory Bank startup prompt failed", { error: String(e) });
           });
+      }
+      if (!activeMemoryBank && CLIENT_CONFIG.memoryBankId && !connectionInfo.requiresMemoryBank) {
+        logWarn("Configured Memory Bank is not available for this API key", {
+          memoryBankId: CLIENT_CONFIG.memoryBankId,
+        });
       }
     }
   } catch (err) {

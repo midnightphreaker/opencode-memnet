@@ -94,4 +94,15 @@ describe("v2 ownership schema contract", () => {
     expect(migrationAndRepositories).toContain("candidate limit");
     expect(migrationAndRepositories).toContain("latency budget");
   });
+
+  it("scopes AI session uniqueness and upsert by API key and Memory Bank", () => {
+    expect(migrations).toContain("version: 16");
+    expect(migrations).toContain("DROP INDEX IF EXISTS idx_ai_sessions_session_provider");
+    expect(migrations).toContain(
+      "ON ai_sessions (api_key_id, memory_bank_id, session_id, provider)"
+    );
+    expect(aiSessionRepository).toContain(
+      "ON CONFLICT (api_key_id, memory_bank_id, session_id, provider)"
+    );
+  });
 });

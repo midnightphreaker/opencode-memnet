@@ -101,7 +101,7 @@ export class PostgresAISessionRepository implements AISessionRepository {
         ${params.metadata ? sql.json(params.metadata) : null},
         ${now}, ${now}, ${expiresAt}
       )
-      ON CONFLICT (session_id, provider) DO UPDATE SET
+      ON CONFLICT (api_key_id, memory_bank_id, session_id, provider) DO UPDATE SET
         expires_at = EXCLUDED.expires_at,
         updated_at = EXCLUDED.updated_at,
         conversation_id = COALESCE(EXCLUDED.conversation_id, ai_sessions.conversation_id),

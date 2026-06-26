@@ -347,16 +347,16 @@ export class RemoteMemoryClient {
   setApiKey(apiKey: string): void {
     this.apiKey = apiKey;
   }
-  async getClientStats(clientId: string): Promise<
-    ApiResponse<{
-      firstSeen: number;
-      lastSeen: number;
-      totalMemories: number;
-      memoriesToday: number;
-      totalPrompts: number;
-    }>
-  > {
-    return this.request("GET", `/api/client/stats`, undefined, { clientId });
+  async getClientStats(
+    clientId: string,
+    memoryBankId: string
+  ): Promise<ApiResponse<ClientConnectResponseDTO>> {
+    return this.request("POST", "/api/client/connect", {
+      clientId,
+      metadata: {},
+      includeStats: true,
+      memoryBankId,
+    });
   }
 }
 

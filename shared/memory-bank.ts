@@ -11,6 +11,10 @@ export interface MemoryBankStateKeyInput {
   cwd: string;
 }
 
+export interface SelectableMemoryBank {
+  id: string;
+}
+
 const MAGIC_RE =
   /^!opencode-memnet!New memory bank called ['"]([^'"]+)['"], create it, and activate it!$/i;
 
@@ -39,4 +43,13 @@ export function parseMagicMemoryBankPrompt(input: string): SuggestedMemoryBank |
 
 export function stateKeyForMemoryBank(input: MemoryBankStateKeyInput): string {
   return `${input.serverUrl.replace(/\/+$/, "")}|${input.apiKeyName}|${resolve(input.cwd)}`;
+}
+
+export function selectMemoryBank<T extends SelectableMemoryBank>(
+  banks: T[],
+  configuredMemoryBankId?: string
+): T | null {
+  const id = configuredMemoryBankId?.trim();
+  if (!id) return banks[0] ?? null;
+  return banks.find((bank) => bank.id === id) ?? null;
 }

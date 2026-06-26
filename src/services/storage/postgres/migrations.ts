@@ -627,6 +627,18 @@ export const migrations: Migration[] = [
       `);
     },
   },
+  {
+    version: 16,
+    description: "Scope AI session uniqueness to API key and Memory Bank",
+    transactional: true,
+    up: async (sql) => {
+      await sql`DROP INDEX IF EXISTS idx_ai_sessions_session_provider`;
+      await sql`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_sessions_bank_session_provider
+        ON ai_sessions (api_key_id, memory_bank_id, session_id, provider)
+      `;
+    },
+  },
 ];
 
 // ── Runner ──

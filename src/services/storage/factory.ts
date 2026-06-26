@@ -192,17 +192,17 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
   async insert(record: MemoryRecord): Promise<void> {
     await (await this.repo()).insert(record);
   }
-  async delete(memoryId: string): Promise<boolean> {
-    return (await this.repo()).delete(memoryId);
+  async delete(memoryId: string, owner?: MemoryBankOwner): Promise<boolean> {
+    return (await this.repo()).delete(memoryId, owner);
   }
-  async deleteMany(ids: string[]): Promise<number> {
-    return (await this.repo()).deleteMany(ids);
+  async deleteMany(ids: string[], owner?: MemoryBankOwner): Promise<number> {
+    return (await this.repo()).deleteMany(ids, owner);
   }
   async update(record: MemoryRecord): Promise<void> {
     await (await this.repo()).update(record);
   }
-  async getById(memoryId: string): Promise<MemoryRow | null> {
-    return (await this.repo()).getById(memoryId);
+  async getById(memoryId: string, owner?: MemoryBankOwner): Promise<MemoryRow | null> {
+    return (await this.repo()).getById(memoryId, owner);
   }
   async search(options: MemorySearchOptions): Promise<SearchResult[]> {
     return (await this.repo()).search(options);
@@ -233,11 +233,11 @@ class PostgresMemoryRepositoryLazy implements MemoryRepository {
   ): Promise<string[]> {
     return (await this.repo()).getDistinctTagValues(args);
   }
-  async pin(memoryId: string): Promise<void> {
-    await (await this.repo()).pin(memoryId);
+  async pin(memoryId: string, owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).pin(memoryId, owner);
   }
-  async unpin(memoryId: string): Promise<void> {
-    await (await this.repo()).unpin(memoryId);
+  async unpin(memoryId: string, owner?: MemoryBankOwner): Promise<void> {
+    await (await this.repo()).unpin(memoryId, owner);
   }
   async listOlderThan(
     args: Parameters<MemoryRepository["listOlderThan"]>[0]

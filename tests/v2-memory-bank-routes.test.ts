@@ -28,6 +28,13 @@ function makeAuthService() {
           : null,
     listMemoryBanksForApiKey: async (apiKeyId: string) =>
       banks.filter((bank) => bank.apiKeyId === apiKeyId),
+    requireBankForPrincipal: async (principal: any, memoryBankId: string) => {
+      const bank = banks.find(
+        (candidate) => candidate.id === memoryBankId && candidate.apiKeyId === principal.apiKeyId
+      );
+      if (!bank) throw new Error("Memory Bank not found for API key");
+      return bank;
+    },
     createMemoryBankForApiKey: async (args: any) => ({
       id: "bank-2",
       apiKeyId: args.apiKeyId,
@@ -62,7 +69,13 @@ function makeAuthService() {
   };
 }
 
-async function route(method: string, path: string, bearer: string, body?: unknown) {
+async function route(
+  method: string,
+  path: string,
+  bearer: string,
+  body?: unknown,
+  headers: Record<string, string> = {}
+) {
   const server = new WebServer(
     { port: 0, host: "127.0.0.1", enabled: false },
     makeAuthService() as any
@@ -72,6 +85,7 @@ async function route(method: string, path: string, bearer: string, body?: unknow
       method,
       headers: {
         Authorization: `Bearer ${bearer}`,
+        ...headers,
         ...(body ? { "Content-Type": "application/json" } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
@@ -111,6 +125,27 @@ describe("v2 Memory Bank routes", () => {
   it("allows the X-Memory-Bank-ID header in CORS preflight", async () => {
     const response = await route("OPTIONS", "/api/memories", "user");
     expect(response.headers.get("Access-Control-Allow-Headers")).toContain("X-Memory-Bank-ID");
+  });
+
+  it("forbids user API keys from listing global user profiles", async () => {
+    const response = await route("GET", "/api/user-profiles", "user");
+    expect(response.status).toBe(403);
+    const json = await response.json();
+    expect(json.error).toContain("Admin");
+  });
+
+  it("requires a user Memory Bank scope for client stats", async () => {
+    const noBankResponse = await route("GET", "/api/client/stats?clientId=client-1", "user");
+    expect(noBankResponse.status).toBe(403);
+
+    const adminResponse = await route(
+      "GET",
+      "/api/client/stats?clientId=client-1",
+      "admin",
+      undefined,
+      { "X-Memory-Bank-ID": "bank-1" }
+    );
+    expect(adminResponse.status).toBe(403);
   });
 
   it("updates and revokes user API keys through admin routes", async () => {

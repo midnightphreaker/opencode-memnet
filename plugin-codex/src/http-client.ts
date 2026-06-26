@@ -150,14 +150,23 @@ export class RemoteMemoryClient {
     });
   }
 
-  getClientStats() {
-    return this.request<{
-      firstSeen: number;
-      lastSeen: number;
-      totalMemories: number;
-      memoriesToday: number;
-      totalPrompts: number;
-    }>("GET", "/api/client/stats", undefined, { clientId: this.clientId });
+  getClientStats(options: { memoryBankId?: string } = {}) {
+    return this.clientConnect({
+      includeStats: true,
+      memoryBankId: options.memoryBankId,
+    }) as Promise<
+      ApiResponse<{
+        principal: ClientConnectResponse["principal"];
+        memoryBanks: ClientConnectResponse["memoryBanks"];
+        requiresMemoryBank: boolean;
+        stats?: {
+          memoryBankId: string;
+          totalMemories: number;
+          memoriesToday: number;
+          totalPrompts: number;
+        };
+      }>
+    >;
   }
 
   getContext(

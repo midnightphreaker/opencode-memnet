@@ -35,13 +35,13 @@ function connectData(memoryBanks = [memoryBank()]) {
   };
 }
 
-function memoryBank() {
+function memoryBank(id = "bank-1") {
   return {
-    id: "bank-1",
+    id,
     apiKeyId: "key-1",
-    name: "project",
-    description: "Work done on project repo",
-    shortcut: "opencode>project",
+    name: id === "bank-1" ? "project" : "other-project",
+    description: `Work done on ${id}`,
+    shortcut: `opencode>${id}`,
     createdAt: "2026-06-26T00:00:00.000Z",
     updatedAt: "2026-06-26T00:00:00.000Z",
   };
@@ -155,6 +155,44 @@ describe("MCP tool handlers", () => {
     }
   });
 
+  test("memory operations use configured Memory Bank when multiple banks are available", async () => {
+    const { requests, fetcher } = createRecorder({
+      memoryBanks: [memoryBank("bank-1"), memoryBank("bank-2")],
+    });
+    const { cwd, handlers } = createHandlers({
+      fetcher,
+      config: { ...baseConfig, memoryBankId: "bank-2" },
+    });
+
+    try {
+      const result = await handlers.memory_add({ content: "remember configured bank" });
+
+      expect(result.success).toBe(true);
+      expect(requests[1].headers.get("X-Memory-Bank-ID")).toBe("bank-2");
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
+  test("memory operations fail when configured Memory Bank is unavailable", async () => {
+    const { fetcher } = createRecorder({
+      memoryBanks: [memoryBank("bank-1")],
+    });
+    const { cwd, handlers } = createHandlers({
+      fetcher,
+      config: { ...baseConfig, memoryBankId: "missing-bank" },
+    });
+
+    try {
+      const result = await handlers.memory_add({ content: "remember configured bank" });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("Configured Memory Bank");
+    } finally {
+      cleanup(cwd);
+    }
+  });
+
   test("memory_get_context posts repo scope with Memory Bank header", async () => {
     const { requests, fetcher } = createRecorder();
     const { cwd, handlers } = createHandlers({ fetcher });
@@ -239,16 +277,21 @@ describe("MCP tool handlers", () => {
       await handlers.memory_search({ query: "identity", limit: 3 });
       await handlers.memory_list({ limit: 4 });
 
+      expect(requests.map((request) => request.url.pathname)).toEqual([
+        "/api/client/connect",
+        "/api/search",
+        "/api/memories",
+      ]);
       expect(requests[1].url.pathname).toBe("/api/search");
       expect(requests[1].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
       expect(requests[1].url.searchParams.get("q")).toBe("identity");
       expect(requests[1].url.searchParams.get("pageSize")).toBe("3");
       expect(requests[1].url.searchParams.has("profileId")).toBe(false);
 
-      expect(requests[3].url.pathname).toBe("/api/memories");
-      expect(requests[3].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
-      expect(requests[3].url.searchParams.get("pageSize")).toBe("4");
-      expect(requests[3].url.searchParams.has("profileId")).toBe(false);
+      expect(requests[2].url.pathname).toBe("/api/memories");
+      expect(requests[2].headers.get("X-Memory-Bank-ID")).toBe("bank-1");
+      expect(requests[2].url.searchParams.get("pageSize")).toBe("4");
+      expect(requests[2].url.searchParams.has("profileId")).toBe(false);
     } finally {
       cleanup(cwd);
     }

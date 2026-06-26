@@ -2,6 +2,7 @@
 import { loadConfig, type CodexMemnetConfig } from "../config";
 import { getClientId } from "../identity";
 import { RemoteMemoryClient, type MemoryBankSummary } from "../http-client";
+import { selectMemoryBank } from "../../../shared/memory-bank";
 import { getTags, type TagInfo } from "../tags";
 import { logHookDiagnostic } from "./logger";
 import { parseHookPayload, type ParsedHookPayload } from "./payload";
@@ -90,7 +91,12 @@ export async function runHook(input: string, options: RunHookOptions = {}): Prom
     return { success: true, action: "skipped", reason: "connect-failed" };
   }
 
-  const memoryBank = connect.data?.memoryBanks?.[0];
+  const memoryBanks = connect.data?.memoryBanks ?? [];
+  const memoryBank = selectMemoryBank(memoryBanks, config.memoryBankId);
+  if (!memoryBank && config.memoryBankId && memoryBanks.length > 0) {
+    logHookDiagnostic(event, { reason: "configured-memory-bank-unavailable" });
+    return { success: true, action: "skipped", reason: "missing-memory-bank" };
+  }
   if (!memoryBank && event !== "PostCompact") {
     logHookDiagnostic(event, { reason: "missing-memory-bank" });
     return { success: true, action: "skipped", reason: "missing-memory-bank" };

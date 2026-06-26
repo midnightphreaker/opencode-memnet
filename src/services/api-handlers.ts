@@ -2138,6 +2138,9 @@ export async function handleListUserProfiles(principal?: AuthPrincipal): Promise
   }>
 > {
   try {
+    if (principal?.kind !== "admin") {
+      return { success: false, error: "Admin API key required" };
+    }
     await ensureInit();
     const profiles = await profileRepo.getAllActiveProfiles();
     const list = profiles.map((p) => ({
@@ -2297,10 +2300,13 @@ export async function handleCreateMemoryBankForApiKey(
   }
 }
 
-export async function handleGetClientStats(data: { clientId: string }): Promise<
+export async function handleGetClientStats(data: {
+  clientId: string;
+  principal: UserApiKeyPrincipal;
+  memoryBank: MemoryBankRow;
+}): Promise<
   ApiResponse<{
-    firstSeen: number;
-    lastSeen: number;
+    memoryBankId: string;
     totalMemories: number;
     memoriesToday: number;
     totalPrompts: number;
@@ -2312,16 +2318,16 @@ export async function handleGetClientStats(data: { clientId: string }): Promise<
     }
     await ensureInit();
 
-    const stats = await clientRepo!.getClientStats(data.clientId);
-    if (!stats.client) {
-      return { success: false, error: "Client not found — connect first" };
-    }
+    const stats = await clientRepo!.getClientStatsForBank({
+      clientId: data.clientId,
+      apiKeyId: data.principal.apiKeyId,
+      memoryBankId: data.memoryBank.id,
+    });
 
     return {
       success: true,
       data: {
-        firstSeen: stats.client.firstSeen,
-        lastSeen: stats.client.lastSeen,
+        memoryBankId: data.memoryBank.id,
         totalMemories: stats.totalMemories,
         memoriesToday: stats.memoriesToday,
         totalPrompts: stats.totalPrompts,

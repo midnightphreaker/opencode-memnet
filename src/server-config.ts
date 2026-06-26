@@ -186,7 +186,6 @@ export function validateServerConfig(config: ServerConfig): string[] {
   }
   if (!config.embeddingApiUrl) errors.push("EMBEDDING_API_URL is required");
   if (!config.embeddingModel) errors.push("EMBEDDING_MODEL is required");
-  if (!config.embeddingApiKey) errors.push("EMBEDDING_API_KEY is required (or OPENAI_API_KEY)");
   if (!config.serverApiKey?.trim()) {
     errors.push("SERVER_API_KEY is required");
   }

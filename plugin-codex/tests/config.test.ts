@@ -30,6 +30,7 @@ describe("mergeConfig", () => {
     const env = {
       OPENCODE_MEMNET_API_KEY: "env-key",
       OPENCODE_MEMNET_NICKNAME: "Env Name",
+      OPENCODE_MEMNET_MEMORY_BANK_ID: "bank-env",
     };
 
     const result = mergeConfig(user, project, env);
@@ -37,6 +38,7 @@ describe("mergeConfig", () => {
     expect(result.serverUrl).toBe("http://project.example");
     expect(result.apiKey).toBe("user-key");
     expect(result.nickname).toBe("Codex Workstation");
+    expect(result.memoryBankId).toBe("bank-env");
     expect(result.context.maxMemories).toBe(3);
     expect(result.context.excludeCurrentSession).toBe(true);
   });
@@ -50,7 +52,7 @@ describe("mergeConfig", () => {
     expect(result.memory.defaultScope).toBe("project");
   });
 
-  test("env fills missing server url, api key, and nickname", () => {
+  test("env fills missing server url, api key, nickname, and Memory Bank ID", () => {
     const result = mergeConfig(
       {},
       {},
@@ -58,12 +60,14 @@ describe("mergeConfig", () => {
         OPENCODE_MEMNET_SERVER_URL: "http://env.example",
         OPENCODE_MEMNET_API_KEY: "env-key",
         OPENCODE_MEMNET_NICKNAME: "Env Name",
+        OPENCODE_MEMNET_MEMORY_BANK_ID: "bank-env",
       }
     );
 
     expect(result.serverUrl).toBe("http://env.example");
     expect(result.apiKey).toBe("env-key");
     expect(result.nickname).toBe("Env Name");
+    expect(result.memoryBankId).toBe("bank-env");
   });
 
   test("parses JSONC config with comments and trailing commas", () => {

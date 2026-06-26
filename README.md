@@ -64,6 +64,7 @@ Configure the plugin with a user API key created in the WebUI:
 {
   "serverUrl": "http://localhost:4747",
   "apiKey": "omnu_user_key_value",
+  "memoryBankId": "optional-memory-bank-id",
   "autoCaptureEnabled": true,
   "memory": {
     "defaultScope": "project",
@@ -71,7 +72,7 @@ Configure the plugin with a user API key created in the WebUI:
 }
 ```
 
-On startup the plugin connects, receives the API key identity and available Memory Banks, and routes memory operations through the active bank using `X-Memory-Bank-ID`.
+On startup the plugin connects, receives the API key identity and available Memory Banks, and routes memory operations through the active bank using `X-Memory-Bank-ID`. If `memoryBankId` is set, the client uses that bank and fails closed when the API key cannot access it; otherwise it uses the first returned bank.
 
 ## Codex Plugin
 
@@ -83,6 +84,7 @@ bun run verify:codex-plugin
 ```
 
 Configure Codex with the same user API key model. Memory operations require an active Memory Bank. If no bank exists for the API key, the Codex tools and hooks report that a Memory Bank must be created first.
+Set `memoryBankId` in Codex config or `OPENCODE_MEMNET_MEMORY_BANK_ID` to pin memory operations to a specific bank.
 
 ## Magic Memory Bank Prompt
 
@@ -104,7 +106,7 @@ Secret values for `POSTGRES_URL`, `EMBEDDING_API_KEY`, and `MEMORY_API_KEY` supp
 | `POSTGRES_URL`              | yes      | PostgreSQL connection string.                                 |
 | `EMBEDDING_API_URL`         | yes      | OpenAI-compatible embeddings API base URL.                    |
 | `EMBEDDING_MODEL`           | yes      | Embedding model name.                                         |
-| `EMBEDDING_API_KEY`         | yes      | Embedding API key.                                            |
+| `EMBEDDING_API_KEY`         | no       | Embedding API key, when the endpoint requires one.            |
 | `SERVER_HOST`               | no       | Server bind host.                                             |
 | `SERVER_PORT`               | no       | Server listen port.                                           |
 | `WEB_SERVER_ALLOWED_ORIGIN` | no       | CORS `Access-Control-Allow-Origin` value.                     |

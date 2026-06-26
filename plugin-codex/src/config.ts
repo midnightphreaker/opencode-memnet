@@ -6,6 +6,7 @@ import { parseJsonc as parseJsoncFile } from "./jsonc";
 export interface CodexMemnetConfig {
   serverUrl: string;
   apiKey: string;
+  memoryBankId?: string;
   nickname?: string;
   timeoutMs: number;
   memory: {
@@ -28,6 +29,7 @@ export { parseJsoncFile as parseJsonc };
 const DEFAULT_CONFIG: CodexMemnetConfig = {
   serverUrl: "",
   apiKey: "",
+  memoryBankId: undefined,
   timeoutMs: 30_000,
   memory: {
     defaultScope: "project",
@@ -93,6 +95,9 @@ export function mergeConfig(
   }
   if (!merged.nickname && env.OPENCODE_MEMNET_NICKNAME) {
     merged.nickname = env.OPENCODE_MEMNET_NICKNAME;
+  }
+  if (!merged.memoryBankId && env.OPENCODE_MEMNET_MEMORY_BANK_ID) {
+    merged.memoryBankId = env.OPENCODE_MEMNET_MEMORY_BANK_ID;
   }
 
   return merged;

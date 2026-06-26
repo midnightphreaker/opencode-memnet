@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   parseMagicMemoryBankPrompt,
+  selectMemoryBank,
   suggestMemoryBank,
   stateKeyForMemoryBank,
 } from "../shared/memory-bank.js";
@@ -36,5 +37,13 @@ describe("shared Memory Bank helpers", () => {
         cwd: "/home/phrkr/Workspace/vllm-setup",
       })
     ).toBe("https://memory.example|opencode|/home/phrkr/Workspace/vllm-setup");
+  });
+
+  it("selects configured Memory Bank IDs and otherwise falls back to the first bank", () => {
+    const banks = [{ id: "bank-1" }, { id: "bank-2" }];
+
+    expect(selectMemoryBank(banks)?.id).toBe("bank-1");
+    expect(selectMemoryBank(banks, "bank-2")?.id).toBe("bank-2");
+    expect(selectMemoryBank(banks, "missing-bank")).toBeNull();
   });
 });

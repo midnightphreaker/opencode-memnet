@@ -166,4 +166,10 @@ describe("SERVER_API_KEY v2 server config", () => {
     expect(result.exitCode).toBe(0);
     expect(JSON.parse(result.stdout).serverApiKey).toBe("env-admin");
   });
+
+  it("allows unauthenticated embedding endpoints", () => {
+    expect(validateServerConfig(makeConfig({ embeddingApiKey: "" }))).not.toContain(
+      "EMBEDDING_API_KEY is required (or OPENAI_API_KEY)"
+    );
+  });
 });
